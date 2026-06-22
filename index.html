@@ -160,6 +160,14 @@
       <span style="display:flex;align-items:center;gap:.8rem"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6h15l-1.5 9h-12z"></path><path d="M6 6L4 3H2"></path><circle cx="9" cy="20" r="1"></circle><circle cx="18" cy="20" r="1"></circle></svg>Заявки на закупку</span>
       <span class="small">Открыть</span>
     </button>
+    <button class="drawer-item" id="openKnowledgeBase" style="border-color:color-mix(in oklab,var(--color-primary) 30%,transparent);background:color-mix(in oklab,var(--color-primary) 6%,var(--color-surface))">
+      <span style="display:flex;align-items:center;gap:.8rem"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h6"/><path d="M9 11h8"/></svg>База знаний</span>
+      <span class="small" style="color:var(--color-primary)">Читать</span>
+    </button>
+    <button class="drawer-item" id="openGuestBotChats">
+      <span style="display:flex;align-items:center;gap:.8rem"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M8 9h8"></path><path d="M8 13h5"></path></svg>Чаты бота с гостями</span>
+      <span class="small">Открыть</span>
+    </button>
     <div class="theme-switch">
       <div>
         <strong>Тема приложения</strong>
@@ -210,10 +218,7 @@
             <span class="small">Название квартиры</span>
             <input id="apartmentName" type="text" placeholder="Введи название квартиры" />
           </label>
-          <label>
-            <span class="small">Порог низкого остатка, %</span>
-            <input id="lowThreshold" type="number" min="1" max="100" value="25" />
-          </label>
+
         </div>
         <div class="grid" style="margin-top:1rem">
           <div class="section-head" style="margin-bottom:0">
@@ -264,8 +269,6 @@
         <div class="accordion-body" id="quickActionsBody" style="padding:1rem 0 0">
           <div class="grid">
             <button class="btn btn-primary" id="newCheckin">Новый заезд</button>
-            <button class="btn btn-secondary" id="writeoffLinenSet">Списать комплект белья</button>
-            <button class="btn btn-secondary" id="writeoffTowelSet">Списать комплект полотенец</button>
             <button class="btn btn-secondary" id="openSettings">Настроить списание</button>
             <button class="btn btn-secondary" id="restockDefaults">Пополнить до нормы</button>
             <button class="btn btn-danger" id="resetAll">Сбросить остатки</button>
@@ -392,8 +395,16 @@
         </div>
         <button class="menu-toggle" id="closePurchaseRequestsModal" aria-label="Закрыть окно заявок"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12"></path><path d="M18 6L6 18"></path></svg></button>
       </div>
-      <div class="actions" style="margin-bottom:1rem">
-        <button class="btn btn-primary" id="openNewPurchaseRequest">Новая заявка</button>
+      <div style="margin-bottom:1rem">
+        <button class="btn btn-primary" id="openNewPurchaseRequest" style="margin-bottom:.9rem">Новая заявка</button>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1rem;border-radius:var(--radius-lg);background:var(--color-surface);border:1px solid color-mix(in oklab,var(--color-text) 10%,transparent)">
+          <div>
+            <strong style="font-size:var(--text-sm)">Авто-заявка при списании</strong>
+            <div class="small" id="autoRequestLabel">Выключено</div>
+            <div class="small" style="color:var(--color-text-faint);margin-top:.2rem">Только не одноразовые расходники (бельё, полотенца)</div>
+          </div>
+          <button class="switch" id="autoRequestToggle" aria-label="Авто-заявка при списании не одноразовых" style="flex-shrink:0"></button>
+        </div>
       </div>
       <div class="request-summary" id="purchaseRequestsList"></div>
     </div>
@@ -465,6 +476,143 @@
     </div>
   </div>
 
+  <!-- Модал списания/пополнения -->
+  <div class="modal-backdrop" id="writeoffModal" aria-hidden="true">
+    <div class="modal" style="width:min(400px,100%)">
+      <div class="section-head">
+        <h2 id="writeoffModalTitle" style="margin:0;font-size:var(--text-lg);text-transform:none;letter-spacing:0;color:var(--color-text)">Списать</h2>
+        <button class="menu-toggle" id="writeoffModalClose" aria-label="Закрыть"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg></button>
+      </div>
+      <div style="margin-bottom:1rem">
+        <div class="small" style="margin-bottom:.5rem;color:var(--color-text-muted)" id="writeoffModalSub"></div>
+        <label>
+          <span class="small" id="writeoffModalLabel">Количество</span>
+          <input id="writeoffModalQty" type="number" min="0.1" step="0.1" value="1" style="margin-top:.4rem" />
+        </label>
+      </div>
+      <div style="display:flex;gap:.75rem;justify-content:flex-end">
+        <button class="btn btn-secondary" id="writeoffModalCancel">Отмена</button>
+        <button class="btn btn-primary" id="writeoffModalConfirm">Применить</button>
+      </div>
+    </div>
+  </div>
+
+<!-- БАЗА ЗНАНИЙ -->
+  <div class="modal-backdrop" id="kbModal" aria-hidden="true">
+    <div class="modal" style="width:min(860px,100%);max-height:90dvh;overflow:auto;display:flex;flex-direction:column;gap:0">
+      <!-- Шапка -->
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;margin-bottom:1rem">
+        <div>
+          <h2 style="margin:0 0 .3rem;font-size:var(--text-lg);color:var(--color-text)">База знаний</h2>
+          <p class="muted" style="margin:0">Полное руководство — читай при первом использовании</p>
+        </div>
+        <button class="menu-toggle" id="kbClose" aria-label="Закрыть"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg></button>
+      </div>
+      <!-- Навигация -->
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1.25rem" id="kbNav">
+        <button class="history-chip active" data-kb="s0">Введение</button>
+        <button class="history-chip" data-kb="s1">Квартиры</button>
+        <button class="history-chip" data-kb="s2">Расходники</button>
+        <button class="history-chip" data-kb="s3">Быстрые действия</button>
+        <button class="history-chip" data-kb="s4">История</button>
+        <button class="history-chip" data-kb="s5">Заявки на закупку</button>
+        <button class="history-chip" data-kb="s6">Сохранение данных</button>
+        <button class="history-chip" data-kb="s7">Настройки</button>
+      </div>
+      <!-- Секции -->
+      <div id="kbBody">
+
+        <div id="kbs0">
+          <div class="hint" style="margin-bottom:1rem"><strong>Добро пожаловать в Green Yard</strong><p class="small" style="margin:.5rem 0 0">Приложение для учёта расходников по нескольким квартирам посуточной аренды. Видишь сколько чего осталось, когда пополнять и автоматически списываешь при каждом заезде.</p></div>
+          <div class="list">
+            <div class="line"><strong style="color:var(--color-primary);min-width:1.5rem">1</strong><div>Добавь квартиры через <span class="pill">+ Новая</span> в левой панели</div></div>
+            <div class="line"><strong style="color:var(--color-primary);min-width:1.5rem">2</strong><div>Задай название и порог низкого остатка в «Параметры объекта»</div></div>
+            <div class="line"><strong style="color:var(--color-primary);min-width:1.5rem">3</strong><div>Выставь начальный остаток и норму для каждого расходника</div></div>
+            <div class="line"><strong style="color:var(--color-primary);min-width:1.5rem">4</strong><div>Настрой списание в «Настроить списание» — сколько тратится на один заезд</div></div>
+            <div class="line"><strong style="color:var(--color-primary);min-width:1.5rem">5</strong><div>При каждом новом госте нажимай «Новый заезд» — всё спишется само</div></div>
+          </div>
+        </div>
+
+        <div id="kbs1" style="display:none">
+          <div class="hint" style="margin-bottom:1rem"><strong>Управление квартирами</strong><p class="small" style="margin:.5rem 0 0">Каждая квартира — отдельный объект со своими расходниками и историей.</p></div>
+          <div class="list">
+            <div class="line"><div><strong>Добавить квартиру</strong><div class="small">Кнопка + Новая над списком. Новая квартира создаётся со стандартным набором расходников</div></div></div>
+            <div class="line"><div><strong>Переключить квартиру</strong><div class="small">Нажми на неё в списке — подсветится зелёным, центральная область обновится</div></div></div>
+            <div class="line"><div><strong>Переименовать</strong><div class="small">Поле «Название квартиры» в разделе «Параметры объекта» в левой панели</div></div></div>
+            <div class="line"><div><strong>Удалить</strong><div class="small">Иконка корзины рядом с квартирой. Удалятся все расходники и история этой квартиры — действие нельзя отменить. Последнюю квартиру удалить нельзя</div></div></div>
+            <div class="line"><div><strong>Порог низкого остатка</strong><div class="small">В процентах (по умолчанию 25%). Если остаток ÷ норма ниже порога — красный «Низкий остаток». 25–65% — оранжевый «Скоро пополнить». Выше 65% — зелёный «Запас в норме»</div></div></div>
+          </div>
+        </div>
+
+        <div id="kbs2" style="display:none">
+          <div class="hint" style="margin-bottom:1rem"><strong>Учёт расходников</strong><p class="small" style="margin:.5rem 0 0">Два типа: <b>Одноразовые</b> (тапочки, зубные щётки — списываются при заезде автоматически) и <b>Не одноразовые</b> (бельё, полотенца — списываются вручную комплектами).</p></div>
+          <div class="list">
+            <div class="line"><div><strong>Остаток и норма</strong><div class="small">Остаток — сколько реально есть. Норма — целевой «полный» запас. Прогресс-бар показывает остаток/норма в %</div></div></div>
+            <div class="line"><div><strong>Кнопки -1 / +1 / До нормы</strong><div class="small">Быстрая ручная корректировка остатка без ввода числа</div></div></div>
+            <div class="line"><div><strong>Добавить свой расходник</strong><div class="small">«Параметры объекта» → блок «Добавить расходник». Заполни название, единицу, категорию, остаток и норму</div></div></div>
+            <div class="line"><div><strong>Удалить расходник</strong><div class="small">Иконка корзины в правом верхнем углу карточки расходника</div></div></div>
+            <div class="line"><div><strong>Правая панель</strong><div class="small">«Списание на 1 заезд» — сколько спишется при Новом заезде. «Списание комплектов» — размер комплекта белья/полотенец. «Заполнение нормы» — прогресс всех позиций сразу</div></div></div>
+          </div>
+        </div>
+
+        <div id="kbs3" style="display:none">
+          <div class="hint" style="margin-bottom:1rem"><strong>Быстрые действия</strong><p class="small" style="margin:.5rem 0 0">Левая панель → раздел «Быстрые действия».</p></div>
+          <div class="list">
+            <div class="line"><div><strong>Новый заезд</strong><div class="small">Списывает все одноразовые расходники согласно настройкам. Фиксируется в истории</div></div></div>
+            <div class="line"><div><strong>Списать комплект белья / полотенец</strong><div class="small">Списывает один комплект. Размер комплекта задаётся в «Настроить списание» → «Комплекты»</div></div></div>
+            <div class="line"><div><strong>Настроить списание</strong><div class="small">Открывает окно: «Одноразовые расходники» — сколько единиц каждого расходника на один заезд. «Комплекты» — сколько единиц белья/полотенец в одном комплекте</div></div></div>
+            <div class="line"><div><strong>Пополнить до нормы</strong><div class="small">Выставляет остаток всех позиций равным норме. Используй после закупки</div></div></div>
+            <div class="line"><div><strong>Сбросить остатки</strong><div class="small" style="color:var(--color-error)">Обнуляет все остатки. Нельзя отменить — используй только если начинаешь заново</div></div></div>
+          </div>
+        </div>
+
+        <div id="kbs4" style="display:none">
+          <div class="hint" style="margin-bottom:1rem"><strong>История списаний</strong><p class="small" style="margin:.5rem 0 0">Все действия фиксируются автоматически. Открыть: ☰ → «История списаний».</p></div>
+          <div class="list">
+            <div class="line"><div><strong>Фильтр по квартире</strong><div class="small">Кнопки с названиями квартир в верхней части окна — нажми чтобы видеть только её записи</div></div></div>
+            <div class="line"><div><strong>Заезд</strong><div class="small">Автоматическое списание одноразовых при «Новом заезде»</div></div></div>
+            <div class="line"><div><strong>Списание</strong><div class="small">Ручное списание комплекта белья или полотенец</div></div></div>
+            <div class="line"><div><strong>Пополнение</strong><div class="small">Пополнение всех позиций до нормы</div></div></div>
+            <div class="line"><div><strong>Изменение</strong><div class="small">Ручная правка остатка, добавление или удаление позиций</div></div></div>
+            <div class="line"><div><strong>Закупка</strong><div class="small">Создание заявки на закупку</div></div></div>
+            <div class="line"><div><strong>Хранится</strong><div class="small">До 40 последних событий по всем квартирам</div></div></div>
+          </div>
+        </div>
+
+        <div id="kbs5" style="display:none">
+          <div class="hint" style="margin-bottom:1rem"><strong>Заявки на закупку</strong><p class="small" style="margin:.5rem 0 0">Список того что нужно купить. Открыть: ☰ → «Заявки на закупку».</p></div>
+          <div class="list">
+            <div class="line"><div><strong>Создать заявку</strong><div class="small">«Новая заявка» → выбери квартиру → отметь галочками что купить → поправь количество → «Сохранить заявку»</div></div></div>
+            <div class="line"><div><strong>Автозаполнение количества</strong><div class="small">По умолчанию = норма − остаток. Например норма 30, остаток 12 → предложит 18 шт</div></div></div>
+            <div class="line"><div><strong>Дополнительные позиции</strong><div class="small">В заявке есть мыло, шампунь, гель, стиральное средство — их нет в основном учёте, только в заявках</div></div></div>
+            <div class="line"><div><strong>Другое</strong><div class="small">Галочка «Другое» в конце списка — впиши любую произвольную позицию</div></div></div>
+          </div>
+        </div>
+
+        <div id="kbs6" style="display:none">
+          <div class="hint" style="margin-bottom:1rem"><strong>Как сохраняются данные</strong><p class="small" style="margin:.5rem 0 0">Приложение работает офлайн, данные хранятся прямо в браузере.</p></div>
+          <div class="list">
+            <div class="line"><div><strong>Автосохранение</strong><div class="small">Каждое действие сохраняется автоматически. Время последнего сохранения видно в нижней части меню ☰</div></div></div>
+            <div class="line"><div><strong>Только этот браузер</strong><div class="small">Данные хранятся на этом устройстве в этом браузере. На другом устройстве данных не будет</div></div></div>
+            <div class="line"><div><strong>Резервная копия JSON</strong><div class="small">Скачай JSON-файл через кнопку «Скачать JSON» — это полная копия всех данных. Восстановить: кнопка «Загрузить JSON»</div></div></div>
+            <div class="line"><div><strong style="color:var(--color-error)">Что приведёт к потере данных</strong><div class="small">Очистка кэша браузера, режим инкогнито, открытие в другом браузере без загрузки JSON</div></div></div>
+            <div class="line"><div><strong style="color:var(--color-success)">Совет</strong><div class="small">Скачивай резервную копию раз в неделю или перед очисткой браузера</div></div></div>
+          </div>
+        </div>
+
+        <div id="kbs7" style="display:none">
+          <div class="hint" style="margin-bottom:1rem"><strong>Настройки</strong><p class="small" style="margin:.5rem 0 0">Персонализация приложения.</p></div>
+          <div class="list">
+            <div class="line"><div><strong>Тёмная / светлая тема</strong><div class="small">☰ → переключатель «Тема приложения». При первом запуске определяется автоматически по настройкам системы</div></div></div>
+            <div class="line"><div><strong>Чаты бота с гостями</strong><div class="small">☰ → «Чаты бота с гостями» — открывает внешний сервис автоматизации переписки с гостями</div></div></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+
   <script>
     const STORAGE_VERSION = 7;
     const AUTO_STORAGE_KEY = 'rashodniki-app-autosave-v7';
@@ -496,6 +644,7 @@
         activeApartmentId: firstApartmentId,
         history: [],
         purchaseRequests: [],
+        autoRequest: false,
         apartments: [
           { id: firstApartmentId, name: 'Квартира на Беломорской', lowThreshold: 25, items: structuredClone(baseItems) }
         ]
@@ -518,7 +667,7 @@
     const coverageList = document.getElementById('coverageList');
     const apartmentName = document.getElementById('apartmentName');
     const pageTitle = document.getElementById('pageTitle');
-    const thresholdInput = document.getElementById('lowThreshold');
+    const thresholdInput = { value: 25 }; // поле убрано из UI, заглушка
     const settingsModal = document.getElementById('settingsModal');
     const historyModal = document.getElementById('historyModal');
     const historyModalList = document.getElementById('historyModalList');
@@ -537,6 +686,22 @@
     const deductionSettings = document.getElementById('deductionSettings');
     const setSettings = document.getElementById('setSettings');
     const saveStatus = document.getElementById('saveStatus');
+const openGuestBotChats = document.getElementById('openGuestBotChats');
+if (openGuestBotChats) {
+  openGuestBotChats.addEventListener('click', () => {
+    const url = 'https://app.n8nbuzzer.ru';
+    try {
+      if (window.Telegram && window.Telegram.WebApp && typeof window.Telegram.WebApp.openLink === 'function') {
+        window.Telegram.WebApp.openLink(url, { try_instant_view: false });
+      } else {
+        window.location.href = url;
+      }
+    } catch (e) {
+      window.location.href = url;
+    }
+  });
+}
+
     const drawerMenu = document.getElementById('drawerMenu');
     const drawerBackdrop = document.getElementById('drawerBackdrop');
     const themeLabel = document.getElementById('themeLabel');
@@ -587,6 +752,7 @@
         activeApartmentId: apartments.some(a => a.id === raw.activeApartmentId) ? raw.activeApartmentId : apartments[0].id,
         history: Array.isArray(raw.history) ? raw.history.slice(0, MAX_HISTORY) : [],
         purchaseRequests: Array.isArray(raw.purchaseRequests) ? raw.purchaseRequests : [],
+        autoRequest: raw.autoRequest === true,
         apartments
       };
     }
@@ -651,7 +817,7 @@
       const status = statusBy(item, threshold);
       const percent = item.par === 0 ? 0 : Math.max(0, Math.min(100, (item.stock / item.par) * 100));
       const linenMode = item.category === 'linen';
-      return `<article class="item-card ${linenMode ? 'highlight' : ''}"><div class="item-head"><div><div class="item-name">${item.name}</div><div class="small">Норма: ${roundSmart(item.par)} ${item.unit}</div></div><div style="display:flex;align-items:center;gap:.6rem"><span class="badge ${status.cls}">${status.label}</span><button class="trash-btn" data-delete-item-id="${item.id}" aria-label="Удалить расходник ${item.name}" title="Удалить расходник"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg></button></div></div><div><div class="qty">${roundSmart(item.stock)} <span class="small">${item.unit}</span></div><div class="progress" aria-hidden="true"><span style="width:${percent}%"></span></div></div><div class="row"><label><span class="small">Текущий остаток</span><input type="number" min="0" step="0.1" value="${item.stock}" data-field="stock" data-id="${item.id}" /></label><label><span class="small">Норма</span><input type="number" min="0" step="0.1" value="${item.par}" data-field="par" data-id="${item.id}" /></label></div><div class="row"><label><span class="small">${linenMode ? 'В одном комплекте' : 'Списывать за 1 заезд'}</span><input type="number" min="0" step="0.1" value="${linenMode ? item.setAmount : item.perCheckin}" data-field="${linenMode ? 'setAmount' : 'perCheckin'}" data-id="${item.id}" /></label><div><span class="small">Быстрое пополнение</span><div class="quick-controls"><button class="mini-btn" data-action="minus" data-id="${item.id}">-1</button><button class="mini-btn" data-action="plus" data-id="${item.id}">+1</button><button class="mini-btn" data-action="fill" data-id="${item.id}">До нормы</button></div></div></div></article>`;
+      return `<article class="item-card ${linenMode ? 'highlight' : ''}"><div class="item-head"><div><div class="item-name">${item.name}</div><div class="small">Норма: ${roundSmart(item.par)} ${item.unit}</div></div><div style="display:flex;align-items:center;gap:.6rem"><span class="badge ${status.cls}">${status.label}</span><button class="trash-btn" data-delete-item-id="${item.id}" aria-label="Удалить расходник ${item.name}" title="Удалить расходник"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg></button></div></div><div><div class="qty">${roundSmart(item.stock)} <span class="small">${item.unit}</span></div><div class="progress" aria-hidden="true"><span style="width:${percent}%"></span></div></div><div class="row"><label><span class="small">Текущий остаток</span><input type="number" min="0" step="0.1" value="${item.stock}" data-field="stock" data-id="${item.id}" /></label><label><span class="small">Норма</span><input type="number" min="0" step="0.1" value="${item.par}" data-field="par" data-id="${item.id}" /></label></div><div class="row"><label><span class="small">${linenMode ? 'В одном комплекте' : 'Списывать за 1 заезд'}</span><input type="number" min="0" step="0.1" value="${linenMode ? item.setAmount : item.perCheckin}" data-field="${linenMode ? 'setAmount' : 'perCheckin'}" data-id="${item.id}" /></label><div><span class="small">Быстрое пополнение</span><div style="display:flex;gap:.45rem"><button class="mini-btn" style="flex:1;background:color-mix(in oklab,var(--color-error) 10%,var(--color-surface-2));border-color:color-mix(in oklab,var(--color-error) 20%,transparent);color:var(--color-error)" data-action="open-writeoff" data-id="${item.id}" data-name="${item.name}" data-unit="${item.unit}" data-category="${item.category}">Списать</button><button class="mini-btn" style="flex:1;background:color-mix(in oklab,var(--color-success) 10%,var(--color-surface-2));border-color:color-mix(in oklab,var(--color-success) 20%,transparent);color:var(--color-success)" data-action="open-restock" data-id="${item.id}" data-name="${item.name}" data-unit="${item.unit}">Пополнить</button></div></div></div></article>`;
     }
 
     function renderApartments() {
@@ -677,7 +843,10 @@
     }
 
     function purchaseRequestCard(request) {
-      return `<article class="request-card"><div class="request-card-header"><div><div class="request-kind">Заявка</div><strong style="display:block;margin-top:.45rem">${getDisplayApartmentName(request.apartmentName)}</strong></div><span class="small">${new Date(request.createdAt).toLocaleString('ru-RU')}</span></div><div class="small">Позиций: ${request.items.length}</div><div class="list">${request.items.map(item => `<div class="line"><div><strong>${item.name}</strong><div class="small">Количество</div></div><strong>${roundSmart(item.qty)} ${item.unit}</strong></div>`).join('')}</div></article>`;
+      const done = request.done === true;
+      const badgeStyle = done ? 'background:color-mix(in oklab,var(--color-success) 15%,transparent);color:var(--color-success)' : 'background:color-mix(in oklab,var(--color-error) 15%,transparent);color:var(--color-error)';
+      const btnStyle = done ? 'background:color-mix(in oklab,var(--color-success) 12%,var(--color-surface));border:1px solid color-mix(in oklab,var(--color-success) 30%,transparent);color:var(--color-success);font-weight:700' : 'background:var(--color-surface);border:1px solid color-mix(in oklab,var(--color-text) 10%,transparent);font-weight:700';
+      return `<article class="request-card"><div class="request-card-header"><div><div class="request-kind" style="${badgeStyle}">${done ? '✓ Выполнено' : 'Заявка'}</div><strong style="display:block;margin-top:.45rem">${getDisplayApartmentName(request.apartmentName)}</strong></div><span class="small">${new Date(request.createdAt).toLocaleString('ru-RU')}</span></div><div class="small">Позиций: ${request.items.length}</div><div class="list">${request.items.map(item => `<div class="line"><div><strong>${item.name}</strong><div class="small">Количество</div></div><strong>${roundSmart(item.qty)} ${item.unit}</strong></div>`).join('')}</div><div style="margin-top:.75rem"><button class="btn" style="width:100%;min-height:40px;${btnStyle}" data-done-request="${request.id}">${done ? '✓ Заказ выполнен' : 'Заказ сделан'}</button></div></article>`;
     }
 
     function renderHistoryFilters() {
@@ -735,11 +904,18 @@
       themeLabel.textContent = dark ? 'Темная' : 'Светлая';
     }
 
+    function syncAutoRequestUI() {
+      const btn = document.getElementById('autoRequestToggle');
+      const lbl = document.getElementById('autoRequestLabel');
+      if (!btn || !lbl) return;
+      btn.classList.toggle('active', !!state.autoRequest);
+      lbl.textContent = state.autoRequest ? 'Включено — заявка создаётся автоматически' : 'Выключено';
+    }
+
     function render() {
       const apartment = currentApartment();
       if (!apartment) return;
       apartmentName.value = apartment.name || '';
-      thresholdInput.value = apartment.lowThreshold;
       pageTitle.textContent = getDisplayApartmentName(apartment.name);
       const linenItems = apartment.items.filter(item => item.category === 'linen');
       const guestItems = apartment.items.filter(item => item.category === 'guest');
@@ -753,6 +929,7 @@
       renderPurchaseRequests();
       renderPurchaseDraft();
       syncThemeUI();
+      syncAutoRequestUI();
     }
 
     function updateItem(id, field, value) {
@@ -798,6 +975,18 @@
       const writeoff = item[fieldName];
       item.stock = Math.max(0, Number((item.stock - writeoff).toFixed(1)));
       addHistory(actionLabel, `${item.name}: -${roundSmart(writeoff)} ${item.unit}`, 'Списание');
+      // Авто-заявка при списании не одноразового расходника
+      if (state.autoRequest && writeoff > 0) {
+        state.purchaseRequests.unshift({
+          id: crypto.randomUUID(),
+          apartmentId: apartment.id,
+          apartmentName: getDisplayApartmentName(apartment.name),
+          items: [{ itemId: item.id, name: item.name, unit: item.unit, qty: writeoff }],
+          createdAt: new Date().toISOString(),
+          auto: true
+        });
+        addHistory('Авто-заявка на закупку', `${getDisplayApartmentName(apartment.name)}: ${item.name} — ${roundSmart(writeoff)} ${item.unit}`, 'Закупка');
+      }
       persistAndRender();
     }
 
@@ -926,7 +1115,21 @@
         const apartment = currentApartment();
         const item = apartment.items.find(i => i.id === btn.dataset.id);
         if (!item) return;
-        if (btn.dataset.action === 'minus') item.stock = Math.max(0, item.stock - 1);
+        if (btn.dataset.action === 'minus') {
+          item.stock = Math.max(0, item.stock - 1);
+          // Авто-заявка для не-одноразовых при -1
+          if (state.autoRequest && item.category === 'linen') {
+            state.purchaseRequests.unshift({
+              id: crypto.randomUUID(),
+              apartmentId: apartment.id,
+              apartmentName: getDisplayApartmentName(apartment.name),
+              items: [{ itemId: item.id, name: item.name, unit: item.unit, qty: 1 }],
+              createdAt: new Date().toISOString(),
+              auto: true
+            });
+            addHistory('Авто-заявка на закупку', `${getDisplayApartmentName(apartment.name)}: ${item.name} — 1 ${item.unit}`, 'Закупка');
+          }
+        }
         if (btn.dataset.action === 'plus') item.stock += 1;
         if (btn.dataset.action === 'fill') item.stock = item.par;
         addHistory('Ручная корректировка', `${item.name}: действие ${btn.textContent.trim()}`, 'Изменение');
@@ -952,10 +1155,6 @@
 
     if (apartmentSearch) apartmentSearch.addEventListener('input', renderApartments);
 
-    thresholdInput.addEventListener('input', () => {
-      currentApartment().lowThreshold = Math.max(1, Number(thresholdInput.value) || 25);
-      persistAndRender();
-    });
 
     addCustomItemBtn.addEventListener('click', addCustomConsumable);
 
@@ -967,8 +1166,7 @@
       persistAndRender();
     });
 
-    document.getElementById('writeoffLinenSet').addEventListener('click', () => applyWriteoff('linen', 'setAmount', 'Списан комплект белья'));
-    document.getElementById('writeoffTowelSet').addEventListener('click', () => applyWriteoff('towels', 'setAmount', 'Списано полотенец'));
+
 
     document.getElementById('restockDefaults').addEventListener('click', () => {
       currentApartment().items.forEach(item => item.stock = item.par);
@@ -1154,6 +1352,444 @@
 
     if (!loadFromBrowser()) saveToBrowser(true);
     render();
+  
+    // ── Модал списания / пополнения ──
+    let writeoffContext = null;
+    const writeoffModal = document.getElementById('writeoffModal');
+
+    function openWriteoffModal(ctx) {
+      writeoffContext = ctx;
+      const isWriteoff = ctx.mode === 'writeoff';
+      document.getElementById('writeoffModalTitle').textContent = isWriteoff ? 'Списать' : 'Пополнить';
+      document.getElementById('writeoffModalSub').textContent = ctx.name;
+      document.getElementById('writeoffModalLabel').textContent = `Сколько ${isWriteoff ? 'списать' : 'добавить'} (${ctx.unit})`;
+      document.getElementById('writeoffModalQty').value = '1';
+      writeoffModal.classList.add('open');
+      writeoffModal.setAttribute('aria-hidden', 'false');
+      setTimeout(() => document.getElementById('writeoffModalQty').select(), 80);
+    }
+
+    function closeWriteoffModal() {
+      writeoffModal.classList.remove('open');
+      writeoffModal.setAttribute('aria-hidden', 'true');
+      writeoffContext = null;
+    }
+
+    document.getElementById('writeoffModalClose').addEventListener('click', closeWriteoffModal);
+    document.getElementById('writeoffModalCancel').addEventListener('click', closeWriteoffModal);
+    writeoffModal.addEventListener('click', (e) => { if (e.target === writeoffModal) closeWriteoffModal(); });
+
+    document.getElementById('writeoffModalConfirm').addEventListener('click', () => {
+      if (!writeoffContext) return;
+      const qty = Math.max(0.1, Number(document.getElementById('writeoffModalQty').value) || 1);
+      const apartment = currentApartment();
+      const item = apartment.items.find(i => i.id === writeoffContext.itemId);
+      if (!item) return;
+      if (writeoffContext.mode === 'writeoff') {
+        item.stock = Math.max(0, Number((item.stock - qty).toFixed(2)));
+        addHistory('Списание', `${item.name}: -${roundSmart(qty)} ${item.unit}`, 'Списание');
+        if (state.autoRequest && writeoffContext.isLinen) {
+          state.purchaseRequests.unshift({
+            id: crypto.randomUUID(),
+            apartmentId: apartment.id,
+            apartmentName: getDisplayApartmentName(apartment.name),
+            items: [{ itemId: item.id, name: item.name, unit: item.unit, qty }],
+            createdAt: new Date().toISOString(),
+            auto: true,
+            done: false
+          });
+          addHistory('Авто-заявка на закупку', `${getDisplayApartmentName(apartment.name)}: ${item.name} — ${roundSmart(qty)} ${item.unit}`, 'Закупка');
+        }
+      } else {
+        item.stock = Number((item.stock + qty).toFixed(2));
+        addHistory('Пополнение', `${item.name}: +${roundSmart(qty)} ${item.unit}`, 'Пополнение');
+      }
+      closeWriteoffModal();
+      persistAndRender();
+    });
+
+    document.getElementById('writeoffModalQty').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('writeoffModalConfirm').click();
+    });
+
+    document.addEventListener('click', (e) => {
+      const woBtn = e.target.closest('[data-action="open-writeoff"]');
+      if (woBtn) { openWriteoffModal({ itemId: woBtn.dataset.id, mode: 'writeoff', isLinen: woBtn.dataset.category === 'linen', name: woBtn.dataset.name, unit: woBtn.dataset.unit }); return; }
+      const rsBtn = e.target.closest('[data-action="open-restock"]');
+      if (rsBtn) { openWriteoffModal({ itemId: rsBtn.dataset.id, mode: 'restock', isLinen: false, name: rsBtn.dataset.name, unit: rsBtn.dataset.unit }); return; }
+      const doneBtn = e.target.closest('[data-done-request]');
+      if (doneBtn) {
+        const req = state.purchaseRequests.find(r => r.id === doneBtn.dataset.doneRequest);
+        if (req) { req.done = !req.done; renderPurchaseRequests(); saveToBrowser(); }
+        return;
+      }
+    });
+
+    // ── Авто-заявка переключатель (делегирование, кнопка пересоздаётся при render) ──
+    document.addEventListener('click', (e) => {
+      if (e.target.closest('#autoRequestToggle')) {
+        state.autoRequest = !state.autoRequest;
+        syncAutoRequestUI();
+        saveToBrowser();
+      }
+    });
+
+    // ── База знаний ──
+    (function() {
+      var modal = document.getElementById('kbModal');
+      var openBtn = document.getElementById('openKnowledgeBase');
+      var closeBtn = document.getElementById('kbClose');
+      var nav = document.getElementById('kbNav');
+
+      function openKB() { modal.classList.add('open'); modal.setAttribute('aria-hidden','false'); closeDrawer(); }
+      function closeKB() { modal.classList.remove('open'); modal.setAttribute('aria-hidden','true'); }
+
+      if (openBtn) openBtn.addEventListener('click', openKB);
+      if (closeBtn) closeBtn.addEventListener('click', closeKB);
+      modal.addEventListener('click', function(e){ if (e.target === modal) closeKB(); });
+
+      nav.addEventListener('click', function(e) {
+        var btn = e.target.closest('[data-kb]');
+        if (!btn) return;
+        var id = btn.getAttribute('data-kb');
+        nav.querySelectorAll('[data-kb]').forEach(function(b){ b.classList.remove('active'); });
+        btn.classList.add('active');
+        document.querySelectorAll('#kbBody > div').forEach(function(s){ s.style.display = 'none'; });
+        var sec = document.getElementById('kb' + id);
+        if (sec) sec.style.display = 'block';
+      });
+    })();
+
+
   </script>
-</body>
+
+<script data-pplx-inline-edit>
+(function () {
+  if (window === window.top) return;
+
+  const allowedParentOrigins = ["https://www.perplexity.ai","https://perplexity.ai","https://testing.perplexity.ai","https://staging.perplexity.ai","https://*.preview.i.perplexity.ai","http://localhost:3000","http://127.0.0.1:3000","http://localhost:5173","http://127.0.0.1:5173"];
+  const MAX_FONT_BYTES = 500 * 1024;
+  const MAX_TOTAL_FONT_BYTES = 2 * 1024 * 1024;
+  let scrollForwarding = false;
+  let scrollRaf = 0;
+  let trustedTopOrigin = null;
+
+  // Allow entries like "https://*.preview.i.perplexity.ai" — the wildcard
+  // matches a single DNS label (no dots), so "https://*.foo" cannot stretch
+  // across multiple labels.
+  function matchesAllowedOrigin(origin) {
+    if (!origin) return false;
+    for (const entry of allowedParentOrigins) {
+      if (!entry.includes("*")) {
+        if (entry === origin) return true;
+        continue;
+      }
+      const pattern = new RegExp(
+        "^" +
+          entry.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^.]+") +
+          "$",
+      );
+      if (pattern.test(origin)) return true;
+    }
+    return false;
+  }
+
+  // Trust decision: when the sender is same-origin-visible (event.origin is a
+  // real origin like https://www.perplexity.ai) we trust event.origin directly.
+  // When event.origin is "null" (opaque broker srcdoc), we fall back to the
+  // broker's stamped `parentOrigin` to identify the top window. The fallback
+  // is claim-only — we rely on the browser's native `targetOrigin` enforcement
+  // on the response path (see postToTrustedTop) to ensure replies can't be
+  // delivered to anyone but the actual top window of that claimed origin.
+  function getTrustedParentOrigin(event) {
+    const forwardedParentOrigin =
+      typeof event.data.parentOrigin === "string" ? event.data.parentOrigin : null;
+    const parentOrigin = event.origin === "null" ? forwardedParentOrigin : event.origin;
+    return matchesAllowedOrigin(parentOrigin) ? parentOrigin : null;
+  }
+
+  // All responses go to window.top with targetOrigin = the allowlisted origin.
+  // An attacker that iframes us inside their own null-origin broker can claim
+  // any parentOrigin they like, but the browser will drop the reply whenever
+  // the real top's origin doesn't match — so the screenshot never leaves.
+  function postToTrustedTop(message) {
+    if (!trustedTopOrigin) return;
+    try {
+      window.top.postMessage(message, trustedTopOrigin);
+    } catch (_error) {}
+  }
+
+  function inlineAll(original, clone) {
+    if (original.nodeType !== 1 || clone.nodeType !== 1) return;
+
+    try {
+      const computedStyle = getComputedStyle(original);
+      // cssText on a computed style is the serialized declaration in modern
+      // Chromium/Safari — a single read beats enumerating ~400 longhand
+      // properties. Firefox returns "" here, so we fall back on empty.
+      const serialized = computedStyle.cssText;
+      if (serialized) {
+        clone.style.cssText = serialized;
+      } else {
+        const parts = new Array(computedStyle.length);
+        for (let index = 0; index < computedStyle.length; index += 1) {
+          const property = computedStyle[index];
+          parts[index] = `${property}:${computedStyle.getPropertyValue(property)};`;
+        }
+        clone.style.cssText = parts.join("");
+      }
+    } catch (_error) {}
+
+    const originalChildren = original.children;
+    const clonedChildren = clone.children;
+    for (
+      let index = 0;
+      index < originalChildren.length && index < clonedChildren.length;
+      index += 1
+    ) {
+      inlineAll(originalChildren[index], clonedChildren[index]);
+    }
+  }
+
+  function extractFontUrl(srcValue) {
+    const matches = [
+      ...srcValue.matchAll(
+        /url\(["']?([^"')]+)["']?\)(?:\s*format\(["']?([^"')]+)["']?\))?/gi,
+      ),
+    ];
+    if (matches.length === 0) return null;
+    const woff2 = matches.find((m) => m[2] && m[2].toLowerCase().includes("woff2"));
+    if (woff2) return woff2[1];
+    const woff = matches.find((m) => m[2] && m[2].toLowerCase().includes("woff"));
+    if (woff) return woff[1];
+    return matches[0][1];
+  }
+
+  // Cache resolved font URL -> data URI across captures. Fonts on a page
+  // essentially never change, and a batch run emits multiple captures back to
+  // back — without this we'd refetch + re-base64 every time.
+  const fontDataUriCache = new Map();
+  const SRC_DECLARATION_RE = /src\s*:\s*[^;}]+/i;
+
+  async function fetchAsDataUri(url) {
+    if (fontDataUriCache.has(url)) return fontDataUriCache.get(url);
+    let dataUri = null;
+    try {
+      const response = await fetch(url, { mode: "cors", credentials: "omit" });
+      if (response.ok) {
+        const blob = await response.blob();
+        if (blob.size <= MAX_FONT_BYTES) {
+          dataUri = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () =>
+              resolve(typeof reader.result === "string" ? reader.result : null);
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+          });
+        }
+      }
+    } catch (_error) {
+      dataUri = null;
+    }
+    fontDataUriCache.set(url, dataUri);
+    return dataUri;
+  }
+
+  function collectFontFaceRuleTexts() {
+    const rules = [];
+    for (const sheet of document.styleSheets) {
+      let cssRules;
+      try {
+        cssRules = sheet.cssRules;
+      } catch (_error) {
+        continue;
+      }
+      if (!cssRules) continue;
+      for (const rule of cssRules) {
+        const cssText = rule.cssText || "";
+        if (cssText.startsWith("@font-face")) rules.push(cssText);
+      }
+    }
+    return rules;
+  }
+
+  async function buildInlinedFontCss() {
+    const ruleTexts = collectFontFaceRuleTexts();
+    if (ruleTexts.length === 0) return null;
+
+    const resolved = ruleTexts.map((cssText) => {
+      if (!SRC_DECLARATION_RE.test(cssText)) return null;
+      const srcMatch = cssText.match(/src\s*:\s*([^;}]+)[;}]/i);
+      if (!srcMatch) return null;
+      const url = extractFontUrl(srcMatch[1]);
+      if (!url) return null;
+      try {
+        return { cssText, url: new URL(url, document.baseURI).href };
+      } catch (_error) {
+        return null;
+      }
+    });
+
+    const dataUris = await Promise.all(
+      resolved.map((entry) => (entry ? fetchAsDataUri(entry.url) : Promise.resolve(null))),
+    );
+
+    const inlined = [];
+    let totalBytes = 0;
+    for (let index = 0; index < resolved.length; index += 1) {
+      const entry = resolved[index];
+      const dataUri = dataUris[index];
+      if (!entry || !dataUri) continue;
+      const approxBytes = dataUri.length * 0.75;
+      if (totalBytes + approxBytes > MAX_TOTAL_FONT_BYTES) break;
+      totalBytes += approxBytes;
+      inlined.push(entry.cssText.replace(SRC_DECLARATION_RE, `src: url("${dataUri}")`));
+    }
+    return inlined.length > 0 ? inlined.join("\n") : null;
+  }
+
+  function stripExternal(clone) {
+    const images = clone.querySelectorAll("img");
+    for (let index = 0; index < images.length; index += 1) {
+      const src = images[index].getAttribute("src");
+      if (src && !src.startsWith("data:")) images[index].removeAttribute("src");
+    }
+
+    const elements = clone.querySelectorAll("*");
+    for (let index = 0; index < elements.length; index += 1) {
+      const style = elements[index].style.cssText;
+      if (style && style.includes("url(")) {
+        elements[index].style.cssText = style.replace(
+          /url\(["']?(?!data:)[^)"']*["']?\)/gi,
+          "none",
+        );
+      }
+    }
+  }
+
+  function emitScroll() {
+    scrollRaf = 0;
+    if (!scrollForwarding) return;
+    postToTrustedTop({
+      type: "INLINE_EDIT_SCROLL",
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+    });
+  }
+
+  window.addEventListener(
+    "scroll",
+    function () {
+      if (!scrollForwarding || scrollRaf) return;
+      scrollRaf = requestAnimationFrame(emitScroll);
+    },
+    { passive: true, capture: true },
+  );
+
+  async function handleCaptureRequest(event) {
+    const requestId = event.data.requestId;
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+
+    function postResult(dataUrl) {
+      postToTrustedTop({
+        type: "INLINE_EDIT_SCREENSHOT_RESULT",
+        requestId,
+        dataUrl,
+        scrollX,
+        scrollY,
+      });
+    }
+
+    try {
+      // Wait for any pending web fonts to resolve so both inline metrics and
+      // the @font-face inlining below see the same loaded faces.
+      if (document.fonts && document.fonts.ready) {
+        try {
+          await document.fonts.ready;
+        } catch (_error) {}
+      }
+
+      const clone = document.documentElement.cloneNode(true);
+      inlineAll(document.documentElement, clone);
+
+      const removedNodes = clone.querySelectorAll("script,link[rel=\"stylesheet\"],style");
+      for (let index = 0; index < removedNodes.length; index += 1) {
+        removedNodes[index].remove();
+      }
+
+      stripExternal(clone);
+
+      // Re-embed web fonts as data-URI @font-face rules so the SVG rasterizer
+      // can resolve them — external font URLs aren't fetched during
+      // foreignObject rendering, which would otherwise force a fallback face
+      // and change text metrics.
+      const inlinedFontCss = await buildInlinedFontCss();
+      if (inlinedFontCss) {
+        const styleEl = document.createElement("style");
+        styleEl.textContent = inlinedFontCss;
+        const head = clone.querySelector("head");
+        if (head) head.appendChild(styleEl);
+        else clone.insertBefore(styleEl, clone.firstChild);
+      }
+
+      const html = new XMLSerializer().serializeToString(clone);
+      const svg =
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">` +
+        '<foreignObject width="100%" height="100%">' +
+        `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;overflow:hidden">` +
+        `<div style="position:relative;left:-${scrollX}px;top:-${scrollY}px">` +
+        html +
+        "</div></div></foreignObject></svg>";
+      const svgUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      const image = new Image();
+      image.onload = function () {
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(image, 0, 0);
+        postResult(canvas.toDataURL("image/png"));
+      };
+      image.onerror = function () {
+        postResult(null);
+      };
+      image.src = svgUrl;
+    } catch (_error) {
+      postResult(null);
+    }
+  }
+
+  window.addEventListener("message", function (event) {
+    if (!event.data) return;
+    // Only accept messages from the direct parent frame. Blocks sibling /
+    // unrelated-window postMessage senders that could otherwise reach us.
+    if (event.source !== window.parent) return;
+
+    const trustedParentOrigin = getTrustedParentOrigin(event);
+    if (!trustedParentOrigin) return;
+    trustedTopOrigin = trustedParentOrigin;
+
+    if (event.data.type === "INLINE_EDIT_SCROLL_START") {
+      scrollForwarding = true;
+      emitScroll();
+      return;
+    }
+
+    if (event.data.type === "INLINE_EDIT_SCROLL_STOP") {
+      scrollForwarding = false;
+      if (scrollRaf) cancelAnimationFrame(scrollRaf);
+      scrollRaf = 0;
+      return;
+    }
+
+    if (event.data.type !== "INLINE_EDIT_CAPTURE_REQUEST") return;
+
+    handleCaptureRequest(event);
+  });
+})();
+
+
+</script></body>
 </html>
