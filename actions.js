@@ -1,158 +1,310 @@
 
-import { getState, updateState, currentApartment, getDisplayApartmentName, roundSmart } from './state.js';
+import { getState, setState, structuredCloneSafe, baseItems, MAX_HISTORY } from './state.js';
 
-export function addHistory(action, details = '', type = 'info') {
+export function addHistory(entry) {
   const state = getState();
-  const apartment = currentApartment();
-  state.history.unshift({
+  const historyEntry = {
     id: crypto.randomUUID(),
-    apartmentId: apartment?.id || '',
-    apartmentName: getDisplayApartmentName(apartment?.name),
-    action,
-    details,
-    type,
-    createdAt: new Date().toISOString()
-  });
-  state.history = state.history.slice(0, 40);
+    createdAt: new Date().toISOString(),
+    ...entry
+  };
+  state.history.unshift(historyEntry);
+  if (state.history.length > MAX_HISTORY) {
+    state.history.length = MAX_HISTORY;
+  }
+  setState(state);
 }
 
 export function addApartment() {
-  updateState(state => {
-    const id = crypto.randomUUID();
-    state.apartments.push({ id, name: `Квартира ${state.apartments.length + 1}`, items: JSON.parse(JSON.stringify(state.apartments[0].items)) });
-    state.activeApartmentId = id;
-  });
-  addHistory('Добавлена квартира', '', 'create');
+  const state = getState();
+  const newApartment = {
+    id: crypto.randomUUID(),
+    name: `Квартира ${state.apartments.length + 1}`,
+    items: structuredCloneSafe(baseItems)
+  };
+  state.apartments.push(newApartment);
+  state.activeApartmentId = newApartment.id;
+  addHistory({ kind: 'apartment_created', apartmentId: newApartment.id });
+  setState(state);
 }
 
-export function renameCurrentApartment(name) {
-  const apartment = currentApartment();
-  if (!apartment) return;
-  apartment.name = name;
+export function switchApartment(apartmentId) {
+  const state = getState();
+  if (!state.apartments.some(a => a.id === apartmentId)) return;
+  state.activeApartmentId = apartmentId;
+  setState(state);
 }
 
-export function switchApartment(id) {
-  updateState(state => { state.activeApartmentId = id; });
+export function deleteApartment(apartmentId) {
+  const state = getState();
+  const index = state.apartments.findIndex(a => a.id === apartmentId);
+  if (index === -1 || state.apartments.length === 1) return;
+  const [removed] = state.apartments.splice(index, 1);
+  if (state.activeApartmentId === apartmentId) {
+    state.activeApartmentId = state.apartments[0].id;
+  }
+  addHistory({ kind: 'apartment_deleted', apartmentId: removed.id, name: removed.name });
+  setState(state);
 }
 
-export function deleteApartment(id) {
-  updateState(state => {
-    if (state.apartments.length <= 1) return;
-    const target = state.apartments.find(a => a.id === id);
-    state.apartments = state.apartments.filter(a => a.id !== id);
-    state.purchaseRequests = state.purchaseRequests.filter(r => r.apartmentId !== id);
-    if (state.activeApartmentId === id) state.activeApartmentId = state.apartments[0].id;
-    if (target) addHistory('Удалена квартира', getDisplayApartmentName(target.name), 'delete');
-  });
+export function renameCurrentApartment(newName) {
+  const state = getState();
+  const apt = state.apartments.find(a => a.id === state.activeApartmentId);
+  if (!apt) return;
+  apt.name = newName || '';
+  setState(state);
 }
 
-export function addCustomItem(payload) {
-  const apartment = currentApartment();
-  if (!apartment || !payload.name.trim()) return false;
+export function addCustomItem({ name, unit, category, stock, par }) {
+  const state = getState();
+  const apt = state.apartments.find(a => a.id === state.activeApartmentId);
+  if (!apt) return false;
+  const trimmed = (name || '').trim();
+  if (!trimmed) return false;
+
   const item = {
-    id: `${payload.category}-${Date.now()}`,
-    name: payload.name.trim(),
-    unit: payload.unit,
-    stock: Math.max(0, Number(payload.stock || 0)),
-    par: Math.max(0, Number(payload.par || 0)),
-    category: payload.category === 'linen' ? 'linen' : 'guest',
+    id: crypto.randomUUID(),
+    name: trimmed,
+    unit: unit || 'шт',
+    category: category === 'linen' ? 'linen' : 'guest',
+    stock: Math.max(0, Number(stock || 0)),
+    par: Math.max(0, Number(par || 0)),
     perCheckin: 0,
     setAmount: 0
   };
-  apartment.items.push(item);
-  addHistory('Добавлен расходник', `${item.name}, ${roundSmart(item.stock)} ${item.unit}`, 'create');
+
+  apt.items.push(item);
+  addHistory({
+    kind: 'item_created',
+    apartmentId: apt.id,
+    itemId: item.id,
+    name: item.name
+  });
+  setState(state);
   return true;
 }
 
 export function deleteItem(itemId) {
-  const apartment = currentApartment();
-  if (!apartment) return;
-  const item = apartment.items.find(i => i.id === itemId);
-  apartment.items = apartment.items.filter(i => i.id !== itemId);
-  if (item) addHistory('Удалён расходник', item.name, 'delete');
+  const state = getState();
+  const apt = state.apartments.find(a => a.id === state.activeApartmentId);
+  if (!apt) return;
+  const index = apt.items.findIndex(i => i.id === itemId);
+  if (index === -1) return;
+  const [removed] = apt.items.splice(index, 1);
+  addHistory({
+    kind: 'item_deleted',
+    apartmentId: apt.id,
+    itemId: removed.id,
+    name: removed.name
+  });
+  setState(state);
 }
 
 export function updateItemField(itemId, field, value) {
-  const apartment = currentApartment();
-  if (!apartment) return;
-  const item = apartment.items.find(i => i.id === itemId);
+  const state = getState();
+  const apt = state.apartments.find(a => a.id === state.activeApartmentId);
+  if (!apt) return;
+  const item = apt.items.find(i => i.id === itemId);
   if (!item) return;
-  if (['stock','par','perCheckin','setAmount'].includes(field)) item[field] = Math.max(0, Number(value || 0));
-  if (field === 'name' || field === 'unit') item[field] = value;
+
+  if (['stock', 'par', 'perCheckin', 'setAmount'].includes(field)) {
+    item[field] = Math.max(0, Number(value || 0));
+  } else if (field === 'name') {
+    item.name = String(value || '');
+  } else if (field === 'unit') {
+    item.unit = String(value || 'шт');
+  } else if (field === 'category') {
+    item.category = value === 'linen' ? 'linen' : 'guest';
+  }
+
+  setState(state);
 }
 
-export function applyWriteoff(itemId, qty, mode) {
-  const apartment = currentApartment();
-  if (!apartment) return;
-  const item = apartment.items.find(i => i.id === itemId);
+export function applyWriteoff(itemId, rawQty, mode) {
+  const state = getState();
+  const apt = state.apartments.find(a => a.id === state.activeApartmentId);
+  if (!apt) return;
+  const item = apt.items.find(i => i.id === itemId);
   if (!item) return;
-  const amount = Math.max(0.1, Number(qty || 1));
+
+  const qty = Math.max(0, Number(rawQty || 0));
+  if (!qty) return;
+
   if (mode === 'writeoff') {
-    item.stock = Math.max(0, Number(item.stock) - amount);
-    addHistory('Списание', `${item.name}: -${roundSmart(amount)} ${item.unit}`, 'writeoff');
-    if (getState().autoRequest && item.category === 'linen') {
-      getState().purchaseRequests.unshift({
-        id: crypto.randomUUID(), apartmentId: apartment.id, apartmentName: getDisplayApartmentName(apartment.name), auto: true, done: false, createdAt: new Date().toISOString(),
-        items: [{ itemId: item.id, name: item.name, unit: item.unit, qty: amount, cost: '' }]
-      });
-      addHistory('Авто-заявка на закупку', `${item.name}: ${roundSmart(amount)} ${item.unit}`, 'auto');
-    }
+    item.stock = Math.max(0, item.stock - qty);
+    addHistory({
+      kind: 'manual_writeoff',
+      apartmentId: apt.id,
+      itemId: item.id,
+      name: item.name,
+      qty
+    });
   } else {
-    item.stock = Number(item.stock) + amount;
-    addHistory('Пополнение', `${item.name}: +${roundSmart(amount)} ${item.unit}`, 'restock');
+    item.stock = item.stock + qty;
+    addHistory({
+      kind: 'manual_restock',
+      apartmentId: apt.id,
+      itemId: item.id,
+      name: item.name,
+      qty
+    });
   }
+
+  setState(state);
 }
 
 export function newCheckin() {
-  const apartment = currentApartment();
-  if (!apartment) return;
-  apartment.items.forEach(item => {
+  const state = getState();
+  const apt = state.apartments.find(a => a.id === state.activeApartmentId);
+  if (!apt) return;
+
+  const changed = [];
+
+  for (const item of apt.items) {
     if (item.category === 'guest' && item.perCheckin > 0) {
-      item.stock = Math.max(0, Number(item.stock) - Number(item.perCheckin));
+      const qty = item.perCheckin;
+      item.stock = Math.max(0, item.stock - qty);
+      changed.push({ itemId: item.id, name: item.name, qty });
     }
-  });
-  addHistory('Новый заезд', 'Автосписание одноразовых расходников', 'checkin');
+  }
+
+  if (changed.length) {
+    addHistory({
+      kind: 'checkin',
+      apartmentId: apt.id,
+      items: changed
+    });
+    setState(state);
+  }
 }
 
 export function restockDefaults() {
-  const apartment = currentApartment();
-  if (!apartment) return;
-  apartment.items.forEach(item => { item.stock = Math.max(item.stock, item.par); });
-  addHistory('Пополнение до нормы', '', 'restock');
+  const state = getState();
+  const apt = state.apartments.find(a => a.id === state.activeApartmentId);
+  if (!apt) return;
+
+  const changed = [];
+
+  for (const item of apt.items) {
+    if (item.par > 0 && item.stock < item.par) {
+      const diff = item.par - item.stock;
+      item.stock = item.par;
+      changed.push({ itemId: item.id, name: item.name, qty: diff });
+    }
+  }
+
+  if (changed.length) {
+    addHistory({
+      kind: 'restock_to_par',
+      apartmentId: apt.id,
+      items: changed
+    });
+    setState(state);
+  }
 }
 
 export function resetAll() {
-  const apartment = currentApartment();
-  if (!apartment) return;
-  apartment.items.forEach(item => { item.stock = item.par; });
-  addHistory('Сброс остатков', 'Все позиции приведены к норме', 'reset');
+  const state = getState();
+  const apt = state.apartments.find(a => a.id === state.activeApartmentId);
+  if (!apt) return;
+
+  for (const item of apt.items) {
+    item.stock = 0;
+  }
+
+  addHistory({
+    kind: 'reset_all',
+    apartmentId: apt.id
+  });
+  setState(state);
 }
 
 export function toggleAutoRequest() {
-  updateState(state => { state.autoRequest = !state.autoRequest; });
+  const state = getState();
+  state.autoRequest = !state.autoRequest;
+  addHistory({
+    kind: 'auto_request_toggle',
+    value: state.autoRequest
+  });
+  setState(state);
 }
 
+/**
+ * Создание заявки на закупку.
+ * Обязательно: для каждой выбранной позиции qty > 0 и cost > 0.
+ */
 export function createPurchaseRequest(apartmentId, items) {
-  const apartment = getState().apartments.find(a => a.id === apartmentId);
+  const state = getState();
+  const apartment = state.apartments.find(a => a.id === apartmentId);
   if (!apartment) return false;
-  const normalized = items.filter(i => Number(i.qty) > 0).map(i => ({ ...i, qty: Number(i.qty), cost: '' }));
-  if (!normalized.length) return false;
-  getState().purchaseRequests.unshift({
-    id: crypto.randomUUID(), apartmentId, apartmentName: getDisplayApartmentName(apartment.name), auto: false, done: false, createdAt: new Date().toISOString(), items: normalized
+
+  const preparedItems = items
+    .map(it => ({
+      ...it,
+      qty: Number(it.qty || 0),
+      cost: Number(it.cost || 0)
+    }))
+    .filter(it => it.qty > 0);
+
+  if (preparedItems.length === 0) {
+    return false;
+  }
+
+  const hasMissingCost = preparedItems.some(it => !it.cost || it.cost <= 0);
+  if (hasMissingCost) {
+    return false;
+  }
+
+  const request = {
+    id: crypto.randomUUID(),
+    apartmentId,
+    createdAt: new Date().toISOString(),
+    done: false,
+    items: preparedItems.map(it => ({
+      itemId: it.itemId,
+      name: it.name,
+      unit: it.unit,
+      qty: it.qty,
+      cost: it.cost
+    }))
+  };
+
+  state.purchaseRequests.unshift(request);
+
+  addHistory({
+    kind: 'purchase_request',
+    apartmentId,
+    requestId: request.id,
+    items: preparedItems.map(it => ({
+      itemId: it.itemId,
+      name: it.name,
+      qty: it.qty
+    }))
   });
-  addHistory('Создана заявка на закупку', `${normalized.length} поз.`, 'request');
+
+  setState(state);
   return true;
 }
 
-export function toggleRequestDone(id) {
-  const req = getState().purchaseRequests.find(r => r.id === id);
+export function toggleRequestDone(requestId) {
+  const state = getState();
+  const req = state.purchaseRequests.find(r => r.id === requestId);
   if (!req) return;
   req.done = !req.done;
-  addHistory(req.done ? 'Заказ выполнен' : 'Заказ снова открыт', req.apartmentName, 'request');
+  addHistory({
+    kind: 'purchase_request_done_toggle',
+    apartmentId: req.apartmentId,
+    requestId: req.id,
+    done: req.done
+  });
+  setState(state);
 }
 
-export function updateRequestItemCost(requestId, itemIndex, cost) {
-  const req = getState().purchaseRequests.find(r => r.id === requestId);
-  if (!req || !req.items[itemIndex]) return;
-  req.items[itemIndex].cost = cost;
+export function updateRequestItemCost(requestId, index, rawCost) {
+  const state = getState();
+  const req = state.purchaseRequests.find(r => r.id === requestId);
+  if (!req) return;
+  if (!req.items || !req.items[index]) return;
+  req.items[index].cost = Math.max(0, Number(rawCost || 0));
+  setState(state);
 }
