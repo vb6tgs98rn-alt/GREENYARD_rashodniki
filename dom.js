@@ -1,0 +1,40 @@
+export const dom = {
+  drawerBackdrop: () => document.getElementById('drawerBackdrop'),
+  drawerMenu: () => document.getElementById('drawerMenu'),
+  saveStatus: () => document.getElementById('saveStatus'),
+  themeLabel: () => document.getElementById('themeLabel'),
+  drawerThemeToggle: () => document.getElementById('drawerThemeToggle'),
+  pageTitle: () => document.getElementById('pageTitle'),
+  apartmentName: () => document.getElementById('apartmentName'),
+  apartmentSearch: () => document.getElementById('apartmentSearch'),
+  apartmentsList: () => document.getElementById('apartmentsList'),
+  linenList: () => document.getElementById('linenList'),
+  guestList: () => document.getElementById('guestList'),
+  statsGrid: () => document.getElementById('statsGrid'),
+  dailyUsage: () => document.getElementById('dailyUsage'),
+  setUsage: () => document.getElementById('setUsage'),
+  coverageList: () => document.getElementById('coverageList'),
+  historyApartmentFilter: () => document.getElementById('historyApartmentFilter'),
+  historyModalList: () => document.getElementById('historyModalList'),
+  purchaseRequestsList: () => document.getElementById('purchaseRequestsList'),
+  autoRequestToggle: () => document.getElementById('autoRequestToggle'),
+  purchaseApartmentSelect: () => document.getElementById('purchaseApartmentSelect'),
+  purchaseApartmentHint: () => document.getElementById('purchaseApartmentHint'),
+  purchaseItemsWrap: () => document.getElementById('purchaseItemsWrap'),
+  deductionSettings: () => document.getElementById('deductionSettings'),
+  setSettings: () => document.getElementById('setSettings'),
+  writeoffModal: () => document.getElementById('writeoffModal'),
+  writeoffModalTitle: () => document.getElementById('writeoffModalTitle'),
+  writeoffModalLabel: () => document.getElementById('writeoffModalLabel'),
+  writeoffModalQty: () => document.getElementById('writeoffModalQty'),
+  importJsonInput: () => document.getElementById('importJsonInput'),
+  newItemName: () => document.getElementById('newItemName'),
+  newItemUnit: () => document.getElementById('newItemUnit'),
+  newItemCategory: () => document.getElementById('newItemCategory'),
+  newItemStock: () => document.getElementById('newItemStock'),
+  newItemPar: () => document.getElementById('newItemPar')
+};
+
+export function byId(id) {
+  return document.getElementById(id);
+}
