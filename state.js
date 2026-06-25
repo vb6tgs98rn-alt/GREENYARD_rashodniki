@@ -1,6 +1,6 @@
 
-export const STORAGE_VERSION = 1;
-export const AUTO_STORAGE_KEY = 'green-yard-refactor-v1';
+export const STORAGE_VERSION = 2;
+export const AUTO_STORAGE_KEY = 'green-yard-refactor-v2';
 export const MAX_HISTORY = 40;
 export const ALL_APARTMENTS_FILTER = 'all';
 export const UNTITLED_LABEL = 'Без названия';
@@ -36,6 +36,29 @@ export function createDefaultState() {
 }
 
 let state = createDefaultState();
+
+export function ensureStateShape(rawState) {
+  const next = rawState && typeof rawState === 'object' ? rawState : createDefaultState();
+  if (!Array.isArray(next.history)) next.history = [];
+  if (!Array.isArray(next.purchaseRequests)) next.purchaseRequests = [];
+  if (!Array.isArray(next.apartments)) next.apartments = createDefaultState().apartments;
+  if (!next.finance || typeof next.finance !== 'object') next.finance = {};
+  if (!Array.isArray(next.finance.entries)) next.finance.entries = [];
+  if (!Array.isArray(next.finance.recurringRules)) next.finance.recurringRules = [];
+  if (!next.finance.bookingSync || typeof next.finance.bookingSync !== 'object') next.finance.bookingSync = { provider: 'realtycalendar', lastSyncedAt: '', endpointUrl: '/api/realtycalendar/bookings', importMode: 'merge' };
+  if (!next.ui || typeof next.ui !== 'object') next.ui = {};
+  if (!next.ui.historyFilterApartmentId) next.ui.historyFilterApartmentId = ALL_APARTMENTS_FILTER;
+  if (!next.ui.theme) next.ui.theme = 'light';
+  if (typeof next.ui.apartmentSearch !== 'string') next.ui.apartmentSearch = '';
+  if (!next.ui.activeSection) next.ui.activeSection = 'inventory';
+  if (!next.ui.finance || typeof next.ui.finance !== 'object') next.ui.finance = {};
+  if (!next.ui.finance.apartmentFilter) next.ui.finance.apartmentFilter = 'all';
+  if (!next.ui.finance.typeFilter) next.ui.finance.typeFilter = 'all';
+  if (typeof next.ui.finance.month !== 'string') next.ui.finance.month = '';
+  if (typeof next.ui.finance.showOnlyPending !== 'boolean') next.ui.finance.showOnlyPending = false;
+  next.apartments = next.apartments.map((apartment, index) => ({ ...apartment, name: apartment?.name || `Квартира ${index + 1}`, items: Array.isArray(apartment?.items) ? apartment.items : [], externalIds: { realtyCalendarUnitId: apartment?.externalIds?.realtyCalendarUnitId || '' } }));
+  return next;
+}
 
 export function getState() { return state; }
 export function setState(nextState) { state = nextState; return state; }
