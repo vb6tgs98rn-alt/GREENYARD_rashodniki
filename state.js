@@ -30,8 +30,19 @@ export function createDefaultState() {
     history: [],
     purchaseRequests: [],
     autoRequest: false,
-    apartments: [{ id: firstApartmentId, name: 'Квартира 1', items: structuredCloneSafe(baseItems) }],
-    ui: { historyFilterApartmentId: ALL_APARTMENTS_FILTER, theme: 'light', apartmentSearch: '' }
+    apartments: [{ id: firstApartmentId, name: 'Квартира 1', items: structuredCloneSafe(baseItems), externalIds: { realtyCalendarUnitId: '' } }],
+    finance: {
+      entries: [],
+      recurringRules: [],
+      bookingSync: { provider: 'realtycalendar', lastSyncedAt: '', endpointUrl: '/api/realtycalendar/bookings', importMode: 'merge' }
+    },
+    ui: {
+      historyFilterApartmentId: ALL_APARTMENTS_FILTER,
+      theme: 'light',
+      apartmentSearch: '',
+      activeSection: 'inventory',
+      finance: { apartmentFilter: 'all', typeFilter: 'all', month: '', showOnlyPending: false }
+    }
   };
 }
 

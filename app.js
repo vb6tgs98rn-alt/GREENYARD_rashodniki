@@ -1,4 +1,4 @@
-import createDefaultState, { ensureStateShape, getState, setState } from './state.js';
+import { createDefaultState, ensureStateShape, getState, setState } from './state.js';
 import { loadFromBrowser, saveToBrowser } from './storage.js';
 import { render, setStatus } from './render.js';
 import { bindEvents } from './events.js';

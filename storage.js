@@ -1,5 +1,4 @@
 import { AUTO_STORAGE_KEY, STORAGE_VERSION, MAX_HISTORY, baseItems, structuredCloneSafe, setState, getState } from './state.js';
-import { api } from './api.js';
 
 export function normalizeImportedState(raw) {
   if (!raw || !Array.isArray(raw.apartments) || raw.apartments.length === 0) {
@@ -37,32 +36,23 @@ export function normalizeImportedState(raw) {
 }
 
 export async function tryLoadFromApi() {
-  try {
-    const result = await api.loadAppState();
-    if (!result.ok || result.offline || !result.data) return false;
-    setState(normalizeImportedState(result.data));
-    return true;
-  } catch {
-    return false;
-  }
+  // API-загрузка не подключена — всегда возвращаем false, используем localStorage
+  return false;
 }
 
 export function saveToBrowser(setStatus, silent = false) {
+  const notify = typeof setStatus === 'function' ? setStatus : () => {};
   try {
     localStorage.setItem(AUTO_STORAGE_KEY, JSON.stringify(getState()));
-    if (!silent) setStatus(`Сохранено в ${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`);
+    if (!silent) notify(`Сохранено в ${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`);
   } catch {
-    setStatus('Не удалось сохранить JSON-резервную копию.');
+    notify('Не удалось сохранить данные.');
   }
 }
 
 export async function syncToApi() {
-  try {
-    await api.saveAppState(getState());
-    return true;
-  } catch {
-    return false;
-  }
+  // API-синхронизация не подключена
+  return false;
 }
 
 export async function loadFromBrowser(setStatus) {
