@@ -87,7 +87,119 @@
           <section class="panel"><div class="section-head"><h2 style="margin:0">Покрытие запасов</h2></div><div class="list" id="coverageList"></div></section>
         </div>
       </section>
-    <section id="financeSection" hidden><section class="stats" id="financeSummary"></section><section class="panel"><div class="section-head"><h2 style="margin:0">Фильтры и синхронизация</h2><div class="actions"><button class="btn btn-secondary" id="financeOpenWebhookHelpBtn">Webhook / API</button><button class="btn btn-primary" id="financePullBookingsBtn">Синхронизировать RealtyCalendar</button></div></div><div class="request-grid"><label><span class="small">Квартира</span><select id="financeApartmentFilter"></select></label><label><span class="small">Тип</span><select id="financeTypeFilter"><option value="all">Все</option><option value="income">Доходы</option><option value="expense">Расходы</option></select></label><label><span class="small">Месяц</span><input type="month" id="financeMonthFilter"></label><label class="toggle-row"><span class="small">Только план / pending</span><input type="checkbox" id="financeOnlyPending"></label></div><div class="hint" style="margin-top:1rem">Endpoint для RealtyCalendar: <strong id="financeWebhookEndpoint"></strong><br><span class="small">Последняя синхронизация: <span id="financeLastSync"></span></span></div></section><section class="workspace finance-workspace"><div class="stack"><section class="panel"><div class="section-head"><h2 style="margin:0">Проводки</h2><div class="actions"><button class="btn btn-primary" id="financeAddEntryBtn">Добавить доход / расход</button></div></div><div id="financeEntriesList" class="finance-list"></div></section></div><div class="stack"><section class="panel"><div class="section-head"><h2 style="margin:0">Регулярные расходы</h2><button class="btn btn-secondary" id="financeAddRecurringBtn">Добавить правило</button></div><div id="recurringExpensesList" class="list"></div></section><section class="panel"><div class="section-head"><h2 style="margin:0">Архитектура</h2></div><div class="hint">Финансовый слой вынесен в отдельные модули <strong>finance.js</strong> и <strong>api.js</strong>. Это дает ручной ввод, регулярные правила, импорт бронирований и готовую точку расширения под backend без переделки интерфейса.</div></section></div></section></section></section><div class="modal-backdrop" id="financeEntryModal" aria-hidden="true"><div class="modal" style="width:min(760px,100%)"><div class="section-head"><div><h2 class="modal-title">Новая финансовая запись</h2><p class="muted">Ручной доход или расход по квартире.</p></div><button class="btn btn-secondary" id="cancelFinanceEntry">Закрыть</button></div><div class="request-grid"><label><span class="small">Квартира</span><select id="financeEntryApartment"></select></label><label><span class="small">Тип</span><select id="financeEntryType"><option value="income">Доход</option><option value="expense">Расход</option></select></label><label><span class="small">Категория</span><input id="financeEntryCategory" type="text" placeholder="Коммуналка, уборка, бронь"></label><label><span class="small">Название</span><input id="financeEntryTitle" type="text" placeholder="Описание операции"></label><label><span class="small">Сумма</span><input id="financeEntryAmount" type="number" min="0" step="0.01"></label><label><span class="small">Дата</span><input id="financeEntryDate" type="date"></label><label><span class="small">Источник</span><select id="financeEntrySource"><option value="manual">manual</option><option value="realtycalendar">realtycalendar</option><option value="other">other</option></select></label><label><span class="small">Комментарий</span><input id="financeEntryNotes" type="text" placeholder="Доп. заметка"></label></div><div class="actions" style="justify-content:flex-end;margin-top:1rem"><button class="btn btn-primary" id="saveFinanceEntry">Сохранить</button></div></div></div><div class="modal-backdrop" id="recurringExpenseModal" aria-hidden="true"><div class="modal" style="width:min(760px,100%)"><div class="section-head"><div><h2 class="modal-title">Регулярный расход</h2><p class="muted">Автоматическое появление расходов в нужную дату.</p></div><button class="btn btn-secondary" id="cancelRecurringExpense">Закрыть</button></div><div class="request-grid"><label><span class="small">Квартира</span><select id="recurringApartment"></select></label><label><span class="small">Название</span><input id="recurringTitle" type="text" placeholder="Интернет, уборка, аренда"></label><label><span class="small">Категория</span><input id="recurringCategory" type="text" placeholder="Коммуналка"></label><label><span class="small">Сумма</span><input id="recurringAmount" type="number" min="0" step="0.01"></label><label><span class="small">День месяца</span><input id="recurringDayOfMonth" type="number" min="1" max="28" value="1"></label><label><span class="small">Старт</span><input id="recurringStartDate" type="date"></label><label><span class="small">Окончание</span><input id="recurringEndDate" type="date"></label><label><span class="small">Комментарий</span><input id="recurringNotes" type="text" placeholder="Необязательно"></label></div><div class="actions" style="justify-content:flex-end;margin-top:1rem"><button class="btn btn-primary" id="saveRecurringExpense">Сохранить правило</button></div></div></div><div class="modal-backdrop" id="financeWebhookModal" aria-hidden="true"><div class="modal" style="width:min(860px,100%)"><div class="section-head"><div><h2 class="modal-title">Webhook и API RealtyCalendar</h2><p class="muted">Слой интеграции для будущего backend и приема бронирований.</p></div><button class="btn btn-secondary" id="closeFinanceWebhookModal">Закрыть</button></div><div class="hint" style="margin-bottom:1rem">В frontend добавлен отдельный API-слой с методами <strong>syncRealtyCalendarBookings()</strong> и <strong>postRealtyCalendarBookings()</strong>, а также нормализация бронирований в финансовые проводки. Для backend можно поднять endpoint <strong>/api/realtycalendar/bookings</strong> и передавать payload ниже.</div><pre id="financeWebhookExample" class="code-block"></pre></div></div></main>
+    <section id="financeSection" hidden>
+  <!-- Итоги -->
+  <section class="stats" id="financeSummary"></section>
+
+  <!-- Фильтры -->
+  <section class="panel finance-filters-panel">
+    <div class="section-head">
+      <h2 style="margin:0">Фильтры</h2>
+      <div class="actions">
+        <button class="btn btn-secondary" id="financeOpenWebhookHelpBtn">API / Webhook</button>
+        <button class="btn btn-secondary" id="financePullBookingsBtn">↻ RealtyCalendar</button>
+      </div>
+    </div>
+    <div class="request-grid">
+      <label><span class="small">Квартира</span><select id="financeApartmentFilter"></select></label>
+      <label><span class="small">Тип</span>
+        <select id="financeTypeFilter">
+          <option value="all">Все</option>
+          <option value="income">Доходы</option>
+          <option value="expense">Расходы</option>
+        </select>
+      </label>
+      <label><span class="small">Месяц</span><input type="month" id="financeMonthFilter"></label>
+      <label class="toggle-row"><span class="small">Только запланированные</span><input type="checkbox" id="financeOnlyPending"></label>
+    </div>
+    <div class="hint" style="margin-top:.75rem;font-size:var(--text-sm)">
+      Endpoint: <strong id="financeWebhookEndpoint"></strong> &nbsp;·&nbsp; Синхронизация: <span id="financeLastSync"></span>
+    </div>
+  </section>
+
+  <!-- По квартирам -->
+  <section class="panel">
+    <div class="section-head"><h2 style="margin:0">Итоги по квартирам</h2></div>
+    <div id="financeByApartment" class="apt-finance-list"></div>
+  </section>
+
+  <!-- Основная рабочая область -->
+  <section class="workspace finance-workspace">
+    <div class="stack">
+      <section class="panel">
+        <div class="section-head">
+          <h2 style="margin:0">Проводки</h2>
+          <button class="btn btn-primary" id="financeAddEntryBtn">+ Добавить</button>
+        </div>
+        <div id="financeEntriesList" class="finance-list"></div>
+      </section>
+    </div>
+    <div class="stack">
+      <section class="panel">
+        <div class="section-head">
+          <h2 style="margin:0">Регулярные расходы</h2>
+          <button class="btn btn-secondary" id="financeAddRecurringBtn">+ Добавить</button>
+        </div>
+        <div id="recurringExpensesList" class="recurring-list"></div>
+      </section>
+    </div>
+  </section>
+</section></section><div class="modal-backdrop" id="financeEntryModal" aria-hidden="true">
+  <div class="modal" style="width:min(680px,100%)">
+    <div class="section-head">
+      <div><h2 class="modal-title">Новая запись</h2><p class="muted">Доход или расход по квартире</p></div>
+      <button class="btn btn-secondary" id="cancelFinanceEntry">✕</button>
+    </div>
+    <div class="request-grid">
+      <label>
+        <span class="small">Тип</span>
+        <select id="financeEntryType">
+          <option value="expense">💸 Расход</option>
+          <option value="income">💰 Доход</option>
+        </select>
+      </label>
+      <label><span class="small">Квартира</span><select id="financeEntryApartment"></select></label>
+      <label><span class="small">Название</span><input id="financeEntryTitle" type="text" placeholder="Описание операции"></label>
+      <label><span class="small">Категория</span><input id="financeEntryCategory" type="text" placeholder="Коммуналка, уборка, бронь..."></label>
+      <label><span class="small">Сумма, ₽</span><input id="financeEntryAmount" type="number" min="0" step="1" placeholder="0"></label>
+      <label><span class="small">Дата</span><input id="financeEntryDate" type="date"></label>
+      <label><span class="small">Комментарий</span><input id="financeEntryNotes" type="text" placeholder="Заметка (необязательно)"></label>
+      <input type="hidden" id="financeEntrySource" value="manual">
+    </div>
+    <div class="actions" style="justify-content:flex-end;margin-top:1rem">
+      <button class="btn btn-secondary" id="cancelFinanceEntry2">Отмена</button>
+      <button class="btn btn-primary" id="saveFinanceEntry">Сохранить</button>
+    </div>
+  </div>
+</div><div class="modal-backdrop" id="recurringExpenseModal" aria-hidden="true">
+  <div class="modal" style="width:min(680px,100%)">
+    <div class="section-head">
+      <div><h2 class="modal-title">Регулярный расход</h2><p class="muted">Автоматически появится в нужную дату каждого месяца</p></div>
+      <button class="btn btn-secondary" id="cancelRecurringExpense">✕</button>
+    </div>
+    <div class="request-grid">
+      <label>
+        <span class="small">Тип</span>
+        <select id="recurringType">
+          <option value="expense">💸 Расход</option>
+          <option value="income">💰 Доход</option>
+        </select>
+      </label>
+      <label><span class="small">Квартира</span><select id="recurringApartment"></select></label>
+      <label><span class="small">Название</span><input id="recurringTitle" type="text" placeholder="Интернет, уборка, аренда..."></label>
+      <label><span class="small">Категория</span><input id="recurringCategory" type="text" placeholder="Коммуналка, сервис..."></label>
+      <label><span class="small">Сумма, ₽</span><input id="recurringAmount" type="number" min="0" step="1" placeholder="0"></label>
+      <label><span class="small">День месяца (1–28)</span><input id="recurringDayOfMonth" type="number" min="1" max="28" value="1"></label>
+      <label><span class="small">Начало</span><input id="recurringStartDate" type="date"></label>
+      <label><span class="small">Окончание (если есть)</span><input id="recurringEndDate" type="date"></label>
+      <label style="grid-column:1/-1"><span class="small">Комментарий</span><input id="recurringNotes" type="text" placeholder="Необязательно"></label>
+    </div>
+    <div class="actions" style="justify-content:flex-end;margin-top:1rem">
+      <button class="btn btn-secondary" id="cancelRecurringExpense2">Отмена</button>
+      <button class="btn btn-primary" id="saveRecurringExpense">Сохранить правило</button>
+    </div>
+  </div>
+</div><div class="modal-backdrop" id="financeWebhookModal" aria-hidden="true"><div class="modal" style="width:min(860px,100%)"><div class="section-head"><div><h2 class="modal-title">Webhook и API RealtyCalendar</h2><p class="muted">Слой интеграции для будущего backend и приема бронирований.</p></div><button class="btn btn-secondary" id="closeFinanceWebhookModal">Закрыть</button></div><div class="hint" style="margin-bottom:1rem">В frontend добавлен отдельный API-слой с методами <strong>syncRealtyCalendarBookings()</strong> и <strong>postRealtyCalendarBookings()</strong>, а также нормализация бронирований в финансовые проводки. Для backend можно поднять endpoint <strong>/api/realtycalendar/bookings</strong> и передавать payload ниже.</div><pre id="financeWebhookExample" class="code-block"></pre></div></div></main>
   </div>
   <div class="modal-backdrop" id="historyModal" aria-hidden="true"><div class="modal" style="width:min(820px,100%)"><div class="section-head" style="align-items:flex-start;"><div style="flex:1"><h2 class="modal-title">История списаний</h2><p class="muted">Все действия фиксируются автоматически.</p><div class="history-filter" id="historyApartmentFilter"></div></div><button class="menu-toggle" id="closeHistoryModal" aria-label="Закрыть">✕</button></div><div class="history-modal-list" id="historyModalList"></div></div></div>
   <div class="modal-backdrop" id="purchaseRequestsModal" aria-hidden="true"><div class="modal" style="width:min(900px,100%)"><div class="section-head"><div><h2 class="modal-title">Заявки на закупку</h2><p class="muted">Создавай новые закупки по квартирам и нескольким расходникам сразу.</p></div><button class="menu-toggle" id="closePurchaseRequestsModal" aria-label="Закрыть">✕</button></div><button class="btn btn-primary" id="openNewPurchaseRequest" style="margin-bottom:.9rem;">Новая заявка</button><div class="theme-switch" style="margin-bottom:1rem;"><div><strong>Авто-заявка при списании</strong><div class="small" id="autoRequestLabel">Только не одноразовые расходники</div></div><button class="switch" id="autoRequestToggle" aria-label="Переключить авто-заявку"></button></div><div class="request-summary" id="purchaseRequestsList"></div></div></div>

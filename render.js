@@ -1,10 +1,17 @@
 import dom from './dom.js';
 import { buildFinanceWebhookExample } from './api.js';
-import { getFinanceSummary, monthKey } from './finance.js';
+import { getFinanceSummary, monthKey, STATUS_LABELS } from './finance.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, statusBy } from './state.js';
 
 export function setStatus(text = 'Готово') { if (dom.saveStatus) dom.saveStatus.textContent = text; }
-function apartmentButton(apartment, activeApartmentId) { const low = apartment.items.filter((item) => statusBy(item).cls === 'low').length; return `<div class="apartment-row"><button class="apartment-btn ${apartment.id === activeApartmentId ? 'active' : ''}" data-apartment-id="${apartment.id}"><div class="apartment-meta"><strong>${getDisplayApartmentName(apartment.name)}</strong><span class="small">${low ? `Низкий остаток: ${low}` : 'Без критичных позиций'}</span></div><span class="small">${apartment.items.length} поз.</span></button></div>`; }
+
+function fmt(n) { return Number(n || 0).toLocaleString('ru-RU', { maximumFractionDigits: 0 }); }
+
+function apartmentButton(apartment, activeApartmentId) {
+  const low = apartment.items.filter((item) => statusBy(item).cls === 'low').length;
+  return `<div class="apartment-row"><button class="apartment-btn ${apartment.id === activeApartmentId ? 'active' : ''}" data-apartment-id="${apartment.id}"><div class="apartment-meta"><strong>${getDisplayApartmentName(apartment.name)}</strong><span class="small">${low ? `Низкий остаток: ${low}` : 'Без критичных позиций'}</span></div><span class="small">${apartment.items.length} поз.</span></button></div>`;
+}
+
 function itemCard(item) {
   const status = statusBy(item);
   const percent = item.par > 0 ? Math.max(0, Math.min(100, (item.stock / item.par) * 100)) : 0;
@@ -25,10 +32,197 @@ function itemCard(item) {
     </div>
   </article>`;
 }
-function renderInventory(state) { const apartment = currentApartment(); if (!apartment || !dom.pageTitle) return; dom.pageTitle.textContent = getDisplayApartmentName(apartment.name); dom.apartmentName.value = apartment.name; dom.apartmentSearch.value = state.ui.apartmentSearch || ''; const filteredApartments = state.apartments.filter((a) => getDisplayApartmentName(a.name).toLowerCase().includes((state.ui.apartmentSearch || '').toLowerCase())); dom.apartmentsList.innerHTML = filteredApartments.length ? filteredApartments.map((a) => apartmentButton(a, state.activeApartmentId)).join('') : '<div class="empty">Ничего не найдено.</div>'; const linenItems = apartment.items.filter((i) => i.category === 'linen'); const guestItems = apartment.items.filter((i) => i.category === 'guest'); dom.linenList.innerHTML = linenItems.length ? `<div class="grid">${linenItems.map(itemCard).join('')}</div>` : '<div class="empty">Нет позиций.</div>'; dom.guestList.innerHTML = guestItems.length ? `<div class="grid">${guestItems.map(itemCard).join('')}</div>` : '<div class="empty">Нет позиций.</div>'; const total = apartment.items.length; const low = apartment.items.filter((i) => statusBy(i).cls === 'low').length; const warn = apartment.items.filter((i) => statusBy(i).cls === 'warn').length; const ok = apartment.items.filter((i) => statusBy(i).cls === 'ok').length; dom.statsGrid.innerHTML = `<article class="stat"><span>Всего позиций</span><strong>${total}</strong></article><article class="stat"><span>Низкий остаток</span><strong>${low}</strong></article><article class="stat"><span>В зоне внимания</span><strong>${warn}</strong></article><article class="stat"><span>В норме</span><strong>${ok}</strong></article>`; dom.dailyUsage.innerHTML = guestItems.length ? guestItems.map((item) => `<div class="line"><span>${item.name}</span><strong>${roundSmart(item.perCheckin)} ${item.unit}</strong></div>`).join('') : '<div class="empty">Нет гостевых позиций.</div>'; dom.setUsage.innerHTML = linenItems.length ? linenItems.map((item) => `<div class="line"><span>${item.name}</span><strong>${roundSmart(item.setAmount)} ${item.unit}</strong></div>`).join('') : '<div class="empty">Нет белья.</div>'; dom.coverageList.innerHTML = apartment.items.map((item) => `<div class="line"><span>${item.name}</span><strong>${item.perCheckin > 0 ? Math.floor(item.stock / item.perCheckin) : item.setAmount > 0 ? Math.floor(item.stock / item.setAmount) : '—'}</strong></div>`).join(''); }
-function renderFinance(state) { if (!dom.financeApartmentFilter) return; const filter = state.ui?.finance || {}; const summary = getFinanceSummary(); const entries = summary.entries; const apartmentOptions = [`<option value="all">Все квартиры</option>`, ...state.apartments.map((a) => `<option value="${a.id}">${getDisplayApartmentName(a.name)}</option>`)].join(''); dom.financeApartmentFilter.innerHTML = apartmentOptions; dom.financeApartmentFilter.value = filter.apartmentFilter || 'all'; dom.financeTypeFilter.value = filter.typeFilter || 'all'; dom.financeMonthFilter.value = filter.month || monthKey(new Date()); dom.financeOnlyPending.checked = !!filter.showOnlyPending; dom.financeSummary.innerHTML = `<article class="stat"><span>Доходы</span><strong>${summary.income.toFixed(0)} ₽</strong></article><article class="stat"><span>Расходы</span><strong>${summary.expense.toFixed(0)} ₽</strong></article><article class="stat"><span>Прибыль</span><strong>${summary.profit.toFixed(0)} ₽</strong></article><article class="stat"><span>Проводки</span><strong>${entries.length}</strong></article>`; dom.financeEntriesList.innerHTML = entries.length ? entries.map((entry) => `<article class="finance-entry ${entry.type}"><div class="finance-entry-top"><div><strong>${entry.title || entry.category || (entry.type === 'income' ? 'Доход' : 'Расход')}</strong><div class="small">${entry.apartmentName} · ${entry.date} · ${entry.source}</div></div><div class="finance-amount ${entry.type}">${entry.type === 'income' ? '+' : '-'}${Number(entry.amount || 0).toFixed(0)} ₽</div></div><div class="small">${entry.category || 'Без категории'}${entry.notes ? ` · ${entry.notes}` : ''}</div></article>`).join('') : '<div class="empty">Нет записей по фильтрам.</div>'; dom.recurringExpensesList.innerHTML = state.finance.recurringRules.length ? state.finance.recurringRules.map((rule) => `<div class="line"><span><strong>${rule.title || 'Регулярный расход'}</strong><span class="small"> · ${rule.apartmentName} · ${rule.dayOfMonth} число</span></span><strong>${Number(rule.amount || 0).toFixed(0)} ₽</strong></div>`).join('') : '<div class="empty">Регулярные расходы еще не настроены.</div>'; dom.financeWebhookEndpoint.textContent = state.finance.bookingSync.endpointUrl; dom.financeLastSync.textContent = state.finance.bookingSync.lastSyncedAt ? new Date(state.finance.bookingSync.lastSyncedAt).toLocaleString('ru-RU') : 'Еще не выполнялась'; if (dom.financeWebhookExample) dom.financeWebhookExample.textContent = JSON.stringify(buildFinanceWebhookExample(), null, 2); [dom.financeEntryApartment, dom.recurringApartment].forEach((el) => { if (!el) return; el.innerHTML = state.apartments.map((a) => `<option value="${a.id}">${getDisplayApartmentName(a.name)}</option>`).join(''); if (!el.value) el.value = state.activeApartmentId; }); if (dom.financeEntryDate && !dom.financeEntryDate.value) dom.financeEntryDate.value = new Date().toISOString().slice(0, 10); if (dom.recurringStartDate && !dom.recurringStartDate.value) dom.recurringStartDate.value = new Date().toISOString().slice(0, 10); }
+
+function renderInventory(state) {
+  const apartment = currentApartment();
+  if (!apartment || !dom.pageTitle) return;
+  dom.pageTitle.textContent = getDisplayApartmentName(apartment.name);
+  dom.apartmentName.value = apartment.name;
+  dom.apartmentSearch.value = state.ui.apartmentSearch || '';
+  const filteredApartments = state.apartments.filter((a) =>
+    getDisplayApartmentName(a.name).toLowerCase().includes((state.ui.apartmentSearch || '').toLowerCase())
+  );
+  dom.apartmentsList.innerHTML = filteredApartments.length
+    ? filteredApartments.map((a) => apartmentButton(a, state.activeApartmentId)).join('')
+    : '<div class="empty">Ничего не найдено.</div>';
+  const linenItems = apartment.items.filter((i) => i.category === 'linen');
+  const guestItems = apartment.items.filter((i) => i.category === 'guest');
+  dom.linenList.innerHTML = linenItems.length ? `<div class="grid">${linenItems.map(itemCard).join('')}</div>` : '<div class="empty">Нет позиций.</div>';
+  dom.guestList.innerHTML = guestItems.length ? `<div class="grid">${guestItems.map(itemCard).join('')}</div>` : '<div class="empty">Нет позиций.</div>';
+  const total = apartment.items.length;
+  const low = apartment.items.filter((i) => statusBy(i).cls === 'low').length;
+  const warn = apartment.items.filter((i) => statusBy(i).cls === 'warn').length;
+  const ok = apartment.items.filter((i) => statusBy(i).cls === 'ok').length;
+  dom.statsGrid.innerHTML = `<article class="stat"><span>Всего позиций</span><strong>${total}</strong></article><article class="stat"><span>Низкий остаток</span><strong>${low}</strong></article><article class="stat"><span>В зоне внимания</span><strong>${warn}</strong></article><article class="stat"><span>В норме</span><strong>${ok}</strong></article>`;
+  dom.dailyUsage.innerHTML = guestItems.length ? guestItems.map((item) => `<div class="line"><span>${item.name}</span><strong>${roundSmart(item.perCheckin)} ${item.unit}</strong></div>`).join('') : '<div class="empty">Нет гостевых позиций.</div>';
+  dom.setUsage.innerHTML = linenItems.length ? linenItems.map((item) => `<div class="line"><span>${item.name}</span><strong>${roundSmart(item.setAmount)} ${item.unit}</strong></div>`).join('') : '<div class="empty">Нет белья.</div>';
+  dom.coverageList.innerHTML = apartment.items.map((item) => `<div class="line"><span>${item.name}</span><strong>${item.perCheckin > 0 ? Math.floor(item.stock / item.perCheckin) : item.setAmount > 0 ? Math.floor(item.stock / item.setAmount) : '—'}</strong></div>`).join('');
+}
+
+function sourceIcon(source) {
+  if (source === 'realtycalendar') return '🔗';
+  if (source === 'recurring') return '🔄';
+  return '✏️';
+}
+
+function sourceLabel(source) {
+  if (source === 'realtycalendar') return 'RealtyCalendar';
+  if (source === 'recurring') return 'Регулярный';
+  return 'Вручную';
+}
+
+function financeEntryCard(entry) {
+  const isIncome = entry.type === 'income';
+  const st = STATUS_LABELS[entry.status] || { label: entry.status, cls: 'planned' };
+  const canConfirm = entry.status === 'planned' || entry.status === 'pending';
+  return `<article class="finance-card ${entry.type}" data-entry-id="${entry.id}">
+    <div class="finance-card-top">
+      <div class="finance-card-left">
+        <div class="finance-card-title">${entry.title || entry.category || (isIncome ? 'Доход' : 'Расход')}</div>
+        <div class="finance-card-meta">
+          <span>${entry.apartmentName}</span>
+          <span class="sep">·</span>
+          <span>${entry.date}</span>
+          <span class="sep">·</span>
+          <span>${sourceIcon(entry.source)} ${sourceLabel(entry.source)}</span>
+        </div>
+        ${entry.category ? `<div class="finance-card-cat">${entry.category}</div>` : ''}
+        ${entry.notes ? `<div class="finance-card-notes">${entry.notes}</div>` : ''}
+      </div>
+      <div class="finance-card-right">
+        <div class="finance-amount ${entry.type}">${isIncome ? '+' : '−'}${fmt(entry.amount)} ₽</div>
+        <span class="finance-status ${st.cls}">${st.label}</span>
+      </div>
+    </div>
+    <div class="finance-card-actions">
+      ${canConfirm ? `<button class="btn-chip btn-confirm" data-action="confirm-entry" data-id="${entry.id}" title="Подтвердить">✓ Подтвердить</button>` : ''}
+      <button class="btn-chip btn-del" data-action="delete-entry" data-id="${entry.id}" title="Удалить">✕</button>
+    </div>
+  </article>`;
+}
+
+function recurringRuleCard(rule) {
+  const typeLabel = rule.type === 'income' ? 'Доход' : 'Расход';
+  const typeClass = rule.type === 'income' ? 'income' : 'expense';
+  return `<article class="recurring-card ${rule.active ? '' : 'inactive'}" data-rule-id="${rule.id}">
+    <div class="recurring-card-top">
+      <div>
+        <div class="recurring-title">${rule.title || 'Правило'}</div>
+        <div class="finance-card-meta">
+          <span>${rule.apartmentName}</span>
+          <span class="sep">·</span>
+          <span>${rule.dayOfMonth} число</span>
+          ${rule.category ? `<span class="sep">·</span><span>${rule.category}</span>` : ''}
+        </div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        <div class="finance-amount ${typeClass}" style="font-size:var(--text-base)">${typeLabel === 'Доход' ? '+' : '−'}${fmt(rule.amount)} ₽</div>
+        <div class="small" style="margin-top:.2rem">${rule.active ? '● Активно' : '○ Отключено'}</div>
+      </div>
+    </div>
+    <div class="finance-card-actions">
+      <button class="btn-chip" data-action="toggle-recurring" data-id="${rule.id}">${rule.active ? 'Отключить' : 'Включить'}</button>
+      <button class="btn-chip btn-del" data-action="delete-recurring" data-id="${rule.id}">✕ Удалить</button>
+    </div>
+  </article>`;
+}
+
+function renderFinance(state) {
+  if (!dom.financeApartmentFilter) return;
+  const filter = state.ui?.finance || {};
+  const summary = getFinanceSummary();
+  const entries = summary.entries;
+
+  // Фильтры
+  const apartmentOptions = [
+    `<option value="all">Все квартиры</option>`,
+    ...state.apartments.map((a) => `<option value="${a.id}">${getDisplayApartmentName(a.name)}</option>`),
+  ].join('');
+  dom.financeApartmentFilter.innerHTML = apartmentOptions;
+  dom.financeApartmentFilter.value = filter.apartmentFilter || 'all';
+  dom.financeTypeFilter.value = filter.typeFilter || 'all';
+  dom.financeMonthFilter.value = filter.month || monthKey(new Date());
+  dom.financeOnlyPending.checked = !!filter.showOnlyPending;
+
+  // Итоговые статы
+  const profitColor = summary.profit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
+  dom.financeSummary.innerHTML = `
+    <article class="stat">
+      <span>Доходы</span>
+      <strong style="color:var(--color-success)">${fmt(summary.income)} ₽</strong>
+    </article>
+    <article class="stat">
+      <span>Расходы</span>
+      <strong style="color:var(--color-error)">${fmt(summary.expense)} ₽</strong>
+    </article>
+    <article class="stat">
+      <span>Прибыль</span>
+      <strong style="color:${profitColor}">${summary.profit >= 0 ? '+' : ''}${fmt(summary.profit)} ₽</strong>
+    </article>
+    <article class="stat">
+      <span>Проводок</span>
+      <strong>${entries.length}</strong>
+    </article>`;
+
+  // По квартирам (мини-блок)
+  const aptEntries = Object.values(summary.byApartment);
+  if (dom.financeByApartment) {
+    dom.financeByApartment.innerHTML = aptEntries.length
+      ? aptEntries.map((apt) => {
+          const profit = apt.income - apt.expense;
+          const pc = profit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
+          return `<div class="apt-finance-row">
+            <div class="apt-finance-name">${apt.name}</div>
+            <div class="apt-finance-nums">
+              <span style="color:var(--color-success)">+${fmt(apt.income)}</span>
+              <span style="color:var(--color-error)">−${fmt(apt.expense)}</span>
+              <span style="color:${pc};font-weight:700">${profit >= 0 ? '+' : ''}${fmt(profit)} ₽</span>
+            </div>
+          </div>`;
+        }).join('')
+      : '<div class="empty">Нет данных.</div>';
+  }
+
+  // Список проводок
+  dom.financeEntriesList.innerHTML = entries.length
+    ? entries.map(financeEntryCard).join('')
+    : '<div class="empty">Нет записей по фильтрам.</div>';
+
+  // Регулярные расходы
+  dom.recurringExpensesList.innerHTML = state.finance.recurringRules.length
+    ? state.finance.recurringRules.map(recurringRuleCard).join('')
+    : '<div class="empty">Регулярные расходы ещё не настроены.</div>';
+
+  // Webhook
+  if (dom.financeWebhookEndpoint) dom.financeWebhookEndpoint.textContent = state.finance.bookingSync.endpointUrl;
+  if (dom.financeLastSync) dom.financeLastSync.textContent = state.finance.bookingSync.lastSyncedAt
+    ? new Date(state.finance.bookingSync.lastSyncedAt).toLocaleString('ru-RU')
+    : 'Ещё не выполнялась';
+  if (dom.financeWebhookExample) dom.financeWebhookExample.textContent = JSON.stringify(buildFinanceWebhookExample(), null, 2);
+
+  // Селекты квартир в модалках
+  [dom.financeEntryApartment, dom.recurringApartment].forEach((el) => {
+    if (!el) return;
+    el.innerHTML = state.apartments.map((a) => `<option value="${a.id}">${getDisplayApartmentName(a.name)}</option>`).join('');
+    if (!el.value) el.value = state.activeApartmentId;
+  });
+  if (dom.financeEntryDate && !dom.financeEntryDate.value) dom.financeEntryDate.value = new Date().toISOString().slice(0, 10);
+  if (dom.recurringStartDate && !dom.recurringStartDate.value) dom.recurringStartDate.value = new Date().toISOString().slice(0, 10);
+}
+
 export function openModal(id) { document.getElementById(id)?.classList.add('open'); }
 export function closeModal(id) { document.getElementById(id)?.classList.remove('open'); }
 export function openDrawer() { dom.drawerMenu?.classList.add('open'); dom.drawerBackdrop?.classList.add('open'); }
 export function closeDrawer() { dom.drawerMenu?.classList.remove('open'); dom.drawerBackdrop?.classList.remove('open'); }
-export function render() { const state = getState(); document.documentElement.setAttribute('data-theme', state.ui.theme || 'light'); if (dom.drawerThemeToggle) dom.drawerThemeToggle.classList.toggle('active', state.ui.theme === 'dark'); if (dom.themeLabel) dom.themeLabel.textContent = state.ui.theme === 'dark' ? 'Темная тема' : 'Светлая тема'; dom.sidebarNavButtons.forEach((btn) => btn.classList.toggle('active', btn.dataset.section === state.ui.activeSection)); if (dom.inventorySection) dom.inventorySection.hidden = state.ui.activeSection !== 'inventory'; if (dom.financeSection) dom.financeSection.hidden = state.ui.activeSection !== 'finance'; renderInventory(state); renderFinance(state); }
+
+export function render() {
+  const state = getState();
+  document.documentElement.setAttribute('data-theme', state.ui.theme || 'light');
+  if (dom.drawerThemeToggle) dom.drawerThemeToggle.classList.toggle('active', state.ui.theme === 'dark');
+  if (dom.themeLabel) dom.themeLabel.textContent = state.ui.theme === 'dark' ? 'Темная тема' : 'Светлая тема';
+  dom.sidebarNavButtons.forEach((btn) => btn.classList.toggle('active', btn.dataset.section === state.ui.activeSection));
+  if (dom.inventorySection) dom.inventorySection.hidden = state.ui.activeSection !== 'inventory';
+  if (dom.financeSection) dom.financeSection.hidden = state.ui.activeSection !== 'finance';
+  renderInventory(state);
+  renderFinance(state);
+}

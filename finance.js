@@ -2,6 +2,13 @@ import { currentApartment, findApartmentById, getDisplayApartmentName, getState,
 
 export const FINANCE_TYPES = { income: 'income', expense: 'expense' };
 
+export const STATUS_LABELS = {
+  planned:   { label: 'Запланировано', cls: 'planned' },
+  confirmed: { label: 'Подтверждено',  cls: 'confirmed' },
+  pending:   { label: 'В ожидании',    cls: 'pending' },
+  cancelled: { label: 'Отменено',      cls: 'cancelled' },
+};
+
 export function monthKey(dateLike) {
   if (!dateLike) return '';
   const d = new Date(dateLike);
@@ -17,12 +24,41 @@ export function ensureFinanceGeneratedForCurrentMonth() {
 
 export function createFinanceEntryDraft(data = {}) {
   const apartment = findApartmentById(data.apartmentId) || currentApartment();
-  return { id: crypto.randomUUID(), apartmentId: apartment?.id || '', apartmentName: getDisplayApartmentName(apartment?.name || '—'), type: data.type || FINANCE_TYPES.expense, category: data.category || '', title: data.title || '', amount: Number(data.amount || 0), currency: data.currency || 'RUB', date: data.date || new Date().toISOString().slice(0, 10), source: data.source || 'manual', status: data.status || 'planned', notes: data.notes || '', externalBookingId: data.externalBookingId || '', meta: data.meta || {} };
+  return {
+    id: crypto.randomUUID(),
+    apartmentId: apartment?.id || '',
+    apartmentName: getDisplayApartmentName(apartment?.name || '—'),
+    type: data.type || FINANCE_TYPES.expense,
+    category: data.category || '',
+    title: data.title || '',
+    amount: Number(data.amount || 0),
+    currency: data.currency || 'RUB',
+    date: data.date || new Date().toISOString().slice(0, 10),
+    source: data.source || 'manual',
+    status: data.status || 'planned',
+    notes: data.notes || '',
+    externalBookingId: data.externalBookingId || '',
+    meta: data.meta || {},
+  };
 }
 
 export function createRecurringRuleDraft(data = {}) {
   const apartment = findApartmentById(data.apartmentId) || currentApartment();
-  return { id: crypto.randomUUID(), apartmentId: apartment?.id || '', apartmentName: getDisplayApartmentName(apartment?.name || '—'), title: data.title || '', category: data.category || '', amount: Number(data.amount || 0), currency: data.currency || 'RUB', type: data.type || FINANCE_TYPES.expense, dayOfMonth: Number(data.dayOfMonth || 1), startDate: data.startDate || new Date().toISOString().slice(0, 10), endDate: data.endDate || '', notes: data.notes || '', active: data.active ?? true };
+  return {
+    id: crypto.randomUUID(),
+    apartmentId: apartment?.id || '',
+    apartmentName: getDisplayApartmentName(apartment?.name || '—'),
+    title: data.title || '',
+    category: data.category || '',
+    amount: Number(data.amount || 0),
+    currency: data.currency || 'RUB',
+    type: data.type || FINANCE_TYPES.expense,
+    dayOfMonth: Number(data.dayOfMonth || 1),
+    startDate: data.startDate || new Date().toISOString().slice(0, 10),
+    endDate: data.endDate || '',
+    notes: data.notes || '',
+    active: data.active ?? true,
+  };
 }
 
 export function addFinanceEntry(entry) {
@@ -31,17 +67,51 @@ export function addFinanceEntry(entry) {
   return normalized;
 }
 
+export function deleteFinanceEntry(id) {
+  updateState((state) => {
+    state.finance.entries = state.finance.entries.filter((e) => e.id !== id);
+  });
+}
+
+export function updateFinanceEntryStatus(id, status) {
+  updateState((state) => {
+    const entry = state.finance.entries.find((e) => e.id === id);
+    if (entry) entry.status = status;
+  });
+}
+
 export function addRecurringRule(rule) {
   const normalized = createRecurringRuleDraft(rule);
   updateState((state) => { state.finance.recurringRules.unshift(normalized); });
   return normalized;
 }
 
+export function deleteRecurringRule(id) {
+  updateState((state) => {
+    state.finance.recurringRules = state.finance.recurringRules.filter((r) => r.id !== id);
+    // Удаляем сгенерированные записи этого правила со статусом planned
+    state.finance.entries = state.finance.entries.filter(
+      (e) => !(e.source === 'recurring' && e.meta?.ruleId === id && e.status === 'planned')
+    );
+  });
+}
+
+export function toggleRecurringRule(id) {
+  updateState((state) => {
+    const rule = state.finance.recurringRules.find((r) => r.id === id);
+    if (rule) rule.active = !rule.active;
+  });
+}
+
 export function generateRecurringEntriesForMonth(month) {
   if (!month) return [];
   const created = [];
   updateState((state) => {
-    const existingKeys = new Set(state.finance.entries.filter((entry) => entry.source === 'recurring').map((entry) => `${entry.meta?.ruleId || ''}:${entry.date}`));
+    const existingKeys = new Set(
+      state.finance.entries
+        .filter((entry) => entry.source === 'recurring')
+        .map((entry) => `${entry.meta?.ruleId || ''}:${entry.date}`)
+    );
     state.finance.recurringRules.forEach((rule) => {
       if (!rule.active) return;
       const dueDate = `${month}-${String(Math.min(Math.max(rule.dayOfMonth || 1, 1), 28)).padStart(2, '0')}`;
@@ -49,7 +119,19 @@ export function generateRecurringEntriesForMonth(month) {
       if (rule.endDate && dueDate > rule.endDate) return;
       const key = `${rule.id}:${dueDate}`;
       if (existingKeys.has(key)) return;
-      const entry = createFinanceEntryDraft({ apartmentId: rule.apartmentId, type: rule.type, category: rule.category, title: rule.title, amount: rule.amount, currency: rule.currency, date: dueDate, source: 'recurring', status: 'planned', notes: rule.notes, meta: { ruleId: rule.id } });
+      const entry = createFinanceEntryDraft({
+        apartmentId: rule.apartmentId,
+        type: rule.type,
+        category: rule.category,
+        title: rule.title,
+        amount: rule.amount,
+        currency: rule.currency,
+        date: dueDate,
+        source: 'recurring',
+        status: 'planned',
+        notes: rule.notes,
+        meta: { ruleId: rule.id },
+      });
       state.finance.entries.push(entry);
       created.push(entry);
       existingKeys.add(key);
@@ -61,13 +143,32 @@ export function generateRecurringEntriesForMonth(month) {
 export function importBookingsToFinance(bookings = []) {
   const added = [];
   updateState((state) => {
-    const existing = new Set(state.finance.entries.filter((entry) => entry.externalBookingId).map((entry) => entry.externalBookingId));
+    const existing = new Set(
+      state.finance.entries
+        .filter((entry) => entry.externalBookingId)
+        .map((entry) => entry.externalBookingId)
+    );
     bookings.forEach((booking) => {
       if (!booking.externalBookingId || existing.has(booking.externalBookingId)) return;
-      let apartment = state.apartments.find((item) => item.externalIds?.realtyCalendarUnitId && item.externalIds.realtyCalendarUnitId === booking.apartmentExternalId);
+      let apartment = state.apartments.find(
+        (item) => item.externalIds?.realtyCalendarUnitId && item.externalIds.realtyCalendarUnitId === booking.apartmentExternalId
+      );
       if (!apartment && booking.apartmentId) apartment = state.apartments.find((item) => item.id === booking.apartmentId);
       if (!apartment) return;
-      const entry = createFinanceEntryDraft({ apartmentId: apartment.id, type: FINANCE_TYPES.income, category: 'Бронирование', title: `${booking.channel || 'RealtyCalendar'} · ${booking.guestName || 'Гость'}`, amount: booking.amount, currency: booking.currency || 'RUB', date: booking.checkIn || new Date().toISOString().slice(0, 10), source: 'realtycalendar', status: booking.status === 'cancelled' ? 'cancelled' : 'confirmed', notes: `${booking.checkIn || '—'} → ${booking.checkOut || '—'}`, externalBookingId: booking.externalBookingId, meta: booking });
+      const entry = createFinanceEntryDraft({
+        apartmentId: apartment.id,
+        type: FINANCE_TYPES.income,
+        category: 'Бронирование',
+        title: `${booking.channel || 'RealtyCalendar'} · ${booking.guestName || 'Гость'}`,
+        amount: booking.amount,
+        currency: booking.currency || 'RUB',
+        date: booking.checkIn || new Date().toISOString().slice(0, 10),
+        source: 'realtycalendar',
+        status: booking.status === 'cancelled' ? 'cancelled' : 'confirmed',
+        notes: `${booking.checkIn || '—'} → ${booking.checkOut || '—'}`,
+        externalBookingId: booking.externalBookingId,
+        meta: booking,
+      });
       state.finance.entries.unshift(entry);
       added.push(entry);
       existing.add(booking.externalBookingId);
@@ -80,17 +181,43 @@ export function importBookingsToFinance(bookings = []) {
 export function getFilteredFinanceEntries() {
   const state = getState();
   const filter = state.ui.finance || {};
-  return state.finance.entries.filter((entry) => {
-    if (filter.apartmentFilter && filter.apartmentFilter !== 'all' && entry.apartmentId !== filter.apartmentFilter) return false;
-    if (filter.typeFilter && filter.typeFilter !== 'all' && entry.type !== filter.typeFilter) return false;
-    if (filter.month && monthKey(entry.date) !== filter.month) return false;
-    if (filter.showOnlyPending && !['planned', 'pending'].includes(entry.status)) return false;
-    return true;
-  }).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  return state.finance.entries
+    .filter((entry) => {
+      if (filter.apartmentFilter && filter.apartmentFilter !== 'all' && entry.apartmentId !== filter.apartmentFilter) return false;
+      if (filter.typeFilter && filter.typeFilter !== 'all' && entry.type !== filter.typeFilter) return false;
+      if (filter.month && monthKey(entry.date) !== filter.month) return false;
+      if (filter.showOnlyPending && !['planned', 'pending'].includes(entry.status)) return false;
+      return true;
+    })
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
 }
 
 export function getFinanceSummary() {
   const entries = getFilteredFinanceEntries();
-  const totals = entries.reduce((acc, entry) => { if (entry.type === FINANCE_TYPES.income) acc.income += Number(entry.amount || 0); if (entry.type === FINANCE_TYPES.expense) acc.expense += Number(entry.amount || 0); return acc; }, { income: 0, expense: 0 });
-  return { income: totals.income, expense: totals.expense, profit: totals.income - totals.expense, entries, recurring: getState().finance.recurringRules };
+  const totals = entries.reduce(
+    (acc, entry) => {
+      if (entry.type === FINANCE_TYPES.income) acc.income += Number(entry.amount || 0);
+      if (entry.type === FINANCE_TYPES.expense) acc.expense += Number(entry.amount || 0);
+      return acc;
+    },
+    { income: 0, expense: 0 }
+  );
+  // Итоги по квартирам (из всего массива, без фильтра)
+  const state = getState();
+  const byApartment = {};
+  state.finance.entries.forEach((entry) => {
+    if (!byApartment[entry.apartmentId]) {
+      byApartment[entry.apartmentId] = { name: entry.apartmentName, income: 0, expense: 0 };
+    }
+    if (entry.type === 'income') byApartment[entry.apartmentId].income += Number(entry.amount || 0);
+    if (entry.type === 'expense') byApartment[entry.apartmentId].expense += Number(entry.amount || 0);
+  });
+  return {
+    income: totals.income,
+    expense: totals.expense,
+    profit: totals.income - totals.expense,
+    entries,
+    recurring: state.finance.recurringRules,
+    byApartment,
+  };
 }

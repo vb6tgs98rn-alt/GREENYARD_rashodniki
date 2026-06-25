@@ -1,6 +1,6 @@
 import dom, { byId } from './dom.js';
 import { normalizeRealtyCalendarBooking, syncRealtyCalendarBookings } from './api.js';
-import { addFinanceEntry, addRecurringRule, ensureFinanceGeneratedForCurrentMonth, importBookingsToFinance, monthKey } from './finance.js';
+import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, importBookingsToFinance, monthKey } from './finance.js';
 import { closeDrawer, closeModal, openDrawer, openModal, render, setStatus } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, updateState } from './state.js';
 import { saveToBrowser, exportJson, importJson } from './storage.js';
@@ -448,57 +448,115 @@ function bindFinanceFilters() {
 }
 
 function bindFinanceModals() {
+  // Открытие модалки добавления записи
   dom.financeAddEntryBtn?.addEventListener('click', () => {
     if (dom.financeEntryApartment) dom.financeEntryApartment.value = currentApartment()?.id || '';
     if (dom.financeEntryType) dom.financeEntryType.value = 'expense';
     if (dom.financeEntryDate) dom.financeEntryDate.value = new Date().toISOString().slice(0,10);
+    // Очищаем поля
+    if (dom.financeEntryTitle) dom.financeEntryTitle.value = '';
+    if (dom.financeEntryCategory) dom.financeEntryCategory.value = '';
+    if (dom.financeEntryAmount) dom.financeEntryAmount.value = '';
+    if (dom.financeEntryNotes) dom.financeEntryNotes.value = '';
     openModal('financeEntryModal');
   });
   dom.cancelFinanceEntry?.addEventListener('click', () => closeModal('financeEntryModal'));
+  document.getElementById('cancelFinanceEntry2')?.addEventListener('click', () => closeModal('financeEntryModal'));
   dom.saveFinanceEntry?.addEventListener('click', async () => {
+    const amount = Number(dom.financeEntryAmount?.value || 0);
+    if (!amount) { setStatus('Укажите сумму'); return; }
     addFinanceEntry({
       apartmentId: dom.financeEntryApartment?.value,
       type: dom.financeEntryType?.value,
       category: dom.financeEntryCategory?.value,
       title: dom.financeEntryTitle?.value,
-      amount: Number(dom.financeEntryAmount?.value || 0),
+      amount,
       date: dom.financeEntryDate?.value,
       notes: dom.financeEntryNotes?.value,
       source: 'manual',
-      status: dom.financeEntryType?.value === 'income' ? 'confirmed' : 'planned'
+      status: dom.financeEntryType?.value === 'income' ? 'confirmed' : 'planned',
     });
     closeModal('financeEntryModal');
     await rerender('Запись добавлена');
   });
 
+  // Регулярные расходы
   dom.financeAddRecurringBtn?.addEventListener('click', () => {
     if (dom.recurringApartment) dom.recurringApartment.value = currentApartment()?.id || '';
+    if (dom.recurringTitle) dom.recurringTitle.value = '';
+    if (dom.recurringCategory) dom.recurringCategory.value = '';
+    if (dom.recurringAmount) dom.recurringAmount.value = '';
+    if (dom.recurringDayOfMonth) dom.recurringDayOfMonth.value = '1';
+    if (dom.recurringStartDate) dom.recurringStartDate.value = new Date().toISOString().slice(0,10);
+    if (dom.recurringEndDate) dom.recurringEndDate.value = '';
+    if (dom.recurringNotes) dom.recurringNotes.value = '';
     openModal('recurringExpenseModal');
   });
   dom.cancelRecurringExpense?.addEventListener('click', () => closeModal('recurringExpenseModal'));
+  document.getElementById('cancelRecurringExpense2')?.addEventListener('click', () => closeModal('recurringExpenseModal'));
   dom.saveRecurringExpense?.addEventListener('click', async () => {
+    const amount = Number(dom.recurringAmount?.value || 0);
+    if (!amount) { setStatus('Укажите сумму'); return; }
+    if (!dom.recurringTitle?.value) { setStatus('Укажите название'); return; }
     addRecurringRule({
       apartmentId: dom.recurringApartment?.value,
       title: dom.recurringTitle?.value,
       category: dom.recurringCategory?.value,
-      amount: Number(dom.recurringAmount?.value || 0),
+      amount,
       dayOfMonth: Number(dom.recurringDayOfMonth?.value || 1),
       startDate: dom.recurringStartDate?.value,
       endDate: dom.recurringEndDate?.value,
       notes: dom.recurringNotes?.value,
-      type: 'expense'
+      type: dom.recurringType?.value || 'expense',
     });
     closeModal('recurringExpenseModal');
-    await rerender('Регулярный расход создан');
+    await rerender('Регулярное правило создано');
   });
 
+  // Webhook/API info
   dom.financeOpenWebhookHelpBtn?.addEventListener('click', () => openModal('financeWebhookModal'));
   dom.closeFinanceWebhookModal?.addEventListener('click', () => closeModal('financeWebhookModal'));
+
+  // Делегированные клики по карточкам проводок и правил
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+
+    if (action === 'delete-entry') {
+      const id = btn.dataset.id;
+      if (!id) return;
+      deleteFinanceEntry(id);
+      await rerender('Запись удалена');
+    }
+
+    if (action === 'confirm-entry') {
+      const id = btn.dataset.id;
+      if (!id) return;
+      updateFinanceEntryStatus(id, 'confirmed');
+      await rerender('Статус обновлён');
+    }
+
+    if (action === 'delete-recurring') {
+      const id = btn.dataset.id;
+      if (!id) return;
+      deleteRecurringRule(id);
+      await rerender('Правило удалено');
+    }
+
+    if (action === 'toggle-recurring') {
+      const id = btn.dataset.id;
+      if (!id) return;
+      toggleRecurringRule(id);
+      await rerender('Правило обновлено');
+    }
+  });
 }
 
 function bindRealtyCalendarSync() {
   dom.financePullBookingsBtn?.addEventListener('click', async () => {
     try {
+      setStatus('Синхронизация...');
       const data = await syncRealtyCalendarBookings();
       const bookings = Array.isArray(data?.bookings) ? data.bookings.map(normalizeRealtyCalendarBooking) : [];
       const added = importBookingsToFinance(bookings);
