@@ -183,6 +183,8 @@ var dom = {
   // financeSection removed — now it's a modal
   financeModal: byId("financeModal"),
   closeFinanceModal: byId("closeFinanceModal"),
+  financeSettingsModal: byId("financeSettingsModal"),
+  closeFinanceSettings: byId("closeFinanceSettings"),
   financeTabsNav: byId("financeTabsNav"),
   financeTabEntries: byId("financeTabEntries"),
   financeTabRecurring: byId("financeTabRecurring"),
@@ -659,8 +661,13 @@ function renderFinance(state2) {
   }
   dom_default.financeEntriesList.innerHTML = entries.length ? entries.map(financeEntryCard).join("") : '<div class="empty">\u041D\u0435\u0442 \u0437\u0430\u043F\u0438\u0441\u0435\u0439 \u043F\u043E \u0444\u0438\u043B\u044C\u0442\u0440\u0430\u043C.</div>';
   dom_default.recurringExpensesList.innerHTML = state2.finance.recurringRules.length ? state2.finance.recurringRules.map(recurringRuleCard).join("") : '<div class="empty">\u0420\u0435\u0433\u0443\u043B\u044F\u0440\u043D\u044B\u0435 \u0440\u0430\u0441\u0445\u043E\u0434\u044B \u0435\u0449\u0451 \u043D\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0435\u043D\u044B.</div>';
+  const syncText = state2.finance.bookingSync.lastSyncedAt ? new Date(state2.finance.bookingSync.lastSyncedAt).toLocaleString("ru-RU") : "\u0415\u0449\u0451 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u043B\u0430\u0441\u044C";
   if (dom_default.financeWebhookEndpoint) dom_default.financeWebhookEndpoint.textContent = state2.finance.bookingSync.endpointUrl;
-  if (dom_default.financeLastSync) dom_default.financeLastSync.textContent = state2.finance.bookingSync.lastSyncedAt ? new Date(state2.finance.bookingSync.lastSyncedAt).toLocaleString("ru-RU") : "\u0415\u0449\u0451 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u043B\u0430\u0441\u044C";
+  if (dom_default.financeLastSync) dom_default.financeLastSync.textContent = syncText;
+  const endpointDisplay = byId("financeEndpointDisplay");
+  const syncDisplay = byId("financeLastSyncDisplay");
+  if (endpointDisplay) endpointDisplay.textContent = state2.finance.bookingSync.endpointUrl;
+  if (syncDisplay) syncDisplay.textContent = syncText;
   if (dom_default.financeWebhookExample) dom_default.financeWebhookExample.textContent = JSON.stringify(buildFinanceWebhookExample(), null, 2);
   [dom_default.financeEntryApartment, dom_default.recurringApartment].forEach((el) => {
     if (!el) return;
@@ -894,11 +901,16 @@ function bindDrawerModals() {
   byId("financeModal")?.addEventListener("click", (e) => {
     if (e.target === byId("financeModal")) closeModal("financeModal");
   });
+  byId("openFinanceSettings")?.addEventListener("click", () => openModal("financeSettingsModal"));
+  byId("closeFinanceSettings")?.addEventListener("click", () => closeModal("financeSettingsModal"));
+  byId("financeSettingsModal")?.addEventListener("click", (e) => {
+    if (e.target === byId("financeSettingsModal")) closeModal("financeSettingsModal");
+  });
   byId("financeTabsNav")?.addEventListener("click", (e) => {
     const chip = e.target.closest("[data-finance-tab]");
     if (!chip) return;
     const tab = chip.dataset.financeTab;
-    ["entries", "recurring", "summary", "api"].forEach((t) => {
+    ["entries", "recurring", "summary"].forEach((t) => {
       const el = byId(`financeTab${t.charAt(0).toUpperCase() + t.slice(1)}`);
       if (el) el.hidden = t !== tab;
     });
@@ -1105,7 +1117,45 @@ function bindItemCards() {
       if (!allFilled) return;
       req.done = true;
       req.pendingCost = false;
+      const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+      req.items.forEach((item) => {
+        const cost = Number(item.cost);
+        if (cost > 0) {
+          addFinanceEntry({
+            apartmentId: req.apartmentId,
+            type: "expense",
+            category: "\u0417\u0430\u043A\u0443\u043F\u043A\u0430",
+            title: item.name,
+            amount: cost,
+            date: today,
+            source: "manual",
+            status: "confirmed",
+            notes: `\u0417\u0430\u044F\u0432\u043A\u0430 ${req.auto ? "(\u0430\u0432\u0442\u043E)" : ""}: ${roundSmart(item.qty)} ${item.unit}`,
+            meta: { requestId: req.id, itemId: item.itemId || "" }
+          });
+        }
+      });
+      req.financeLinked = true;
       renderPurchaseModal();
+      render();
+      saveToBrowser(setStatus, true);
+      return;
+    }
+    const deleteReq = e.target.closest("[data-delete-request]");
+    if (deleteReq) {
+      const reqId = deleteReq.dataset.deleteRequest;
+      const state2 = getState();
+      const req = state2.purchaseRequests.find((r) => r.id === reqId);
+      if (!req) return;
+      if (req.financeLinked) {
+        const linkedIds = state2.finance.entries.filter((e2) => e2.meta && e2.meta.requestId === reqId).map((e2) => e2.id);
+        linkedIds.forEach((id) => deleteFinanceEntry(id));
+      }
+      updateState((s) => {
+        s.purchaseRequests = s.purchaseRequests.filter((r) => r.id !== reqId);
+      });
+      renderPurchaseModal();
+      render();
       saveToBrowser(setStatus, true);
       return;
     }
@@ -1170,26 +1220,27 @@ function bindJsonIo() {
     e.target.value = "";
   });
 }
+function syncAutoToggleUI() {
+  const on = getState().autoRequest;
+  const btn = byId("autoRequestToggle");
+  const lbl = byId("autoRequestLabel");
+  if (btn) {
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-checked", String(on));
+  }
+  if (lbl) lbl.textContent = on ? "\u0412\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u2014 \u0430\u0432\u0442\u043E-\u0437\u0430\u044F\u0432\u043A\u0430 \u043F\u0440\u0438 \u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0438" : "\u0422\u043E\u043B\u044C\u043A\u043E \u043D\u0435 \u043E\u0434\u043D\u043E\u0440\u0430\u0437\u043E\u0432\u044B\u0435 \u0440\u0430\u0441\u0445\u043E\u0434\u043D\u0438\u043A\u0438";
+}
 function bindAutoRequest() {
-  document.addEventListener("click", (e) => {
-    if (e.target.closest("#autoRequestToggle")) {
-      toggleAutoRequest();
-      const on = getState().autoRequest;
-      const btn = byId("autoRequestToggle");
-      const lbl = byId("autoRequestLabel");
-      btn?.classList.toggle("active", on);
-      if (lbl) lbl.textContent = on ? "\u0412\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u2014 \u0430\u0432\u0442\u043E-\u0437\u0430\u044F\u0432\u043A\u0430 \u043F\u0440\u0438 \u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0438 \u043D\u0435 \u043E\u0434\u043D\u043E\u0440\u0430\u0437\u043E\u0432\u044B\u0445" : "\u0422\u043E\u043B\u044C\u043A\u043E \u043D\u0435 \u043E\u0434\u043D\u043E\u0440\u0430\u0437\u043E\u0432\u044B\u0435 \u0440\u0430\u0441\u0445\u043E\u0434\u043D\u0438\u043A\u0438";
-      saveToBrowser(setStatus, true);
-    }
+  byId("autoRequestToggle")?.addEventListener("click", () => {
+    toggleAutoRequest();
+    syncAutoToggleUI();
+    saveToBrowser(setStatus, true);
   });
 }
 function renderPurchaseModal() {
   const state2 = getState();
   if (!dom_default.purchaseRequestsList) return;
-  const on = state2.autoRequest;
-  byId("autoRequestToggle")?.classList.toggle("active", on);
-  const lbl = byId("autoRequestLabel");
-  if (lbl) lbl.textContent = on ? "\u0412\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u2014 \u0430\u0432\u0442\u043E-\u0437\u0430\u044F\u0432\u043A\u0430 \u043F\u0440\u0438 \u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0438 \u043D\u0435 \u043E\u0434\u043D\u043E\u0440\u0430\u0437\u043E\u0432\u044B\u0445" : "\u0422\u043E\u043B\u044C\u043A\u043E \u043D\u0435 \u043E\u0434\u043D\u043E\u0440\u0430\u0437\u043E\u0432\u044B\u0435 \u0440\u0430\u0441\u0445\u043E\u0434\u043D\u0438\u043A\u0438";
+  syncAutoToggleUI();
   dom_default.purchaseRequestsList.innerHTML = state2.purchaseRequests.length ? state2.purchaseRequests.map(purchaseRequestCard).join("") : '<div class="empty">\u041D\u0435\u0442 \u0437\u0430\u044F\u0432\u043E\u043A.</div>';
 }
 function purchaseRequestCard(request) {
@@ -1198,17 +1249,21 @@ function purchaseRequestCard(request) {
   const badgeStyle = done ? "background:color-mix(in oklab,var(--color-success) 15%,transparent);color:var(--color-success)" : "background:color-mix(in oklab,var(--color-error) 15%,transparent);color:var(--color-error)";
   const itemsList = request.items.map((item) => {
     if (done) {
-      const costStr = item.cost != null && item.cost !== "" ? `${item.cost} \u20BD` : "\u2014";
+      const costStr = item.cost != null && item.cost !== "" ? `${Number(item.cost).toLocaleString("ru-RU")} \u20BD` : "\u2014";
       return `<div class="line"><div><strong>${item.name}</strong><div class="small">${roundSmart(item.qty)} ${item.unit}</div></div><strong style="color:var(--color-success)">${costStr}</strong></div>`;
     }
     if (pending) {
-      return `<div class="line" style="gap:.6rem;align-items:center">
-        <div style="flex:1"><strong>${item.name}</strong><div class="small">${roundSmart(item.qty)} ${item.unit}</div></div>
-        <div style="display:flex;align-items:center;gap:.4rem;flex-shrink:0">
-          <input type="number" min="0" step="1" placeholder="\u0421\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C" value="${item.cost || ""}"
-            style="width:110px;padding:.35rem .5rem;font-size:var(--text-sm);border:1px solid color-mix(in oklab,var(--color-text) 18%,transparent);border-radius:var(--radius-md);background:var(--color-surface);color:var(--color-text)"
+      return `<div class="purchase-cost-row">
+        <div class="purchase-cost-name">
+          <strong>${item.name}</strong>
+          <span class="small">${roundSmart(item.qty)} ${item.unit}</span>
+        </div>
+        <div class="purchase-cost-input">
+          <input type="number" inputmode="numeric" min="0" step="1" placeholder="0"
+            value="${item.cost || ""}"
+            class="cost-input-field"
             data-cost-item="${request.id}" data-cost-item-id="${item.itemId || item.name}" />
-          <span class="small">\u20BD</span>
+          <span class="cost-currency">\u20BD</span>
         </div>
       </div>`;
     }
@@ -1232,12 +1287,16 @@ function purchaseRequestCard(request) {
   } else {
     actionBlock = `<button class="btn" style="width:100%;min-height:40px;background:var(--color-surface);border:1px solid color-mix(in oklab,var(--color-text) 10%,transparent);font-weight:700" data-done-request="${request.id}">\u0417\u0430\u043A\u0430\u0437 \u0441\u0434\u0435\u043B\u0430\u043D</button>`;
   }
+  const badge2 = done ? "\u2713 \u0412\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043E" : pending ? "\u0412\u0432\u043E\u0434 \u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438" : request.auto ? "\u26A1 \u0410\u0432\u0442\u043E" : "\u0417\u0430\u044F\u0432\u043A\u0430";
   return `<article class="request-card">
     <div class="request-card-header">
-      <div><div class="request-kind" style="${badgeStyle}">${done ? "\u2713 \u0412\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043E" : pending ? "\u0412\u0432\u043E\u0434 \u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438" : "\u0417\u0430\u044F\u0432\u043A\u0430"}</div><strong style="display:block;margin-top:.45rem">${getDisplayApartmentName(request.apartmentName)}</strong></div>
-      <span class="small">${new Date(request.createdAt).toLocaleString("ru-RU")}</span>
+      <div><div class="request-kind" style="${badgeStyle}">${badge2}</div><strong style="display:block;margin-top:.45rem">${getDisplayApartmentName(request.apartmentName)}</strong></div>
+      <div style="display:flex;align-items:center;gap:.4rem;flex-shrink:0">
+        <span class="small">${new Date(request.createdAt).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+        <button data-delete-request="${request.id}" style="background:none;border:none;cursor:pointer;padding:.2rem .35rem;border-radius:var(--radius-md);color:var(--color-text-muted);font-size:1rem;line-height:1" title="\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0437\u0430\u044F\u0432\u043A\u0443">\u{1F5D1}</button>
+      </div>
     </div>
-    <div class="small" style="margin-bottom:.5rem">\u041F\u043E\u0437\u0438\u0446\u0438\u0439: ${request.items.length}</div>
+    <div class="small" style="margin-bottom:.5rem;color:var(--color-text-muted)">\u041F\u043E\u0437\u0438\u0446\u0438\u0439: ${request.items.length}${request.financeLinked ? " \xB7 <span style='color:var(--color-success)'>\u2713 \u0412 \u0444\u0438\u043D\u0443\u0447\u0451\u0442\u0435</span>" : ""}</div>
     <div class="list">${itemsList}</div>
     ${totalBlock}
     <div style="margin-top:.75rem">${actionBlock}</div>
@@ -1282,12 +1341,15 @@ function renderNewPurchaseItems() {
   }
   dom_default.purchaseItemsWrap.innerHTML = apartment.items.map((item) => {
     const needed = Math.max(0, item.par - item.stock);
-    return `<div class="line purchase-item-row">
-      <label style="display:flex;align-items:center;gap:.6rem;flex:1;cursor:pointer">
-        <input type="checkbox" class="purchase-item-check" data-item-id="${item.id}" data-item-name="${item.name}" data-item-unit="${item.unit}" ${needed > 0 ? "checked" : ""} />
-        <span><strong>${item.name}</strong><span class="small"> \xB7 \u041E\u0441\u0442\u0430\u0442\u043E\u043A: ${roundSmart(item.stock)} / ${roundSmart(item.par)} ${item.unit}</span></span>
+    return `<div class="purchase-new-row">
+      <label class="purchase-new-label">
+        <input type="checkbox" class="purchase-item-check purchase-item-checkbox" data-item-id="${item.id}" data-item-name="${item.name}" data-item-unit="${item.unit}" />
+        <span class="purchase-new-info">
+          <strong class="purchase-new-name">${item.name}</strong>
+          <span class="small purchase-new-sub">\u041E\u0441\u0442\u0430\u0442\u043E\u043A: ${roundSmart(item.stock)} / ${roundSmart(item.par)} ${item.unit}</span>
+        </span>
       </label>
-      <input type="number" min="0.1" step="0.1" value="${needed > 0 ? roundSmart(needed) : 1}" data-purchase-qty="${item.id}" style="width:80px" />
+      <input type="number" inputmode="numeric" min="0.1" step="0.1" value="${needed > 0 ? roundSmart(needed) : 1}" data-purchase-qty="${item.id}" class="purchase-new-qty" />
     </div>`;
   }).join("");
 }

@@ -1,4 +1,4 @@
-import dom from './dom.js';
+import dom, { byId } from './dom.js';
 import { buildFinanceWebhookExample } from './api.js';
 import { getFinanceSummary, monthKey, STATUS_LABELS } from './finance.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, statusBy } from './state.js';
@@ -194,10 +194,16 @@ function renderFinance(state) {
     : '<div class="empty">Регулярные расходы ещё не настроены.</div>';
 
   // Webhook
-  if (dom.financeWebhookEndpoint) dom.financeWebhookEndpoint.textContent = state.finance.bookingSync.endpointUrl;
-  if (dom.financeLastSync) dom.financeLastSync.textContent = state.finance.bookingSync.lastSyncedAt
+  const syncText = state.finance.bookingSync.lastSyncedAt
     ? new Date(state.finance.bookingSync.lastSyncedAt).toLocaleString('ru-RU')
     : 'Ещё не выполнялась';
+  if (dom.financeWebhookEndpoint) dom.financeWebhookEndpoint.textContent = state.finance.bookingSync.endpointUrl;
+  if (dom.financeLastSync) dom.financeLastSync.textContent = syncText;
+  // Дублируем в settingsModal display-элементы
+  const endpointDisplay = byId('financeEndpointDisplay');
+  const syncDisplay = byId('financeLastSyncDisplay');
+  if (endpointDisplay) endpointDisplay.textContent = state.finance.bookingSync.endpointUrl;
+  if (syncDisplay) syncDisplay.textContent = syncText;
   if (dom.financeWebhookExample) dom.financeWebhookExample.textContent = JSON.stringify(buildFinanceWebhookExample(), null, 2);
 
   // Селекты квартир в модалках

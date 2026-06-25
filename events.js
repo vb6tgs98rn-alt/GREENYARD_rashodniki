@@ -1,6 +1,6 @@
 import dom, { byId } from './dom.js';
 import { normalizeRealtyCalendarBooking, syncRealtyCalendarBookings } from './api.js';
-import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, importBookingsToFinance, monthKey } from './finance.js';
+import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, importBookingsToFinance, monthKey, createFinanceEntryDraft } from './finance.js';
 import { closeDrawer, closeModal, openDrawer, openModal, render, setStatus } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, updateState } from './state.js';
 import { saveToBrowser, exportJson, importJson } from './storage.js';
@@ -56,12 +56,15 @@ function bindDrawerModals() {
 
   byId('closeFinanceModal')?.addEventListener('click', () => closeModal('financeModal'));
   byId('financeModal')?.addEventListener('click', (e) => { if (e.target === byId('financeModal')) closeModal('financeModal'); });
+  byId('openFinanceSettings')?.addEventListener('click', () => openModal('financeSettingsModal'));
+  byId('closeFinanceSettings')?.addEventListener('click', () => closeModal('financeSettingsModal'));
+  byId('financeSettingsModal')?.addEventListener('click', (e) => { if (e.target === byId('financeSettingsModal')) closeModal('financeSettingsModal'); });
   // Табы внутри финансового модала
   byId('financeTabsNav')?.addEventListener('click', (e) => {
     const chip = e.target.closest('[data-finance-tab]');
     if (!chip) return;
     const tab = chip.dataset.financeTab;
-    ['entries','recurring','summary','api'].forEach(t => {
+    ['entries','recurring','summary'].forEach(t => {
       const el = byId(`financeTab${t.charAt(0).toUpperCase() + t.slice(1)}`);
       if (el) el.hidden = t !== tab;
     });
@@ -253,7 +256,49 @@ function bindItemCards() {
       });
       if (!allFilled) return;
       req.done = true; req.pendingCost = false;
+      // ─── Синхронизация с финучётом — заносим расход по каждому расходнику ───
+      const today = new Date().toISOString().slice(0, 10);
+      req.items.forEach(item => {
+        const cost = Number(item.cost);
+        if (cost > 0) {
+          addFinanceEntry({
+            apartmentId: req.apartmentId,
+            type: 'expense',
+            category: 'Закупка',
+            title: item.name,
+            amount: cost,
+            date: today,
+            source: 'manual',
+            status: 'confirmed',
+            notes: `Заявка ${req.auto ? '(авто)' : ''}: ${roundSmart(item.qty)} ${item.unit}`,
+            meta: { requestId: req.id, itemId: item.itemId || '' },
+          });
+        }
+      });
+      // Сохраняем ID финзаписей в заявке для возможного удаления
+      req.financeLinked = true;
       renderPurchaseModal();
+      render(); // обновляем финучёт
+      saveToBrowser(setStatus, true);
+      return;
+    }
+    // Удаление заявки
+    const deleteReq = e.target.closest('[data-delete-request]');
+    if (deleteReq) {
+      const reqId = deleteReq.dataset.deleteRequest;
+      const state = getState();
+      const req = state.purchaseRequests.find(r => r.id === reqId);
+      if (!req) return;
+      if (req.financeLinked) {
+        // Удаляем связанные записи из финучёта
+        const linkedIds = state.finance.entries
+          .filter(e => e.meta && e.meta.requestId === reqId)
+          .map(e => e.id);
+        linkedIds.forEach(id => deleteFinanceEntry(id));
+      }
+      updateState(s => { s.purchaseRequests = s.purchaseRequests.filter(r => r.id !== reqId); });
+      renderPurchaseModal();
+      render(); // обновляем финучёт при удалении связанной заявки
       saveToBrowser(setStatus, true);
       return;
     }
@@ -311,17 +356,19 @@ function bindJsonIo() {
 }
 
 // ─── Авто-заявка тумблер ──────────────────────────────────────────────────
+function syncAutoToggleUI() {
+  const on = getState().autoRequest;
+  const btn = byId('autoRequestToggle');
+  const lbl = byId('autoRequestLabel');
+  if (btn) { btn.classList.toggle('active', on); btn.setAttribute('aria-checked', String(on)); }
+  if (lbl) lbl.textContent = on ? 'Включено — авто-заявка при списании' : 'Только не одноразовые расходники';
+}
+
 function bindAutoRequest() {
-  document.addEventListener('click', (e) => {
-    if (e.target.closest('#autoRequestToggle')) {
-      toggleAutoRequest();
-      const on = getState().autoRequest;
-      const btn = byId('autoRequestToggle');
-      const lbl = byId('autoRequestLabel');
-      btn?.classList.toggle('active', on);
-      if (lbl) lbl.textContent = on ? 'Включено — авто-заявка при списании не одноразовых' : 'Только не одноразовые расходники';
-      saveToBrowser(setStatus, true);
-    }
+  byId('autoRequestToggle')?.addEventListener('click', () => {
+    toggleAutoRequest();
+    syncAutoToggleUI();
+    saveToBrowser(setStatus, true);
   });
 }
 
@@ -329,12 +376,7 @@ function bindAutoRequest() {
 function renderPurchaseModal() {
   const state = getState();
   if (!dom.purchaseRequestsList) return;
-  // Синхронизируем тумблер
-  const on = state.autoRequest;
-  byId('autoRequestToggle')?.classList.toggle('active', on);
-  const lbl = byId('autoRequestLabel');
-  if (lbl) lbl.textContent = on ? 'Включено — авто-заявка при списании не одноразовых' : 'Только не одноразовые расходники';
-
+  syncAutoToggleUI();
   dom.purchaseRequestsList.innerHTML = state.purchaseRequests.length
     ? state.purchaseRequests.map(purchaseRequestCard).join('')
     : '<div class="empty">Нет заявок.</div>';
@@ -349,17 +391,21 @@ function purchaseRequestCard(request) {
 
   const itemsList = request.items.map(item => {
     if (done) {
-      const costStr = item.cost != null && item.cost !== '' ? `${item.cost} ₽` : '—';
+      const costStr = item.cost != null && item.cost !== '' ? `${Number(item.cost).toLocaleString('ru-RU')} ₽` : '—';
       return `<div class="line"><div><strong>${item.name}</strong><div class="small">${roundSmart(item.qty)} ${item.unit}</div></div><strong style="color:var(--color-success)">${costStr}</strong></div>`;
     }
     if (pending) {
-      return `<div class="line" style="gap:.6rem;align-items:center">
-        <div style="flex:1"><strong>${item.name}</strong><div class="small">${roundSmart(item.qty)} ${item.unit}</div></div>
-        <div style="display:flex;align-items:center;gap:.4rem;flex-shrink:0">
-          <input type="number" min="0" step="1" placeholder="Стоимость" value="${item.cost || ''}"
-            style="width:110px;padding:.35rem .5rem;font-size:var(--text-sm);border:1px solid color-mix(in oklab,var(--color-text) 18%,transparent);border-radius:var(--radius-md);background:var(--color-surface);color:var(--color-text)"
+      return `<div class="purchase-cost-row">
+        <div class="purchase-cost-name">
+          <strong>${item.name}</strong>
+          <span class="small">${roundSmart(item.qty)} ${item.unit}</span>
+        </div>
+        <div class="purchase-cost-input">
+          <input type="number" inputmode="numeric" min="0" step="1" placeholder="0"
+            value="${item.cost || ''}"
+            class="cost-input-field"
             data-cost-item="${request.id}" data-cost-item-id="${item.itemId || item.name}" />
-          <span class="small">₽</span>
+          <span class="cost-currency">₽</span>
         </div>
       </div>`;
     }
@@ -385,12 +431,17 @@ function purchaseRequestCard(request) {
     actionBlock = `<button class="btn" style="width:100%;min-height:40px;background:var(--color-surface);border:1px solid color-mix(in oklab,var(--color-text) 10%,transparent);font-weight:700" data-done-request="${request.id}">Заказ сделан</button>`;
   }
 
+  const badge2 = done ? '✓ Выполнено' : pending ? 'Ввод стоимости' : request.auto ? '⚡ Авто' : 'Заявка';
+
   return `<article class="request-card">
     <div class="request-card-header">
-      <div><div class="request-kind" style="${badgeStyle}">${done ? '✓ Выполнено' : pending ? 'Ввод стоимости' : 'Заявка'}</div><strong style="display:block;margin-top:.45rem">${getDisplayApartmentName(request.apartmentName)}</strong></div>
-      <span class="small">${new Date(request.createdAt).toLocaleString('ru-RU')}</span>
+      <div><div class="request-kind" style="${badgeStyle}">${badge2}</div><strong style="display:block;margin-top:.45rem">${getDisplayApartmentName(request.apartmentName)}</strong></div>
+      <div style="display:flex;align-items:center;gap:.4rem;flex-shrink:0">
+        <span class="small">${new Date(request.createdAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+        <button data-delete-request="${request.id}" style="background:none;border:none;cursor:pointer;padding:.2rem .35rem;border-radius:var(--radius-md);color:var(--color-text-muted);font-size:1rem;line-height:1" title="Удалить заявку">🗑</button>
+      </div>
     </div>
-    <div class="small" style="margin-bottom:.5rem">Позиций: ${request.items.length}</div>
+    <div class="small" style="margin-bottom:.5rem;color:var(--color-text-muted)">Позиций: ${request.items.length}${request.financeLinked ? ' · <span style=\'color:var(--color-success)\'>✓ В финучёте</span>' : ''}</div>
     <div class="list">${itemsList}</div>
     ${totalBlock}
     <div style="margin-top:.75rem">${actionBlock}</div>
@@ -437,12 +488,15 @@ function renderNewPurchaseItems() {
   if (!apartment) { dom.purchaseItemsWrap.innerHTML = '<div class="empty">Выбери квартиру.</div>'; return; }
   dom.purchaseItemsWrap.innerHTML = apartment.items.map(item => {
     const needed = Math.max(0, item.par - item.stock);
-    return `<div class="line purchase-item-row">
-      <label style="display:flex;align-items:center;gap:.6rem;flex:1;cursor:pointer">
-        <input type="checkbox" class="purchase-item-check" data-item-id="${item.id}" data-item-name="${item.name}" data-item-unit="${item.unit}" ${needed > 0 ? 'checked' : ''} />
-        <span><strong>${item.name}</strong><span class="small"> · Остаток: ${roundSmart(item.stock)} / ${roundSmart(item.par)} ${item.unit}</span></span>
+    return `<div class="purchase-new-row">
+      <label class="purchase-new-label">
+        <input type="checkbox" class="purchase-item-check purchase-item-checkbox" data-item-id="${item.id}" data-item-name="${item.name}" data-item-unit="${item.unit}" />
+        <span class="purchase-new-info">
+          <strong class="purchase-new-name">${item.name}</strong>
+          <span class="small purchase-new-sub">Остаток: ${roundSmart(item.stock)} / ${roundSmart(item.par)} ${item.unit}</span>
+        </span>
       </label>
-      <input type="number" min="0.1" step="0.1" value="${needed > 0 ? roundSmart(needed) : 1}" data-purchase-qty="${item.id}" style="width:80px" />
+      <input type="number" inputmode="numeric" min="0.1" step="0.1" value="${needed > 0 ? roundSmart(needed) : 1}" data-purchase-qty="${item.id}" class="purchase-new-qty" />
     </div>`;
   }).join('');
 }

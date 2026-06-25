@@ -99,4 +99,31 @@ button,input,select{font:inherit} button{cursor:pointer;border:none;background:n
 #financeEntryModal,#recurringExpenseModal,#financeWebhookModal,#confirmDeleteModal{z-index:40}
 
 .finance-modal .finance-list,.finance-modal .recurring-list{display:grid;gap:.75rem;margin-top:.5rem}
+
+/* ── Ввод стоимости в заявке (крупный, слева) ── */
+.purchase-cost-row{display:flex;align-items:center;gap:.75rem;padding:.6rem 0;border-bottom:1px solid color-mix(in oklab,var(--color-text) 6%,transparent)}
+.purchase-cost-row:last-child{border-bottom:none}
+.purchase-cost-name{flex:1;min-width:0}
+.purchase-cost-name strong{display:block;font-size:var(--text-base)}
+.purchase-cost-name .small{color:var(--color-text-muted)}
+.purchase-cost-input{display:flex;align-items:center;gap:.4rem;flex-shrink:0}
+.cost-input-field{width:120px;padding:.55rem .65rem;font-size:1.1rem;font-weight:600;border:1.5px solid color-mix(in oklab,var(--color-primary) 40%,transparent);border-radius:var(--radius-md);background:var(--color-surface);color:var(--color-text);text-align:right}
+.cost-input-field:focus{outline:none;border-color:var(--color-primary)}
+.cost-currency{font-size:1.1rem;font-weight:600;color:var(--color-text-muted)}
+
+/* ── Новая закупка — строки расходников ── */
+.purchase-new-row{display:flex;align-items:center;gap:.75rem;padding:.6rem 0;border-bottom:1px solid color-mix(in oklab,var(--color-text) 6%,transparent)}
+.purchase-new-row:last-child{border-bottom:none}
+.purchase-new-label{display:flex;align-items:center;gap:.7rem;flex:1;cursor:pointer;min-width:0}
+.purchase-item-checkbox{width:1.15rem;height:1.15rem;flex-shrink:0;accent-color:var(--color-primary);cursor:pointer}
+.purchase-new-info{display:flex;flex-direction:column;min-width:0}
+.purchase-new-name{font-size:var(--text-base);white-space:normal;word-break:break-word}
+.purchase-new-sub{color:var(--color-text-muted);margin-top:.1rem}
+.purchase-new-qty{width:80px;padding:.4rem .5rem;font-size:var(--text-base);border:1px solid color-mix(in oklab,var(--color-text) 15%,transparent);border-radius:var(--radius-md);background:var(--color-surface);color:var(--color-text);text-align:right;flex-shrink:0}
+
+/* ── Тумблер авто-заявки — гарантированный вид ── */
+#autoRequestToggle{position:relative;width:52px;height:28px;border-radius:999px;background:var(--color-surface-offset);border:1.5px solid color-mix(in oklab,var(--color-text) 15%,transparent);cursor:pointer;transition:background .2s,border-color .2s;flex-shrink:0;padding:0}
+#autoRequestToggle::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .2s}
+#autoRequestToggle.active{background:var(--color-primary);border-color:var(--color-primary)}
+#autoRequestToggle.active::after{transform:translateX(24px)}
 @media (max-width:720px){.finance-card-title{white-space:normal}.finance-card-top{flex-direction:column;gap:.5rem}.finance-card-right{text-align:left}.apt-finance-nums{flex-direction:column;gap:.2rem}}

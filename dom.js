@@ -13,6 +13,8 @@ const dom = {
   // financeSection removed — now it's a modal
   financeModal: byId('financeModal'),
   closeFinanceModal: byId('closeFinanceModal'),
+  financeSettingsModal: byId('financeSettingsModal'),
+  closeFinanceSettings: byId('closeFinanceSettings'),
   financeTabsNav: byId('financeTabsNav'),
   financeTabEntries: byId('financeTabEntries'),
   financeTabRecurring: byId('financeTabRecurring'),
