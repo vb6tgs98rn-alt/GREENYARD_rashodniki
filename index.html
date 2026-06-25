@@ -1,11 +1,14 @@
 <!DOCTYPE html>
 <html lang="ru" data-theme="light">
 <head>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Green Yard</title>
   <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./styles.css?v=1782405924" />
 </head>
 <body>
   <div class="drawer-backdrop" id="drawerBackdrop"></div>
@@ -87,64 +90,7 @@
           <section class="panel"><div class="section-head"><h2 style="margin:0">Покрытие запасов</h2></div><div class="list" id="coverageList"></div></section>
         </div>
       </section>
-    <section id="financeSection" hidden>
-  <!-- Итоги -->
-  <section class="stats" id="financeSummary"></section>
-
-  <!-- Фильтры -->
-  <section class="panel finance-filters-panel">
-    <div class="section-head">
-      <h2 style="margin:0">Фильтры</h2>
-      <div class="actions">
-        <button class="btn btn-secondary" id="financeOpenWebhookHelpBtn">API / Webhook</button>
-        <button class="btn btn-secondary" id="financePullBookingsBtn">↻ RealtyCalendar</button>
-      </div>
-    </div>
-    <div class="request-grid">
-      <label><span class="small">Квартира</span><select id="financeApartmentFilter"></select></label>
-      <label><span class="small">Тип</span>
-        <select id="financeTypeFilter">
-          <option value="all">Все</option>
-          <option value="income">Доходы</option>
-          <option value="expense">Расходы</option>
-        </select>
-      </label>
-      <label><span class="small">Месяц</span><input type="month" id="financeMonthFilter"></label>
-      <label class="toggle-row"><span class="small">Только запланированные</span><input type="checkbox" id="financeOnlyPending"></label>
-    </div>
-    <div class="hint" style="margin-top:.75rem;font-size:var(--text-sm)">
-      Endpoint: <strong id="financeWebhookEndpoint"></strong> &nbsp;·&nbsp; Синхронизация: <span id="financeLastSync"></span>
-    </div>
-  </section>
-
-  <!-- По квартирам -->
-  <section class="panel">
-    <div class="section-head"><h2 style="margin:0">Итоги по квартирам</h2></div>
-    <div id="financeByApartment" class="apt-finance-list"></div>
-  </section>
-
-  <!-- Основная рабочая область -->
-  <section class="workspace finance-workspace">
-    <div class="stack">
-      <section class="panel">
-        <div class="section-head">
-          <h2 style="margin:0">Проводки</h2>
-          <button class="btn btn-primary" id="financeAddEntryBtn">+ Добавить</button>
-        </div>
-        <div id="financeEntriesList" class="finance-list"></div>
-      </section>
-    </div>
-    <div class="stack">
-      <section class="panel">
-        <div class="section-head">
-          <h2 style="margin:0">Регулярные расходы</h2>
-          <button class="btn btn-secondary" id="financeAddRecurringBtn">+ Добавить</button>
-        </div>
-        <div id="recurringExpensesList" class="recurring-list"></div>
-      </section>
-    </div>
-  </section>
-</section></section><div class="modal-backdrop" id="financeEntryModal" aria-hidden="true">
+    <div class="modal-backdrop" id="financeEntryModal" aria-hidden="true">
   <div class="modal" style="width:min(680px,100%)">
     <div class="section-head">
       <div><h2 class="modal-title">Новая запись</h2><p class="muted">Доход или расход по квартире</p></div>
@@ -201,6 +147,7 @@
   </div>
 </div><div class="modal-backdrop" id="financeWebhookModal" aria-hidden="true"><div class="modal" style="width:min(860px,100%)"><div class="section-head"><div><h2 class="modal-title">Webhook и API RealtyCalendar</h2><p class="muted">Слой интеграции для будущего backend и приема бронирований.</p></div><button class="btn btn-secondary" id="closeFinanceWebhookModal">Закрыть</button></div><div class="hint" style="margin-bottom:1rem">В frontend добавлен отдельный API-слой с методами <strong>syncRealtyCalendarBookings()</strong> и <strong>postRealtyCalendarBookings()</strong>, а также нормализация бронирований в финансовые проводки. Для backend можно поднять endpoint <strong>/api/realtycalendar/bookings</strong> и передавать payload ниже.</div><pre id="financeWebhookExample" class="code-block"></pre></div></div></main>
   </div>
+  <div class="modal-backdrop" id="financeModal" aria-hidden="true"><div class="modal finance-modal"><div class="section-head" style="align-items:flex-start;padding-bottom:.75rem;border-bottom:1px solid var(--color-border);margin-bottom:1rem;"><div style="flex:1"><h2 class="modal-title">Финансовый учёт</h2><p class="muted">Доходы и расходы по квартирам, RealtyCalendar</p></div><button class="menu-toggle" id="closeFinanceModal" aria-label="Закрыть">✕</button></div><div class="finance-modal-actions" style="display:flex;flex-wrap:wrap;gap:.6rem;margin-bottom:1rem;"><button class="btn btn-primary" id="financeAddEntryBtn">+ Добавить запись</button><button class="btn btn-secondary" id="financeAddRecurringBtn">+ Регулярный расход</button><button class="btn btn-secondary" id="financePullBookingsBtn">↻ RealtyCalendar</button><button class="btn btn-secondary" id="financeOpenWebhookHelpBtn">API / Webhook</button></div><div style="display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1.25rem;" id="financeTabsNav"><button class="history-chip active" data-finance-tab="entries">Проводки</button><button class="history-chip" data-finance-tab="recurring">Регулярные расходы</button><button class="history-chip" data-finance-tab="summary">Итоги по квартирам</button><button class="history-chip" data-finance-tab="api">API / Синхронизация</button></div><div id="financeTabEntries"><section class="stats" id="financeSummary"></section><div class="request-grid" style="margin-bottom:1rem;"><label><span class="small">Квартира</span><select id="financeApartmentFilter"></select></label><label><span class="small">Тип</span><select id="financeTypeFilter"><option value="all">Все</option><option value="income">Доходы</option><option value="expense">Расходы</option></select></label><label><span class="small">Месяц</span><input type="month" id="financeMonthFilter"></label><label class="toggle-row"><span class="small">Только запланированные</span><input type="checkbox" id="financeOnlyPending"></label></div><div id="financeEntriesList" class="finance-list"></div></div><div id="financeTabRecurring" hidden><div id="recurringExpensesList" class="recurring-list"></div></div><div id="financeTabSummary" hidden><div id="financeByApartment" class="apt-finance-list"></div></div><div id="financeTabApi" hidden><div class="hint" style="margin-bottom:1rem">Endpoint для приёма бронирований от RealtyCalendar. Endpoint: <strong id="financeWebhookEndpoint"></strong> &nbsp;·&nbsp; Синхронизация: <span id="financeLastSync"></span></div><pre id="financeWebhookExample" class="code-block"></pre></div></div></div>
   <div class="modal-backdrop" id="historyModal" aria-hidden="true"><div class="modal" style="width:min(820px,100%)"><div class="section-head" style="align-items:flex-start;"><div style="flex:1"><h2 class="modal-title">История списаний</h2><p class="muted">Все действия фиксируются автоматически.</p><div class="history-filter" id="historyApartmentFilter"></div></div><button class="menu-toggle" id="closeHistoryModal" aria-label="Закрыть">✕</button></div><div class="history-modal-list" id="historyModalList"></div></div></div>
   <div class="modal-backdrop" id="purchaseRequestsModal" aria-hidden="true"><div class="modal" style="width:min(900px,100%)"><div class="section-head"><div><h2 class="modal-title">Заявки на закупку</h2><p class="muted">Создавай новые закупки по квартирам и нескольким расходникам сразу.</p></div><button class="menu-toggle" id="closePurchaseRequestsModal" aria-label="Закрыть">✕</button></div><button class="btn btn-primary" id="openNewPurchaseRequest" style="margin-bottom:.9rem;">Новая заявка</button><div class="theme-switch" style="margin-bottom:1rem;"><div><strong>Авто-заявка при списании</strong><div class="small" id="autoRequestLabel">Только не одноразовые расходники</div></div><button class="switch" id="autoRequestToggle" aria-label="Переключить авто-заявку"></button></div><div class="request-summary" id="purchaseRequestsList"></div></div></div>
   <div class="modal-backdrop" id="newPurchaseRequestModal" aria-hidden="true"><div class="modal" style="width:min(860px,100%)"><div class="section-head"><div><h2 class="modal-title">Новая заявка</h2><p class="muted">Сначала выбери квартиру, затем отметь нужные расходники и количество.</p></div><button class="btn btn-secondary" id="closeNewPurchaseRequestModal">Закрыть</button></div><div class="request-grid" style="margin-bottom:1rem;"><label><span class="small">Квартира</span><select id="purchaseApartmentSelect"></select></label><div class="status-box" id="purchaseApartmentHint">Выбери квартиру, чтобы посмотреть только её записи.</div></div><div id="purchaseItemsWrap"></div><div class="actions" style="justify-content:flex-end;margin-top:1rem;"><button class="btn btn-secondary" id="cancelNewPurchaseRequest">Отмена</button><button class="btn btn-primary" id="saveNewPurchaseRequest">Создать заявку</button></div></div></div>
@@ -208,6 +155,6 @@
   <div class="modal-backdrop" id="settingsModal" aria-hidden="true"><div class="modal"><div class="section-head"><div><h2 class="modal-title">Настройки</h2><p class="muted">Настрой отдельно расход при «Новом заезде» и количество в одном комплекте белья/полотенец.</p></div><button class="btn btn-secondary" id="closeSettings">Закрыть</button></div><div class="subsection" style="margin-bottom:1.25rem;"><div class="subsection-title"><h3>Расход при заезде</h3><span class="small">Одноразовые позиции</span></div><div class="deduction-grid" id="deductionSettings"></div></div><div class="subsection"><div class="subsection-title"><h3>Количество в комплекте</h3><span class="small">Не одноразовые позиции</span></div><div class="deduction-grid" id="setSettings"></div></div></div></div>
   <div class="modal-backdrop" id="writeoffModal" aria-hidden="true"><div class="modal" style="width:min(400px,100%)"><div class="section-head"><h2 id="writeoffModalTitle" class="modal-title">Списание</h2><button class="menu-toggle" id="writeoffModalClose" aria-label="Закрыть">✕</button></div><div style="margin-bottom:1rem;"><div class="small" style="margin-bottom:.5rem;color:var(--color-text-muted);" id="writeoffModalSub"></div><label><span class="small" id="writeoffModalLabel">Количество</span><input id="writeoffModalQty" type="number" min="0.1" step="0.1" value="1" style="margin-top:.4rem;" /></label></div><div style="display:flex;gap:.75rem;justify-content:flex-end;"><button class="btn btn-secondary" id="writeoffModalCancel">Отмена</button><button class="btn btn-primary" id="writeoffModalConfirm">Подтвердить</button></div></div></div>
   <div class="modal-backdrop" id="kbModal" aria-hidden="true"><div class="modal" style="width:min(860px,100%);max-height:90dvh;overflow:auto;display:flex;flex-direction:column;gap:0;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;margin-bottom:1rem;"><div><h2 class="modal-title">База знаний</h2><p class="muted" style="margin:0;">Полное руководство — читай при первом использовании</p></div><button class="menu-toggle" id="kbClose" aria-label="Закрыть">✕</button></div><div style="display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1.25rem;" id="kbNav"><button class="history-chip active" data-kb-target="kbs0">Введение</button><button class="history-chip" data-kb-target="kbs1">Квартиры</button><button class="history-chip" data-kb-target="kbs2">Расходники</button><button class="history-chip" data-kb-target="kbs3">Быстрые действия</button><button class="history-chip" data-kb-target="kbs4">История</button><button class="history-chip" data-kb-target="kbs5">Заявки</button><button class="history-chip" data-kb-target="kbs6">Сохранение</button><button class="history-chip" data-kb-target="kbs7">Настройки</button></div><div id="kbBody"><div id="kbs0" class="kb-section active"><div class="hint"><strong>Green Yard</strong><p class="small">Приложение для учёта расходников по нескольким квартирам посуточной аренды. Видишь сколько чего осталось, когда пополнять и автоматически списываешь при каждом заезде.</p></div></div><div id="kbs1" class="kb-section"><div class="hint"><strong>Квартиры</strong><p class="small">Каждая квартира — отдельный объект со своими расходниками и историей.</p></div></div><div id="kbs2" class="kb-section"><div class="hint"><strong>Расходники</strong><p class="small">Два типа: <b>Одноразовые</b> и <b>Не одноразовые</b>. Для первых настраивается расход на заезд, для вторых — количество в комплекте.</p></div></div><div id="kbs3" class="kb-section"><div class="hint"><strong>Быстрые действия</strong><p class="small">Левая панель → раздел «Быстрые действия».</p></div></div><div id="kbs4" class="kb-section"><div class="hint"><strong>История</strong><p class="small">Все действия фиксируются автоматически. Открыть: ☰ → «История списаний».</p></div></div><div id="kbs5" class="kb-section"><div class="hint"><strong>Заявки на закупку</strong><p class="small">Список того что нужно купить. Открыть: ☰ → «Заявки на закупку».</p></div></div><div id="kbs6" class="kb-section"><div class="hint"><strong>Сохранение данных</strong><p class="small">Приложение работает офлайн, данные хранятся прямо в браузере.</p></div></div><div id="kbs7" class="kb-section"><div class="hint"><strong>Настройки</strong><p class="small">Персонализация приложения.</p></div></div></div></div></div>
-  <script type="module" src="./app.js"></script>
+  <script src="./bundle.js?v=1782406482"></script>
 </body>
 </html>

@@ -37,10 +37,11 @@ function bindSectionNav() {
       closeDrawer();
     });
   });
-  // Кнопка финансов в drawer (отдельно от sidebarNavButtons)
+  // Кнопка финансов в drawer — открываем модальное окно
   dom.financeDrawerButton?.addEventListener('click', async () => {
-    updateState((state) => { state.ui.activeSection = 'finance'; });
-    await rerender('Открыт финансовый учёт');
+    ensureFinanceGeneratedForCurrentMonth();
+    render();
+    openModal('financeModal');
     closeDrawer();
   });
 }
@@ -52,6 +53,20 @@ function bindDrawerModals() {
 
   byId('openPurchaseRequestsModal')?.addEventListener('click', () => { renderPurchaseModal(); openModal('purchaseRequestsModal'); closeDrawer(); });
   byId('closePurchaseRequestsModal')?.addEventListener('click', () => closeModal('purchaseRequestsModal'));
+
+  byId('closeFinanceModal')?.addEventListener('click', () => closeModal('financeModal'));
+  byId('financeModal')?.addEventListener('click', (e) => { if (e.target === byId('financeModal')) closeModal('financeModal'); });
+  // Табы внутри финансового модала
+  byId('financeTabsNav')?.addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-finance-tab]');
+    if (!chip) return;
+    const tab = chip.dataset.financeTab;
+    ['entries','recurring','summary','api'].forEach(t => {
+      const el = byId(`financeTab${t.charAt(0).toUpperCase() + t.slice(1)}`);
+      if (el) el.hidden = t !== tab;
+    });
+    document.querySelectorAll('#financeTabsNav [data-finance-tab]').forEach(b => b.classList.toggle('active', b === chip));
+  });
 
   byId('openKnowledgeBase')?.addEventListener('click', () => { openModal('kbModal'); closeDrawer(); });
   byId('kbClose')?.addEventListener('click', () => closeModal('kbModal'));

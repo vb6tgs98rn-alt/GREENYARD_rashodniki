@@ -94,4 +94,9 @@ button,input,select{font:inherit} button{cursor:pointer;border:none;background:n
 .code-block{padding:1rem;border-radius:var(--radius-lg);background:var(--color-surface-2);overflow:auto;font-size:var(--text-sm);line-height:1.45;white-space:pre-wrap}
 
 @media (max-width:1180px){.finance-workspace{grid-template-columns:1fr}}
+
+.finance-modal{width:min(1100px,100%);max-height:92dvh;overflow:auto;display:flex;flex-direction:column;gap:0}
+#financeEntryModal,#recurringExpenseModal,#financeWebhookModal,#confirmDeleteModal{z-index:40}
+
+.finance-modal .finance-list,.finance-modal .recurring-list{display:grid;gap:.75rem;margin-top:.5rem}
 @media (max-width:720px){.finance-card-title{white-space:normal}.finance-card-top{flex-direction:column;gap:.5rem}.finance-card-right{text-align:left}.apt-finance-nums{flex-direction:column;gap:.2rem}}

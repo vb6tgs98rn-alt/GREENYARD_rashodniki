@@ -221,8 +221,7 @@ export function render() {
   if (dom.drawerThemeToggle) dom.drawerThemeToggle.classList.toggle('active', state.ui.theme === 'dark');
   if (dom.themeLabel) dom.themeLabel.textContent = state.ui.theme === 'dark' ? 'Темная тема' : 'Светлая тема';
   dom.sidebarNavButtons.forEach((btn) => btn.classList.toggle('active', btn.dataset.section === state.ui.activeSection));
-  if (dom.inventorySection) dom.inventorySection.hidden = state.ui.activeSection !== 'inventory';
-  if (dom.financeSection) dom.financeSection.hidden = state.ui.activeSection !== 'finance';
+  if (dom.inventorySection) dom.inventorySection.hidden = false; // инвентарь всегда виден, финансы — в модале
   renderInventory(state);
   renderFinance(state);
 }
