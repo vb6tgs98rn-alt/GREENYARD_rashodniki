@@ -231,3 +231,24 @@ export function render() {
   renderInventory(state);
   renderFinance(state);
 }
+
+// ─── Auth UI ───────────────────────────────────────────────────────────────
+
+/**
+ * Обновляет блок авторизации в drawer.
+ * @param {import('@supabase/supabase-js').User|null} user
+ */
+export function renderAuthStatus(user) {
+  if (!dom.authSignedOut || !dom.authSignedIn) return;
+
+  if (user) {
+    dom.authSignedOut.hidden = true;
+    dom.authSignedIn.hidden = false;
+    if (dom.authUserEmail) dom.authUserEmail.textContent = user.email || '';
+  } else {
+    dom.authSignedOut.hidden = false;
+    dom.authSignedIn.hidden = true;
+    if (dom.authMsg) { dom.authMsg.textContent = ''; dom.authMsg.className = 'auth-msg'; }
+    if (dom.authEmailInput) dom.authEmailInput.value = '';
+  }
+}

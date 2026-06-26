@@ -1,9 +1,10 @@
 import dom, { byId } from './dom.js';
 import { normalizeRealtyCalendarBooking, syncRealtyCalendarBookings } from './api.js';
 import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, importBookingsToFinance, monthKey, createFinanceEntryDraft } from './finance.js';
-import { closeDrawer, closeModal, openDrawer, openModal, render, setStatus } from './render.js';
+import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, updateState } from './state.js';
 import { saveToBrowser, exportJson, importJson } from './storage.js';
+import { signInWithEmail, signOut, getCurrentUser } from './supabase-client.js';
 import { addApartment, addCustomItem, applyWriteoff, createPurchaseRequest, deleteApartment, deleteItem, newCheckin, renameCurrentApartment, resetAll, restockDefaults, toggleAutoRequest, toggleRequestDone, updateItemField, updateRequestItemCost } from './actions.js';
 
 async function rerender(statusText = 'Сохранено') {
@@ -674,4 +675,46 @@ export function bindEvents() {
   bindRealtyCalendarSync();
   bindAccordions();
   updateState((state) => { if (!state.ui.finance.month) state.ui.finance.month = monthKey(new Date()); });
+  bindAuth();
+}
+
+// ─── Auth UI ──────────────────────────────────────────────────────────────
+
+function bindAuth() {
+  // Кнопка «Войти по email»
+  dom.authSignInBtn?.addEventListener('click', async () => {
+    const email = dom.authEmailInput?.value?.trim();
+    const msgEl = dom.authMsg;
+    if (!email) {
+      if (msgEl) { msgEl.textContent = 'Введите email.'; msgEl.className = 'auth-msg error'; }
+      return;
+    }
+
+    if (dom.authSignInBtn) dom.authSignInBtn.disabled = true;
+    if (msgEl) { msgEl.textContent = 'Отправляем письмо...'; msgEl.className = 'auth-msg'; }
+
+    const { error } = await signInWithEmail(email);
+
+    if (dom.authSignInBtn) dom.authSignInBtn.disabled = false;
+
+    if (error) {
+      if (msgEl) { msgEl.textContent = `Ошибка: ${error.message}`; msgEl.className = 'auth-msg error'; }
+    } else {
+      if (msgEl) {
+        msgEl.textContent = `Письмо отправлено на ${email}. Откройте ссылку из письма — данные синхронизируются автоматически.`;
+        msgEl.className = 'auth-msg success';
+      }
+    }
+  });
+
+  // Enter в поле email — тоже запускает вход
+  dom.authEmailInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') dom.authSignInBtn?.click();
+  });
+
+  // Кнопка «Выйти»
+  dom.authSignOutBtn?.addEventListener('click', async () => {
+    await signOut();
+    // onAuthStateChange в app.js сам вызовет renderAuthStatus(null)
+  });
 }

@@ -75,5 +75,15 @@ const dom = {
   cancelRecurringExpense: byId('cancelRecurringExpense'),
   financeWebhookExample: byId('financeWebhookExample'),
   closeFinanceWebhookModal: byId('closeFinanceWebhookModal'),
+
+  // Auth UI
+  authBlock: byId('authBlock'),
+  authSignedOut: byId('authSignedOut'),
+  authSignedIn: byId('authSignedIn'),
+  authEmailInput: byId('authEmailInput'),
+  authSignInBtn: byId('authSignInBtn'),
+  authSignOutBtn: byId('authSignOutBtn'),
+  authMsg: byId('authMsg'),
+  authUserEmail: byId('authUserEmail'),
 };
 export default dom;
