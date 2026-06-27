@@ -1,233 +1,191 @@
 import {
-  AUTO_STORAGE_KEY,
-  STORAGE_VERSION,
-  MAX_HISTORY,
+  AUTOSTORAGEKEY,
+  STORAGEVERSION,
+  MAXHISTORY,
   baseItems,
   structuredCloneSafe,
   setState,
   getState,
-  ensureStateShape,
 } from './state.js';
 import { supabase, getCurrentUser } from './supabase-client.js';
-import { USER_STATES_TABLE } from './config.js';
 
-// ─── normalizeImportedState ────────────────────────────────────────────────
+function notify(setStatus, text, silent = false) {
+  if (!silent && typeof setStatus === 'function') setStatus(text);
+}
 
 export function normalizeImportedState(raw) {
   if (!raw || !Array.isArray(raw.apartments) || raw.apartments.length === 0) {
     throw new Error('Некорректный JSON');
   }
+
   const apartments = raw.apartments.map((apartment, index) => ({
     id: apartment.id || crypto.randomUUID(),
     name: typeof apartment.name === 'string' ? apartment.name : `Квартира ${index + 1}`,
-    items: Array.isArray(apartment.items) && apartment.items.length
-      ? apartment.items.map(item => ({
-          id: item.id || crypto.randomUUID(),
-          name: item.name || 'Без названия',
-          unit: item.unit || 'шт',
-          stock: Math.max(0, Number(item.stock || 0)),
-          par: Math.max(0, Number(item.par || 0)),
-          category: item.category === 'linen' ? 'linen' : 'guest',
-          perCheckin: Math.max(0, Number(item.perCheckin || 0)),
-          setAmount: Math.max(0, Number(item.setAmount || 0)),
-        }))
-      : structuredCloneSafe(baseItems),
-    externalIds: { realtyCalendarUnitId: apartment?.externalIds?.realtyCalendarUnitId || '' },
+    items:
+      Array.isArray(apartment.items) && apartment.items.length
+        ? apartment.items.map((item) => ({
+            id: item.id || crypto.randomUUID(),
+            name: item.name || 'Без названия',
+            unit: item.unit || 'шт',
+            stock: Math.max(0, Number(item.stock || 0)),
+            par: Math.max(0, Number(item.par || 0)),
+            category: item.category === 'linen' ? 'linen' : 'guest',
+            perCheckin: Math.max(0, Number(item.perCheckin || 0)),
+            setAmount: Math.max(0, Number(item.setAmount || 0)),
+          }))
+        : structuredCloneSafe(baseItems),
+    externalIds: {
+      realtyCalendarUnitId: apartment?.externalIds?.realtyCalendarUnitId || '',
+    },
   }));
 
   return {
-    version: STORAGE_VERSION,
-    activeApartmentId: apartments.some(a => a.id === raw.activeApartmentId)
+    version: STORAGEVERSION,
+    activeApartmentId: apartments.some((a) => a.id === raw.activeApartmentId)
       ? raw.activeApartmentId
       : apartments[0].id,
-    history: Array.isArray(raw.history) ? raw.history.slice(0, MAX_HISTORY) : [],
+    history: Array.isArray(raw.history) ? raw.history.slice(0, MAXHISTORY) : [],
     purchaseRequests: Array.isArray(raw.purchaseRequests) ? raw.purchaseRequests : [],
     autoRequest: raw.autoRequest === true,
     apartments,
-    finance: raw.finance && typeof raw.finance === 'object' ? raw.finance : {
-      entries: [],
-      recurringRules: [],
-      bookingSync: { provider: 'realtycalendar', lastSyncedAt: '', endpointUrl: '/api/realtycalendar/bookings', importMode: 'merge' },
+    finance: {
+      entries: Array.isArray(raw?.finance?.entries) ? raw.finance.entries : [],
+      recurringRules: Array.isArray(raw?.finance?.recurringRules) ? raw.finance.recurringRules : [],
+      bookingSync: {
+        provider: raw?.finance?.bookingSync?.provider || 'realtycalendar',
+        lastSyncedAt: raw?.finance?.bookingSync?.lastSyncedAt || '',
+        endpointUrl: raw?.finance?.bookingSync?.endpointUrl || '/api/realtycalendar/bookings',
+        importMode: raw?.finance?.bookingSync?.importMode || 'merge',
+      },
     },
     ui: {
       historyFilterApartmentId: raw?.ui?.historyFilterApartmentId || 'all',
       theme: raw?.ui?.theme === 'dark' ? 'dark' : 'light',
       apartmentSearch: typeof raw?.ui?.apartmentSearch === 'string' ? raw.ui.apartmentSearch : '',
       activeSection: raw?.ui?.activeSection || 'inventory',
-      finance: raw?.ui?.finance && typeof raw.ui.finance === 'object' ? raw.ui.finance : {
-        apartmentFilter: 'all',
-        typeFilter: 'all',
-        month: '',
-        showOnlyPending: false,
+      finance: {
+        apartmentFilter: raw?.ui?.finance?.apartmentFilter || 'all',
+        typeFilter: raw?.ui?.finance?.typeFilter || 'all',
+        month: typeof raw?.ui?.finance?.month === 'string' ? raw.ui.finance.month : '',
+        showOnlyPending: raw?.ui?.finance?.showOnlyPending === true,
       },
     },
   };
 }
 
-// ─── Debounce helper ────────────────────────────────────────────────────────
+export async function tryLoadFromApi(setStatus) {
+  const user = await getCurrentUser();
+  if (!user) return false;
 
-let _syncTimer = null;
-function debouncedSync(fn, delay = 1200) {
-  clearTimeout(_syncTimer);
-  _syncTimer = setTimeout(fn, delay);
-}
+  const { data, error } = await supabase
+    .from('app_state')
+    .select('state')
+    .eq('user_id', user.id)
+    .maybeSingle();
 
-// ─── tryLoadFromApi ─────────────────────────────────────────────────────────
-// Загружает state из Supabase. Возвращает true если успешно.
-
-export async function tryLoadFromApi() {
-  try {
-    const user = await getCurrentUser();
-    if (!user) return false;
-
-    const { data, error } = await supabase
-      .from(USER_STATES_TABLE)
-      .select('state_json')
-      .eq('user_id', user.id)
-      .maybeSingle();
-
-    if (error) {
-      console.warn('[storage] tryLoadFromApi error:', error.message);
-      return false;
-    }
-    if (!data || !data.state_json) return false;
-
-    const normalized = normalizeImportedState(data.state_json);
-    setState(ensureStateShape(normalized));
-    return true;
-  } catch (err) {
-    console.warn('[storage] tryLoadFromApi exception:', err);
+  if (error) {
+    notify(setStatus, `Ошибка загрузки из облака: ${error.message}`);
     return false;
   }
-}
 
-// ─── syncToApi ──────────────────────────────────────────────────────────────
-// Сохраняет текущий state в Supabase (upsert). Возвращает true если успешно.
+  if (!data?.state) return false;
 
-export async function syncToApi() {
   try {
-    const user = await getCurrentUser();
-    if (!user) return false;
-
-    const { error } = await supabase
-      .from(USER_STATES_TABLE)
-      .upsert(
-        {
-          user_id: user.id,
-          state_json: getState(),
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'user_id' }
-      );
-
-    if (error) {
-      console.warn('[storage] syncToApi error:', error.message);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.warn('[storage] syncToApi exception:', err);
-    return false;
-  }
-}
-
-// ─── Первичная миграция localStorage → Supabase ─────────────────────────────
-// Вызывается после первого входа. Если в облаке нет записи, но есть локальный
-// state — загружает его в Supabase чтобы не потерять данные.
-
-export async function migrateLocalToCloud() {
-  try {
-    const user = await getCurrentUser();
-    if (!user) return;
-
-    // Проверяем есть ли уже запись в облаке
-    const { data } = await supabase
-      .from(USER_STATES_TABLE)
-      .select('user_id')
-      .eq('user_id', user.id)
-      .maybeSingle();
-
-    if (data) return; // Запись уже есть — не трогаем
-
-    // Есть ли в localStorage что-то ценное?
-    const raw = localStorage.getItem(AUTO_STORAGE_KEY);
-    if (!raw) return;
-
-    let localState;
-    try { localState = normalizeImportedState(JSON.parse(raw)); } catch { return; }
-
-    // Загружаем локальный state в облако
-    await supabase.from(USER_STATES_TABLE).upsert(
-      {
-        user_id: user.id,
-        state_json: localState,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'user_id' }
+    setState(normalizeImportedState(data.state));
+    notify(
+      setStatus,
+      `Загружено из облака в ${new Date().toLocaleTimeString('ru-RU', {
+        hour: '2-digit',
+        minute: '2-digit',
+      })}`,
+      false,
     );
-    console.info('[storage] Локальные данные мигрированы в облако.');
-  } catch (err) {
-    console.warn('[storage] migrateLocalToCloud exception:', err);
-  }
-}
-
-// ─── saveToBrowser ──────────────────────────────────────────────────────────
-// Сохраняет в localStorage + запускает дебаунс-синхронизацию с облаком.
-
-export function saveToBrowser(setStatus, silent = false) {
-  const notify = typeof setStatus === 'function' ? setStatus : () => {};
-  const time = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-
-  // 1. Всегда сохраняем локально (быстро, синхронно)
-  try {
-    localStorage.setItem(AUTO_STORAGE_KEY, JSON.stringify(getState()));
-  } catch (e) {
-    notify('Не удалось сохранить данные.');
-    return;
-  }
-
-  if (!silent) notify(`Сохранено ${time}`);
-
-  // 2. Дебаунс-синхронизация с облаком (1200 мс)
-  debouncedSync(async () => {
-    const ok = await syncToApi();
-    if (!silent) {
-      notify(ok
-        ? `Сохранено локально и в облако · ${time}`
-        : `Сохранено локально · ${time}`
-      );
-    }
-  }, 1200);
-}
-
-// ─── loadFromBrowser ────────────────────────────────────────────────────────
-// Загрузка при старте: сначала облако, потом localStorage, потом ничего.
-
-export async function loadFromBrowser(setStatus) {
-  const notify = typeof setStatus === 'function' ? setStatus : () => {};
-  const time = () => new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-
-  // 1. Пробуем облако
-  const loadedFromApi = await tryLoadFromApi();
-  if (loadedFromApi) {
-    notify(`Загружено из облака · ${time()}`);
-    return true;
-  }
-
-  // 2. Fallback: localStorage
-  try {
-    const raw = localStorage.getItem(AUTO_STORAGE_KEY);
-    if (!raw) return false;
-    setState(normalizeImportedState(JSON.parse(raw)));
-    notify(`Загружено локально · ${time()}`);
     return true;
   } catch {
-    notify('Ошибка чтения локальных данных.');
+    notify(setStatus, 'Ошибка чтения облачных данных');
     return false;
   }
 }
 
-// ─── exportJson / importJson ────────────────────────────────────────────────
+export async function syncToApi(setStatus, silent = false) {
+  const user = await getCurrentUser();
+  if (!user) return false;
+
+  const payload = {
+    user_id: user.id,
+    state: getState(),
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabase.from('app_state').upsert(payload, { onConflict: 'user_id' });
+
+  if (error) {
+    notify(setStatus, `Ошибка сохранения в облако: ${error.message}`, silent);
+    return false;
+  }
+
+  notify(
+    setStatus,
+    `Сохранено в облако в ${new Date().toLocaleTimeString('ru-RU', {
+      hour: '2-digit',
+      minute: '2-digit',
+    })}`,
+    silent,
+  );
+  return true;
+}
+
+export async function migrateLocalToCloud(setStatus) {
+  const synced = await syncToApi(setStatus, true);
+  if (synced) {
+    notify(setStatus, 'Локальные данные перенесены в облако');
+  }
+  return synced;
+}
+
+export function saveToBrowser(setStatus, silent = false) {
+  try {
+    localStorage.setItem(AUTOSTORAGEKEY, JSON.stringify(getState()));
+    if (!silent && typeof setStatus === 'function') {
+      setStatus(
+        `Сохранено локально в ${new Date().toLocaleTimeString('ru-RU', {
+          hour: '2-digit',
+          minute: '2-digit',
+        })}`,
+      );
+    }
+    syncToApi(setStatus, true);
+  } catch {
+    if (typeof setStatus === 'function') {
+      setStatus('Не удалось сохранить данные');
+    }
+  }
+}
+
+export async function loadFromBrowser(setStatus) {
+  const loadedFromApi = await tryLoadFromApi(setStatus);
+  if (loadedFromApi) return true;
+
+  try {
+    const raw = localStorage.getItem(AUTOSTORAGEKEY);
+    if (!raw) return false;
+    setState(normalizeImportedState(JSON.parse(raw)));
+    if (typeof setStatus === 'function') {
+      setStatus(
+        `Загружено локально в ${new Date().toLocaleTimeString('ru-RU', {
+          hour: '2-digit',
+          minute: '2-digit',
+        })}`,
+      );
+    }
+    return true;
+  } catch {
+    if (typeof setStatus === 'function') {
+      setStatus('Ошибка чтения локальных данных');
+    }
+    return false;
+  }
+}
 
 export function exportJson() {
   const blob = new Blob([JSON.stringify(getState(), null, 2)], { type: 'application/json' });
