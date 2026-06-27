@@ -255,7 +255,8 @@ export async function persistState(setStatus, silent = false) {
  *
  *  - Если есть Supabase-пользователь → пробуем облако.
  *      ✓ облако нашлось   → ставим mode='cloud', возвращаем true
- *      ✗ облако пустое    → mode='cloud', берём локалку (если есть) и сразу мигрируем в облако
+ *      ✗ облако пустое    → mode='cloud', но НЕ подмешиваем чужие локальные данные.
+ *        Возвращаем false → app.js поставит createDefaultState() и сохранит его в облако.
  *  - Если пользователя нет → читаем локалку, mode='local'.
  */
 export async function loadInitialState(setStatus) {
@@ -268,14 +269,9 @@ export async function loadInitialState(setStatus) {
     const cloudOk = await tryLoadFromApi(setStatus);
     if (cloudOk) return true;
 
-    // В облаке пусто — пробуем локалку
-    const local = readLocal();
-    if (local) {
-      setState(local);
-      notify(setStatus, 'Переносим локальные данные в облако...');
-      await migrateLocalToCloud(setStatus);
-      return true;
-    }
+    // В облаке для этого user_id пусто. Не подмешиваем сюда локальный кэш —
+    // он мог быть оставлен другим аккаунтом или гостевым сеансом. Возвращаем
+    // false, чтобы app.js явно поставил default state для нового аккаунта.
     return false;
   }
 

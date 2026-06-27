@@ -8,7 +8,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Green Yard</title>
   <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./styles.css?v=1782405924" />
+  <link rel="stylesheet" href="./styles.css?v=20260627-2" />
 </head>
 <body>
   <div class="drawer-backdrop" id="drawerBackdrop"></div>
@@ -31,72 +31,34 @@
       <button class="switch" id="drawerThemeToggle" aria-label="Сменить тему"></button>
     </div>
 
-    <!-- ─── Auth блок ──────────────────────────────────────────── -->
-    <div class="auth-block" id="authBlock">
-      <!-- Не залогинен -->
-      <div id="authSignedOut">
-        <div class="auth-hint">Войдите, чтобы данные синхронизировались между устройствами</div>
-        <div class="auth-form">
-          <input type="email" id="authEmailInput" placeholder="Email" autocomplete="email" inputmode="email" />
-          <div class="auth-password-wrap">
-            <input type="password" id="authPasswordInput" placeholder="Пароль" autocomplete="current-password" />
-            <button type="button" id="authTogglePassword" class="auth-eye" aria-label="Показать пароль">👁</button>
-          </div>
-          <div class="auth-btns">
-            <button class="btn btn-primary" id="authSignInBtn" style="flex:1">Войти</button>
-            <button class="btn btn-secondary" id="authSignUpBtn" style="flex:1">Регистрация</button>
-          </div>
-        </div>
-        <div class="auth-msg" id="authMsg"></div>
-      </div>
-      <!-- Залогинен -->
-      <div id="authSignedIn" hidden>
-        <div class="auth-user-row">
-          <div>
-            <div class="small" style="color:var(--color-text-muted)">Синхронизация включена</div>
-            <div id="authUserEmail" style="font-weight:600;font-size:var(--text-sm);word-break:break-all"></div>
-          </div>
-          <button class="btn btn-secondary btn-sm" id="authSignOutBtn">Выйти</button>
-        </div>
-      </div>
-    </div>
-
     <div class="status-box" id="saveStatus" style="margin-top:.75rem;">Готово к работе</div>
   </aside>
-  <!-- ─── Auth top-bar (видимый блок авторизации) ────────────────────────────── -->
-  <header class="auth-bar" id="authBar">
-    <div class="auth-bar-inner">
-      <div class="auth-bar-brand">
-        <span class="auth-bar-title">Green Yard</span>
-        <span class="auth-bar-badge local" id="authBarStorageBadge" title="Режим хранения">■ Локально</span>
-      </div>
+  <!-- ─── Компактный auth-виджет в правом верхнем углу ─────────────────────── -->
+  <div class="auth-corner" id="authCorner">
+    <!-- Слово-кнопка: "Меню" для гостя, "Выход" для вошедшего -->
+    <button type="button" class="auth-corner-btn" id="authCornerBtn" aria-haspopup="true" aria-expanded="false">Меню</button>
 
-      <!-- Не вошёл -->
-      <div class="auth-bar-signedout" id="authBarSignedOut">
-        <span class="auth-bar-hint">Вы не вошли в аккаунт — данные хранятся только в этом браузере</span>
-        <div class="auth-bar-form">
-          <input type="email" id="authBarEmail" placeholder="Email" autocomplete="email" inputmode="email" />
-          <div class="auth-bar-pwd">
-            <input type="password" id="authBarPassword" placeholder="Пароль" autocomplete="current-password" />
-            <button type="button" id="authBarToggle" class="auth-bar-eye" aria-label="Показать пароль">👁</button>
-          </div>
-          <button class="btn btn-primary btn-sm" id="authBarSignIn" type="button">Войти</button>
-          <button class="btn btn-secondary btn-sm" id="authBarSignUp" type="button">Регистрация</button>
-        </div>
+    <!-- Выпадающее окошко с формой входа (только для гостя, открывается кликом по "Меню") -->
+    <div class="auth-dropdown" id="authDropdown" hidden>
+      <div class="auth-dropdown-title">Вход в аккаунт</div>
+      <div class="auth-dropdown-hint">После входа данные будут привязаны к вашему аккаунту и доступны на других устройствах.</div>
+      <input type="email" id="authBarEmail" placeholder="Email" autocomplete="email" inputmode="email" />
+      <div class="auth-dropdown-pwd">
+        <input type="password" id="authBarPassword" placeholder="Пароль (минимум 6 символов)" autocomplete="current-password" />
+        <button type="button" id="authBarToggle" class="auth-dropdown-eye" aria-label="Показать пароль">👁</button>
       </div>
-
-      <!-- Вошёл -->
-      <div class="auth-bar-signedin" id="authBarSignedIn" hidden>
-        <div class="auth-bar-userinfo">
-          <span class="auth-bar-hint">Вы вошли как</span>
-          <strong id="authBarUserEmail"></strong>
-        </div>
-        <button class="btn btn-secondary btn-sm" id="authBarSignOut" type="button">Выйти</button>
+      <div class="auth-dropdown-actions">
+        <button class="btn btn-primary btn-sm" id="authBarSignIn" type="button" style="flex:1">Войти</button>
+        <button class="btn btn-secondary btn-sm" id="authBarSignUp" type="button" style="flex:1">Регистрация</button>
       </div>
-
-      <div class="auth-bar-msg" id="authBarMsg" role="status" aria-live="polite"></div>
+      <div class="auth-dropdown-msg" id="authBarMsg" role="status" aria-live="polite"></div>
+      <div class="auth-dropdown-foot">
+        <span class="auth-dropdown-badge" id="authBarStorageBadge">■ Локально</span>
+      </div>
     </div>
-  </header>
+    <!-- Скрытое поле email вошедшего (используется кодом для отображения тултипа) -->
+    <span id="authBarUserEmail" hidden></span>
+  </div>
 
   <div class="app">
     <aside class="sidebar">
@@ -222,6 +184,6 @@
   <div class="modal-backdrop" id="settingsModal" aria-hidden="true"><div class="modal"><div class="section-head"><div><h2 class="modal-title">Настройки</h2><p class="muted">Настрой отдельно расход при «Новом заезде» и количество в одном комплекте белья/полотенец.</p></div><button class="btn btn-secondary" id="closeSettings">Закрыть</button></div><div class="subsection" style="margin-bottom:1.25rem;"><div class="subsection-title"><h3>Расход при заезде</h3><span class="small">Одноразовые позиции</span></div><div class="deduction-grid" id="deductionSettings"></div></div><div class="subsection"><div class="subsection-title"><h3>Количество в комплекте</h3><span class="small">Не одноразовые позиции</span></div><div class="deduction-grid" id="setSettings"></div></div></div></div>
   <div class="modal-backdrop" id="writeoffModal" aria-hidden="true"><div class="modal" style="width:min(400px,100%)"><div class="section-head"><h2 id="writeoffModalTitle" class="modal-title">Списание</h2><button class="menu-toggle" id="writeoffModalClose" aria-label="Закрыть">✕</button></div><div style="margin-bottom:1rem;"><div class="small" style="margin-bottom:.5rem;color:var(--color-text-muted);" id="writeoffModalSub"></div><label><span class="small" id="writeoffModalLabel">Количество</span><input id="writeoffModalQty" type="number" min="0.1" step="0.1" value="1" style="margin-top:.4rem;" /></label></div><div style="display:flex;gap:.75rem;justify-content:flex-end;"><button class="btn btn-secondary" id="writeoffModalCancel">Отмена</button><button class="btn btn-primary" id="writeoffModalConfirm">Подтвердить</button></div></div></div>
   <div class="modal-backdrop" id="kbModal" aria-hidden="true"><div class="modal" style="width:min(860px,100%);max-height:90dvh;overflow:auto;display:flex;flex-direction:column;gap:0;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;margin-bottom:1rem;"><div><h2 class="modal-title">База знаний</h2><p class="muted" style="margin:0;">Полное руководство — читай при первом использовании</p></div><button class="menu-toggle" id="kbClose" aria-label="Закрыть">✕</button></div><div style="display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1.25rem;" id="kbNav"><button class="history-chip active" data-kb-target="kbs0">Введение</button><button class="history-chip" data-kb-target="kbs1">Квартиры</button><button class="history-chip" data-kb-target="kbs2">Расходники</button><button class="history-chip" data-kb-target="kbs3">Быстрые действия</button><button class="history-chip" data-kb-target="kbs4">История</button><button class="history-chip" data-kb-target="kbs5">Заявки</button><button class="history-chip" data-kb-target="kbs6">Сохранение</button><button class="history-chip" data-kb-target="kbs7">Настройки</button></div><div id="kbBody"><div id="kbs0" class="kb-section active"><div class="hint"><strong>Green Yard</strong><p class="small">Приложение для учёта расходников по нескольким квартирам посуточной аренды. Видишь сколько чего осталось, когда пополнять и автоматически списываешь при каждом заезде.</p></div></div><div id="kbs1" class="kb-section"><div class="hint"><strong>Квартиры</strong><p class="small">Каждая квартира — отдельный объект со своими расходниками и историей.</p></div></div><div id="kbs2" class="kb-section"><div class="hint"><strong>Расходники</strong><p class="small">Два типа: <b>Одноразовые</b> и <b>Не одноразовые</b>. Для первых настраивается расход на заезд, для вторых — количество в комплекте.</p></div></div><div id="kbs3" class="kb-section"><div class="hint"><strong>Быстрые действия</strong><p class="small">Левая панель → раздел «Быстрые действия».</p></div></div><div id="kbs4" class="kb-section"><div class="hint"><strong>История</strong><p class="small">Все действия фиксируются автоматически. Открыть: ☰ → «История списаний».</p></div></div><div id="kbs5" class="kb-section"><div class="hint"><strong>Заявки на закупку</strong><p class="small">Список того что нужно купить. Открыть: ☰ → «Заявки на закупку».</p></div></div><div id="kbs6" class="kb-section"><div class="hint"><strong>Сохранение данных</strong><p class="small">Без входа данные хранятся в браузере. После входа через email — синхронизируются между устройствами автоматически при каждом сохранении.</p></div></div><div id="kbs7" class="kb-section"><div class="hint"><strong>Настройки</strong><p class="small">Персонализация приложения.</p></div></div></div></div></div>
-  <script type="module" src="./app.js?v=20260627"></script>
+  <script type="module" src="./app.js?v=20260627-2"></script>
 </body>
 </html>

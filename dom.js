@@ -75,30 +75,21 @@ const dom = {
   financeWebhookExample: byId('financeWebhookExample'),
   closeFinanceWebhookModal: byId('closeFinanceWebhookModal'),
 
-  // ─── Auth: верхняя панель (topbar) ───────────────────────────────────────
-  authBar: byId('authBar'),
-  authBarSignedOut: byId('authBarSignedOut'),
-  authBarSignedIn: byId('authBarSignedIn'),
+  // ─── Компактный auth-виджет в правом верхнем углу ────────────────────────
+  // Кнопка-слово: показывает "Меню" гостю и "Выход" вошедшему пользователю.
+  // Выпадающее окошко с формой входа открывается только в режиме "гость".
+  authCorner: byId('authCorner'),
+  authCornerBtn: byId('authCornerBtn'),
+  authDropdown: byId('authDropdown'),
+
+  // Поля и кнопки внутри выпадающего окошка
   authBarEmail: byId('authBarEmail'),
   authBarPassword: byId('authBarPassword'),
   authBarToggle: byId('authBarToggle'),
   authBarSignIn: byId('authBarSignIn'),
   authBarSignUp: byId('authBarSignUp'),
-  authBarSignOut: byId('authBarSignOut'),
   authBarMsg: byId('authBarMsg'),
   authBarUserEmail: byId('authBarUserEmail'),
   authBarStorageBadge: byId('authBarStorageBadge'),
-
-  // ─── Auth: дублирующий блок в drawer (опциональный) ──────────────────────
-  authBlock: byId('authBlock'),
-  authSignedOut: byId('authSignedOut'),
-  authSignedIn: byId('authSignedIn'),
-  authEmailInput: byId('authEmailInput'),
-  authPasswordInput: byId('authPasswordInput'),
-  authSignUpBtn: byId('authSignUpBtn'),
-  authSignInBtn: byId('authSignInBtn'),
-  authSignOutBtn: byId('authSignOutBtn'),
-  authMsg: byId('authMsg'),
-  authUserEmail: byId('authUserEmail'),
 };
 export default dom;

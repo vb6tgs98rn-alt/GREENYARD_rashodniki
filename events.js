@@ -687,19 +687,13 @@ export function bindEvents() {
 }
 
 // ─── Auth UI ──────────────────────────────────────────────────────────────
-// Обработчики работают на ДВУХ наборах кнопок одновременно: топ-бар (основной)
-// и блок в drawer (дублирующий). Если каких-то узлов нет в DOM — просто пропускаем.
+// Все обработчики работают на ОДНОМ наборе элементов внутри auth-dropdown.
+// Никаких дублирующих блоков в drawer больше нет.
 
-function authReadFields(scope) {
-  if (scope === 'bar') {
-    return {
-      email: dom.authBarEmail?.value?.trim() ?? '',
-      password: dom.authBarPassword?.value ?? '',
-    };
-  }
+function authReadFields() {
   return {
-    email: dom.authEmailInput?.value?.trim() ?? '',
-    password: dom.authPasswordInput?.value ?? '',
+    email: dom.authBarEmail?.value?.trim() ?? '',
+    password: dom.authBarPassword?.value ?? '',
   };
 }
 
@@ -712,18 +706,29 @@ function authValidate(email, password) {
 }
 
 function authSetLoading(on) {
-  [dom.authBarSignIn, dom.authBarSignUp, dom.authSignInBtn, dom.authSignUpBtn].forEach((btn) => {
+  [dom.authBarSignIn, dom.authBarSignUp].forEach((btn) => {
     if (btn) btn.disabled = on;
   });
 }
 
 function clearPasswordInputs() {
   if (dom.authBarPassword) dom.authBarPassword.value = '';
-  if (dom.authPasswordInput) dom.authPasswordInput.value = '';
 }
 
-async function doSignIn(scope) {
-  const { email, password } = authReadFields(scope);
+function closeAuthDropdown() {
+  if (dom.authDropdown) dom.authDropdown.hidden = true;
+  if (dom.authCornerBtn) dom.authCornerBtn.setAttribute('aria-expanded', 'false');
+}
+
+function openAuthDropdown() {
+  if (dom.authDropdown) dom.authDropdown.hidden = false;
+  if (dom.authCornerBtn) dom.authCornerBtn.setAttribute('aria-expanded', 'true');
+  // Авто-фокус на email
+  setTimeout(() => dom.authBarEmail?.focus(), 60);
+}
+
+async function doSignIn() {
+  const { email, password } = authReadFields();
   const err = authValidate(email, password);
   if (err) { setAuthMsg(err, 'error'); return; }
   authSetLoading(true);
@@ -731,14 +736,15 @@ async function doSignIn(scope) {
   try {
     const { error } = await signInWithEmail(email, password);
     if (error) {
-      const msg = error.message.includes('Invalid login') || error.message.includes('invalid_credentials')
+      const msg = error.message && (error.message.includes('Invalid login') || error.message.includes('invalid_credentials'))
         ? 'Неверный email или пароль.'
-        : `Ошибка: ${error.message}`;
+        : `Ошибка: ${error.message || error}`;
       setAuthMsg(msg, 'error');
     } else {
       setAuthMsg('Вход выполнен', 'success');
       clearPasswordInputs();
-      // Дальше всё подхватит onAuthStateChange в app.js — он подгрузит cloud state и сделает render().
+      // Закрываем dropdown — дальше всё подхватит onAuthStateChange в app.js
+      closeAuthDropdown();
     }
   } catch (e) {
     setAuthMsg(`Сетевая ошибка: ${e?.message || e}`, 'error');
@@ -747,8 +753,8 @@ async function doSignIn(scope) {
   }
 }
 
-async function doSignUp(scope) {
-  const { email, password } = authReadFields(scope);
+async function doSignUp() {
+  const { email, password } = authReadFields();
   const err = authValidate(email, password);
   if (err) { setAuthMsg(err, 'error'); return; }
   authSetLoading(true);
@@ -756,9 +762,9 @@ async function doSignUp(scope) {
   try {
     const { user, session, error } = await signUpWithEmail(email, password);
     if (error) {
-      const msg = error.message.includes('already registered') || error.message.includes('already exists')
+      const msg = error.message && (error.message.includes('already registered') || error.message.includes('already exists'))
         ? 'Этот email уже зарегистрирован. Попробуйте войти.'
-        : `Ошибка: ${error.message}`;
+        : `Ошибка: ${error.message || error}`;
       setAuthMsg(msg, 'error');
       return;
     }
@@ -766,6 +772,7 @@ async function doSignUp(scope) {
       // Email confirmation отключён — пользователь сразу залогинен
       setAuthMsg('Аккаунт создан, выполняется вход...', 'success');
       clearPasswordInputs();
+      closeAuthDropdown();
     } else if (user && !user.confirmed_at) {
       setAuthMsg(`Аккаунт создан. Проверьте почту ${email} для подтверждения.`, 'success');
     } else {
@@ -780,49 +787,60 @@ async function doSignUp(scope) {
 }
 
 async function doSignOut() {
-  authSetLoading(true);
-  setAuthMsg('Выходим...');
   try {
     await signOutUser();
-    setAuthMsg('');
-    // Дальше всё обработает onAuthStateChange в app.js
+    // Дальнейшую очистку UI и state делает onAuthStateChange в app.js
   } catch (e) {
     setAuthMsg(`Ошибка выхода: ${e?.message || e}`, 'error');
-  } finally {
-    authSetLoading(false);
   }
 }
 
 function bindAuth() {
-  // ─── Top-bar: основной видимый блок ──────────────────────────────────────
-  dom.authBarSignIn?.addEventListener('click', () => doSignIn('bar'));
-  dom.authBarSignUp?.addEventListener('click', () => doSignUp('bar'));
-  dom.authBarSignOut?.addEventListener('click', () => doSignOut());
+  // ─── Главная кнопка-слово ────────────────────────────────────────────────
+  // Поведение зависит от текущего состояния (signed-in / signed-out).
+  // Состояние определяется по наличию класса .signed-in на кнопке (выставляется в render.js).
+  dom.authCornerBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const signedIn = dom.authCornerBtn.classList.contains('signed-in');
+    if (signedIn) {
+      // Вошёл → клик по "Выход" сразу разлогинивает
+      doSignOut();
+    } else {
+      // Гость → клик по "Меню" открывает/закрывает dropdown
+      const isOpen = dom.authDropdown && !dom.authDropdown.hidden;
+      if (isOpen) closeAuthDropdown();
+      else openAuthDropdown();
+    }
+  });
 
-  // Показать/скрыть пароль в топ-баре
+  // Закрытие dropdown по клику вне его
+  document.addEventListener('click', (e) => {
+    if (!dom.authDropdown || dom.authDropdown.hidden) return;
+    if (dom.authCorner && !dom.authCorner.contains(e.target)) {
+      closeAuthDropdown();
+    }
+  });
+
+  // Esc → закрыть dropdown
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && dom.authDropdown && !dom.authDropdown.hidden) {
+      closeAuthDropdown();
+    }
+  });
+
+  // Кнопки внутри dropdown
+  dom.authBarSignIn?.addEventListener('click', () => doSignIn());
+  dom.authBarSignUp?.addEventListener('click', () => doSignUp());
+
+  // Показать/скрыть пароль
   dom.authBarToggle?.addEventListener('click', () => {
     const inp = dom.authBarPassword;
     if (!inp) return;
     inp.type = inp.type === 'password' ? 'text' : 'password';
   });
 
-  // Enter в полях топ-бара → войти
+  // Enter в полях → войти
   [dom.authBarEmail, dom.authBarPassword].forEach((inp) => {
-    inp?.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSignIn('bar'); });
-  });
-
-  // ─── Drawer: дублирующий блок (опциональный) ─────────────────────────────
-  dom.authSignInBtn?.addEventListener('click', () => doSignIn('drawer'));
-  dom.authSignUpBtn?.addEventListener('click', () => doSignUp('drawer'));
-  dom.authSignOutBtn?.addEventListener('click', () => doSignOut());
-
-  byId('authTogglePassword')?.addEventListener('click', () => {
-    const inp = dom.authPasswordInput;
-    if (!inp) return;
-    inp.type = inp.type === 'password' ? 'text' : 'password';
-  });
-
-  [dom.authEmailInput, dom.authPasswordInput].forEach((inp) => {
-    inp?.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSignIn('drawer'); });
+    inp?.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSignIn(); });
   });
 }
