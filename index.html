@@ -63,6 +63,41 @@
 
     <div class="status-box" id="saveStatus" style="margin-top:.75rem;">Готово к работе</div>
   </aside>
+  <!-- ─── Auth top-bar (видимый блок авторизации) ────────────────────────────── -->
+  <header class="auth-bar" id="authBar">
+    <div class="auth-bar-inner">
+      <div class="auth-bar-brand">
+        <span class="auth-bar-title">Green Yard</span>
+        <span class="auth-bar-badge local" id="authBarStorageBadge" title="Режим хранения">■ Локально</span>
+      </div>
+
+      <!-- Не вошёл -->
+      <div class="auth-bar-signedout" id="authBarSignedOut">
+        <span class="auth-bar-hint">Вы не вошли в аккаунт — данные хранятся только в этом браузере</span>
+        <div class="auth-bar-form">
+          <input type="email" id="authBarEmail" placeholder="Email" autocomplete="email" inputmode="email" />
+          <div class="auth-bar-pwd">
+            <input type="password" id="authBarPassword" placeholder="Пароль" autocomplete="current-password" />
+            <button type="button" id="authBarToggle" class="auth-bar-eye" aria-label="Показать пароль">👁</button>
+          </div>
+          <button class="btn btn-primary btn-sm" id="authBarSignIn" type="button">Войти</button>
+          <button class="btn btn-secondary btn-sm" id="authBarSignUp" type="button">Регистрация</button>
+        </div>
+      </div>
+
+      <!-- Вошёл -->
+      <div class="auth-bar-signedin" id="authBarSignedIn" hidden>
+        <div class="auth-bar-userinfo">
+          <span class="auth-bar-hint">Вы вошли как</span>
+          <strong id="authBarUserEmail"></strong>
+        </div>
+        <button class="btn btn-secondary btn-sm" id="authBarSignOut" type="button">Выйти</button>
+      </div>
+
+      <div class="auth-bar-msg" id="authBarMsg" role="status" aria-live="polite"></div>
+    </div>
+  </header>
+
   <div class="app">
     <aside class="sidebar">
       <div class="brand">

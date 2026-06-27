@@ -235,20 +235,52 @@ export function render() {
 // ─── Auth UI ───────────────────────────────────────────────────────────────
 
 /**
- * Обновляет блок авторизации в drawer.
+ * Обновляет видимые auth-блоки: верхний topbar и (опционально) дублирующий блок в drawer.
  * @param {import('@supabase/supabase-js').User|null} user
  */
 export function renderAuthStatus(user) {
-  if (!dom.authSignedOut || !dom.authSignedIn) return;
-
-  if (user) {
-    dom.authSignedOut.hidden = true;
-    dom.authSignedIn.hidden = false;
-    if (dom.authUserEmail) dom.authUserEmail.textContent = user.email || '';
-  } else {
-    dom.authSignedOut.hidden = false;
-    dom.authSignedIn.hidden = true;
-    if (dom.authMsg) { dom.authMsg.textContent = ''; dom.authMsg.className = 'auth-msg'; }
-    if (dom.authEmailInput) dom.authEmailInput.value = '';
+  // Top-bar (основной видимый блок)
+  if (dom.authBarSignedOut && dom.authBarSignedIn) {
+    if (user) {
+      dom.authBarSignedOut.hidden = true;
+      dom.authBarSignedIn.hidden = false;
+      if (dom.authBarUserEmail) dom.authBarUserEmail.textContent = user.email || '';
+    } else {
+      dom.authBarSignedOut.hidden = false;
+      dom.authBarSignedIn.hidden = true;
+      if (dom.authBarMsg) { dom.authBarMsg.textContent = ''; dom.authBarMsg.className = 'auth-bar-msg'; }
+    }
   }
+
+  // Дублирующий блок в drawer (если присутствует)
+  if (dom.authSignedOut && dom.authSignedIn) {
+    if (user) {
+      dom.authSignedOut.hidden = true;
+      dom.authSignedIn.hidden = false;
+      if (dom.authUserEmail) dom.authUserEmail.textContent = user.email || '';
+    } else {
+      dom.authSignedOut.hidden = false;
+      dom.authSignedIn.hidden = true;
+      if (dom.authMsg) { dom.authMsg.textContent = ''; dom.authMsg.className = 'auth-msg'; }
+      if (dom.authEmailInput) dom.authEmailInput.value = '';
+    }
+  }
+}
+
+/** Индикатор режима хранения в топ-баре: 'Облако' / 'Локально'. */
+export function renderStorageBadge(mode) {
+  if (!dom.authBarStorageBadge) return;
+  const cloud = mode === 'cloud';
+  dom.authBarStorageBadge.textContent = cloud ? '☁ Облако' : '■ Локально';
+  dom.authBarStorageBadge.className = 'auth-bar-badge ' + (cloud ? 'cloud' : 'local');
+  dom.authBarStorageBadge.title = cloud
+    ? 'Данные сохраняются в Supabase и синхронизируются между устройствами'
+    : 'Данные хранятся только в этом браузере. Войдите, чтобы включить синхронизацию';
+}
+
+/** Показать сообщение в auth-топбаре и в drawer-блоке синхронно. type: 'error' | 'success' | '' */
+export function setAuthMsg(text, type = '') {
+  const cls = 'auth-bar-msg' + (type ? ' ' + type : '');
+  if (dom.authBarMsg) { dom.authBarMsg.textContent = text || ''; dom.authBarMsg.className = cls; }
+  if (dom.authMsg) { dom.authMsg.textContent = text || ''; dom.authMsg.className = 'auth-msg' + (type ? ' ' + type : ''); }
 }

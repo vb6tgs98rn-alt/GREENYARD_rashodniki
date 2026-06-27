@@ -10,7 +10,6 @@ const dom = {
   sidebarNavButtons: [...document.querySelectorAll('.sidebar [data-section]')],
   financeDrawerButton: byId('openFinanceSection'),
   inventorySection: byId('inventorySection'),
-  // financeSection removed — now it's a modal
   financeModal: byId('financeModal'),
   closeFinanceModal: byId('closeFinanceModal'),
   financeSettingsModal: byId('financeSettingsModal'),
@@ -76,7 +75,21 @@ const dom = {
   financeWebhookExample: byId('financeWebhookExample'),
   closeFinanceWebhookModal: byId('closeFinanceWebhookModal'),
 
-  // Auth UI
+  // ─── Auth: верхняя панель (topbar) ───────────────────────────────────────
+  authBar: byId('authBar'),
+  authBarSignedOut: byId('authBarSignedOut'),
+  authBarSignedIn: byId('authBarSignedIn'),
+  authBarEmail: byId('authBarEmail'),
+  authBarPassword: byId('authBarPassword'),
+  authBarToggle: byId('authBarToggle'),
+  authBarSignIn: byId('authBarSignIn'),
+  authBarSignUp: byId('authBarSignUp'),
+  authBarSignOut: byId('authBarSignOut'),
+  authBarMsg: byId('authBarMsg'),
+  authBarUserEmail: byId('authBarUserEmail'),
+  authBarStorageBadge: byId('authBarStorageBadge'),
+
+  // ─── Auth: дублирующий блок в drawer (опциональный) ──────────────────────
   authBlock: byId('authBlock'),
   authSignedOut: byId('authSignedOut'),
   authSignedIn: byId('authSignedIn'),

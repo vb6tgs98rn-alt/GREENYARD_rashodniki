@@ -144,3 +144,32 @@ button,input,select{font:inherit} button{cursor:pointer;border:none;background:n
 .auth-user-row{display:flex;align-items:center;justify-content:space-between;gap:.5rem}
 .btn-sm{padding:.35rem .75rem;font-size:var(--text-sm);border-radius:var(--radius-md)}
 @media (max-width:720px){.finance-card-title{white-space:normal}.finance-card-top{flex-direction:column;gap:.5rem}.finance-card-right{text-align:left}.apt-finance-nums{flex-direction:column;gap:.2rem}}
+/* ─── Auth top-bar ──────────────────────────────────────────────────────── */
+.auth-bar{position:sticky;top:0;z-index:80;background:var(--color-surface);border-bottom:1px solid var(--color-border);backdrop-filter:saturate(180%) blur(8px);-webkit-backdrop-filter:saturate(180%) blur(8px)}
+.auth-bar-inner{max-width:1400px;margin:0 auto;padding:.55rem 1rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}
+.auth-bar-brand{display:flex;align-items:center;gap:.5rem;font-weight:700;letter-spacing:.04em}
+.auth-bar-title{font-size:var(--text-sm);color:var(--color-text-muted);text-transform:uppercase}
+.auth-bar-badge{font-size:11px;font-weight:600;padding:.18rem .5rem;border-radius:999px;border:1px solid transparent;line-height:1.2}
+.auth-bar-badge.local{background:color-mix(in oklab,var(--color-text-muted) 12%,transparent);color:var(--color-text-muted);border-color:color-mix(in oklab,var(--color-text-muted) 25%,transparent)}
+.auth-bar-badge.cloud{background:color-mix(in oklab,var(--color-success) 14%,transparent);color:var(--color-success);border-color:color-mix(in oklab,var(--color-success) 30%,transparent)}
+.auth-bar-signedout,.auth-bar-signedin{display:flex;align-items:center;gap:.6rem;flex:1;min-width:0;flex-wrap:wrap}
+.auth-bar-hint{font-size:var(--text-sm);color:var(--color-text-muted);white-space:nowrap}
+.auth-bar-form{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;flex:1;min-width:0}
+.auth-bar-form input[type=email],.auth-bar-pwd input{padding:.4rem .7rem;border:1px solid var(--color-border);border-radius:var(--radius-md);background:var(--color-surface-2);font-size:var(--text-sm);min-width:160px;color:var(--color-text)}
+.auth-bar-form input[type=email]:focus,.auth-bar-pwd input:focus{outline:none;border-color:var(--color-accent,#5b8def)}
+.auth-bar-pwd{position:relative;display:flex;align-items:center}
+.auth-bar-pwd input{padding-right:2rem}
+.auth-bar-eye{position:absolute;right:.3rem;top:50%;transform:translateY(-50%);background:transparent;border:0;cursor:pointer;font-size:1rem;line-height:1;padding:.2rem;color:var(--color-text-muted)}
+.auth-bar-eye:hover{color:var(--color-text)}
+.auth-bar-userinfo{display:flex;align-items:baseline;gap:.4rem;min-width:0}
+.auth-bar-userinfo strong{font-size:var(--text-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px}
+.auth-bar-msg{flex-basis:100%;font-size:var(--text-sm);min-height:1.1rem;color:var(--color-text-muted)}
+.auth-bar-msg.error{color:var(--color-error)}
+.auth-bar-msg.success{color:var(--color-success)}
+@media (max-width:720px){
+  .auth-bar-inner{padding:.5rem .75rem;gap:.5rem}
+  .auth-bar-hint{flex-basis:100%;white-space:normal}
+  .auth-bar-form input[type=email],.auth-bar-pwd input{min-width:0;flex:1}
+  .auth-bar-form{gap:.35rem}
+  .auth-bar-form .btn{padding:.35rem .6rem;font-size:12px}
+}

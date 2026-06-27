@@ -1,7 +1,7 @@
 /**
  * supabase-client.js
  * Единственное место, где создаётся Supabase клиент.
- * Загружаем SDK прямо с ESM CDN — никакого бандлера не требуется.
+ * SDK тянем с ESM-CDN — сборщик не нужен.
  */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.2?bundle';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
@@ -17,35 +17,44 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
 
-/** Войти по email + пароль */
-export async function signInWithPassword(email, password) {
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email: String(email || '').trim().toLowerCase(),
-    password,
-  });
-  return { user: data?.user ?? null, error };
-}
-
-/** Зарегистрироваться по email + пароль */
-export async function signUpWithPassword(email, password) {
-  const { data, error } = await supabase.auth.signUp({
-    email: String(email || '').trim().toLowerCase(),
-    password,
-  });
-  return { user: data?.user ?? null, error };
-}
-
-/** Выйти */
-export async function signOut() {
+/** Регистрация по email + password. Возвращает { user, session, error }. */
+export async function signUpWithEmail(email, password) {
   try {
-    await supabase.auth.signOut();
+    const { data, error } = await supabase.auth.signUp({
+      email: String(email || '').trim().toLowerCase(),
+      password,
+    });
+    return { user: data?.user ?? null, session: data?.session ?? null, error };
   } catch (e) {
-    // глушим сетевые ошибки, локальный режим должен жить дальше
-    console.warn('[auth] signOut error:', e);
+    return { user: null, session: null, error: e };
   }
 }
 
-/** Текущий пользователь или null. Не бросает исключений. */
+/** Вход по email + password. Возвращает { user, session, error }. */
+export async function signInWithEmail(email, password) {
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: String(email || '').trim().toLowerCase(),
+      password,
+    });
+    return { user: data?.user ?? null, session: data?.session ?? null, error };
+  } catch (e) {
+    return { user: null, session: null, error: e };
+  }
+}
+
+/** Выход. Не бросает исключений. */
+export async function signOutUser() {
+  try {
+    const { error } = await supabase.auth.signOut();
+    return { error };
+  } catch (e) {
+    console.warn('[auth] signOut error:', e);
+    return { error: e };
+  }
+}
+
+/** Текущий пользователь или null. Не бросает. */
 export async function getCurrentUser() {
   try {
     const { data } = await supabase.auth.getUser();
@@ -56,7 +65,7 @@ export async function getCurrentUser() {
   }
 }
 
-/** Текущая сессия или null. Не бросает исключений. */
+/** Текущая сессия или null. Не бросает. */
 export async function getSession() {
   try {
     const { data } = await supabase.auth.getSession();
@@ -67,8 +76,13 @@ export async function getSession() {
   }
 }
 
-/** Подписка на изменения auth state */
+/** Подписка на изменения auth state. Возвращает функцию отписки. */
 export function onAuthStateChange(callback) {
   const { data } = supabase.auth.onAuthStateChange(callback);
   return () => data?.subscription?.unsubscribe?.();
 }
+
+// Алиасы для обратной совместимости со старым кодом, если он где-то остался
+export const signInWithPassword = signInWithEmail;
+export const signUpWithPassword = signUpWithEmail;
+export const signOut = signOutUser;
