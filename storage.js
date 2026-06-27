@@ -1,13 +1,14 @@
 import {
-  AUTOSTORAGEKEY,
-  STORAGEVERSION,
-  MAXHISTORY,
+  AUTO_STORAGE_KEY,
+  STORAGE_VERSION,
+  MAX_HISTORY,
   baseItems,
   structuredCloneSafe,
   setState,
   getState,
 } from './state.js';
 import { supabase, getCurrentUser } from './supabase-client.js';
+import { USER_STATES_TABLE } from './config.js';
 
 function notify(setStatus, text, silent = false) {
   if (!silent && typeof setStatus === 'function') setStatus(text);
@@ -40,11 +41,11 @@ export function normalizeImportedState(raw) {
   }));
 
   return {
-    version: STORAGEVERSION,
+    version: STORAGE_VERSION,
     activeApartmentId: apartments.some((a) => a.id === raw.activeApartmentId)
       ? raw.activeApartmentId
       : apartments[0].id,
-    history: Array.isArray(raw.history) ? raw.history.slice(0, MAXHISTORY) : [],
+    history: Array.isArray(raw.history) ? raw.history.slice(0, MAX_HISTORY) : [],
     purchaseRequests: Array.isArray(raw.purchaseRequests) ? raw.purchaseRequests : [],
     autoRequest: raw.autoRequest === true,
     apartments,
@@ -73,24 +74,30 @@ export function normalizeImportedState(raw) {
   };
 }
 
+// ─── Cloud (Supabase) ─────────────────────────────────────────────────────────
+
 export async function tryLoadFromApi(setStatus) {
-  const user = await getCurrentUser();
-  if (!user) return false;
-
-  const { data, error } = await supabase
-    .from('app_state')
-    .select('state')
-    .eq('user_id', user.id)
-    .maybeSingle();
-
-  if (error) {
-    notify(setStatus, `Ошибка загрузки из облака: ${error.message}`);
+  let user = null;
+  try {
+    user = await getCurrentUser();
+  } catch {
     return false;
   }
-
-  if (!data?.state) return false;
+  if (!user) return false;
 
   try {
+    const { data, error } = await supabase
+      .from(USER_STATES_TABLE)
+      .select('state')
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (error) {
+      notify(setStatus, `Ошибка загрузки из облака: ${error.message}`);
+      return false;
+    }
+    if (!data?.state) return false;
+
     setState(normalizeImportedState(data.state));
     notify(
       setStatus,
@@ -98,41 +105,52 @@ export async function tryLoadFromApi(setStatus) {
         hour: '2-digit',
         minute: '2-digit',
       })}`,
-      false,
     );
     return true;
-  } catch {
+  } catch (e) {
+    console.warn('[storage] tryLoadFromApi error:', e);
     notify(setStatus, 'Ошибка чтения облачных данных');
     return false;
   }
 }
 
 export async function syncToApi(setStatus, silent = false) {
-  const user = await getCurrentUser();
-  if (!user) return false;
-
-  const payload = {
-    user_id: user.id,
-    state: getState(),
-    updated_at: new Date().toISOString(),
-  };
-
-  const { error } = await supabase.from('app_state').upsert(payload, { onConflict: 'user_id' });
-
-  if (error) {
-    notify(setStatus, `Ошибка сохранения в облако: ${error.message}`, silent);
+  let user = null;
+  try {
+    user = await getCurrentUser();
+  } catch {
     return false;
   }
+  if (!user) return false;
 
-  notify(
-    setStatus,
-    `Сохранено в облако в ${new Date().toLocaleTimeString('ru-RU', {
-      hour: '2-digit',
-      minute: '2-digit',
-    })}`,
-    silent,
-  );
-  return true;
+  try {
+    const payload = {
+      user_id: user.id,
+      state: getState(),
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await supabase
+      .from(USER_STATES_TABLE)
+      .upsert(payload, { onConflict: 'user_id' });
+
+    if (error) {
+      notify(setStatus, `Ошибка сохранения в облако: ${error.message}`, silent);
+      return false;
+    }
+
+    notify(
+      setStatus,
+      `Сохранено в облако в ${new Date().toLocaleTimeString('ru-RU', {
+        hour: '2-digit',
+        minute: '2-digit',
+      })}`,
+      silent,
+    );
+    return true;
+  } catch (e) {
+    console.warn('[storage] syncToApi error:', e);
+    return false;
+  }
 }
 
 export async function migrateLocalToCloud(setStatus) {
@@ -143,9 +161,11 @@ export async function migrateLocalToCloud(setStatus) {
   return synced;
 }
 
+// ─── Local storage ────────────────────────────────────────────────────────────
+
 export function saveToBrowser(setStatus, silent = false) {
   try {
-    localStorage.setItem(AUTOSTORAGEKEY, JSON.stringify(getState()));
+    localStorage.setItem(AUTO_STORAGE_KEY, JSON.stringify(getState()));
     if (!silent && typeof setStatus === 'function') {
       setStatus(
         `Сохранено локально в ${new Date().toLocaleTimeString('ru-RU', {
@@ -154,8 +174,10 @@ export function saveToBrowser(setStatus, silent = false) {
         })}`,
       );
     }
-    syncToApi(setStatus, true);
-  } catch {
+    // Облачный sync — fire-and-forget. Если упадёт — не ломаем UI.
+    syncToApi(setStatus, true).catch((e) => console.warn('[storage] syncToApi bg error:', e));
+  } catch (e) {
+    console.warn('[storage] saveToBrowser error:', e);
     if (typeof setStatus === 'function') {
       setStatus('Не удалось сохранить данные');
     }
@@ -163,11 +185,17 @@ export function saveToBrowser(setStatus, silent = false) {
 }
 
 export async function loadFromBrowser(setStatus) {
-  const loadedFromApi = await tryLoadFromApi(setStatus);
-  if (loadedFromApi) return true;
-
+  // 1) Пробуем облако (если пользователь залогинен и сессия есть)
   try {
-    const raw = localStorage.getItem(AUTOSTORAGEKEY);
+    const loadedFromApi = await tryLoadFromApi(setStatus);
+    if (loadedFromApi) return true;
+  } catch (e) {
+    console.warn('[storage] cloud load failed, fallback to local:', e);
+  }
+
+  // 2) Локально
+  try {
+    const raw = localStorage.getItem(AUTO_STORAGE_KEY);
     if (!raw) return false;
     setState(normalizeImportedState(JSON.parse(raw)));
     if (typeof setStatus === 'function') {
@@ -179,7 +207,8 @@ export async function loadFromBrowser(setStatus) {
       );
     }
     return true;
-  } catch {
+  } catch (e) {
+    console.warn('[storage] loadFromBrowser local error:', e);
     if (typeof setStatus === 'function') {
       setStatus('Ошибка чтения локальных данных');
     }

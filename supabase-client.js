@@ -1,8 +1,9 @@
 /**
  * supabase-client.js
  * Единственное место, где создаётся Supabase клиент.
+ * Загружаем SDK прямо с ESM CDN — никакого бандлера не требуется.
  */
-import { createClient } from '@supabase/supabase-js';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.2?bundle';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -19,7 +20,7 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 /** Войти по email + пароль */
 export async function signInWithPassword(email, password) {
   const { data, error } = await supabase.auth.signInWithPassword({
-    email: email.trim().toLowerCase(),
+    email: String(email || '').trim().toLowerCase(),
     password,
   });
   return { user: data?.user ?? null, error };
@@ -28,7 +29,7 @@ export async function signInWithPassword(email, password) {
 /** Зарегистрироваться по email + пароль */
 export async function signUpWithPassword(email, password) {
   const { data, error } = await supabase.auth.signUp({
-    email: email.trim().toLowerCase(),
+    email: String(email || '').trim().toLowerCase(),
     password,
   });
   return { user: data?.user ?? null, error };
@@ -36,23 +37,38 @@ export async function signUpWithPassword(email, password) {
 
 /** Выйти */
 export async function signOut() {
-  await supabase.auth.signOut();
+  try {
+    await supabase.auth.signOut();
+  } catch (e) {
+    // глушим сетевые ошибки, локальный режим должен жить дальше
+    console.warn('[auth] signOut error:', e);
+  }
 }
 
-/** Текущий пользователь или null */
+/** Текущий пользователь или null. Не бросает исключений. */
 export async function getCurrentUser() {
-  const { data } = await supabase.auth.getUser();
-  return data?.user ?? null;
+  try {
+    const { data } = await supabase.auth.getUser();
+    return data?.user ?? null;
+  } catch (e) {
+    console.warn('[auth] getCurrentUser error:', e);
+    return null;
+  }
 }
 
-/** Текущая сессия или null */
+/** Текущая сессия или null. Не бросает исключений. */
 export async function getSession() {
-  const { data } = await supabase.auth.getSession();
-  return data?.session ?? null;
+  try {
+    const { data } = await supabase.auth.getSession();
+    return data?.session ?? null;
+  } catch (e) {
+    console.warn('[auth] getSession error:', e);
+    return null;
+  }
 }
 
 /** Подписка на изменения auth state */
 export function onAuthStateChange(callback) {
-  const { data: { subscription } } = supabase.auth.onAuthStateChange(callback);
-  return () => subscription.unsubscribe();
+  const { data } = supabase.auth.onAuthStateChange(callback);
+  return () => data?.subscription?.unsubscribe?.();
 }

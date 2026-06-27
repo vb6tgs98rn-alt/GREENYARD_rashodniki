@@ -1,8 +1,6 @@
 {
   "name": "green-yard-app",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
-  "dependencies": {
-    "@supabase/supabase-js": "^2.49.2"
-  }
+  "description": "Green Yard — учёт расходников. ESM-модули загружаются прямо в браузере, Supabase SDK — c esm.sh CDN. Сборка не требуется."
 }

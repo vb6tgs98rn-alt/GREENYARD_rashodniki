@@ -654,7 +654,13 @@ function bindAccordions() {
 }
 
 // ─── Публичный init ───────────────────────────────────────────────────────
+let __eventsBound = false;
 export function bindEvents() {
+  if (__eventsBound) {
+    console.warn('[events] bindEvents() called twice — ignored to prevent duplicate listeners');
+    return;
+  }
+  __eventsBound = true;
   bindDrawers();
   bindTheme();
   bindSectionNav();
