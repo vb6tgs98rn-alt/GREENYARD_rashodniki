@@ -33,12 +33,27 @@ import { USER_STATES_TABLE, LOCAL_STORAGE_KEY } from './config.js';
 let mode = 'local';   // 'local' | 'cloud'
 let cachedUser = null;
 
+// КРИТИЧЕСКИЙ флаг: пока приложение загружает/инициализирует state из облака после входа,
+// НИКАКИЕ вызовы persistState() / syncToApi() / writeLocal() НЕ должны
+// писать в облако или в localStorage — иначе они затрут реальные данные пользователя дефолтным
+// или гостевым state'ом. Снимается в app.js после успешной инициализации облачного state.
+let isHydratingFromCloud = false;
+
 export function getStorageMode() {
   return mode;
 }
 
 export function getCachedUser() {
   return cachedUser;
+}
+
+export function isHydrating() {
+  return isHydratingFromCloud;
+}
+
+/** Включить защиту от случайных записей. Обязательно выключить после завершения. */
+export function setHydrating(on) {
+  isHydratingFromCloud = !!on;
 }
 
 /**
@@ -132,6 +147,15 @@ function writeLocal() {
   }
 }
 
+/**
+ * Безопасный вызов writeLocal() в обход флага hydrating — используется только
+ * после успешной загрузки state из облака, чтобы синхронизировать локальный кэш.
+ * localStorage — всегда кэш, его содержимое не является источником истины в cloud-режиме.
+ */
+export function writeLocalCache() {
+  return writeLocal();
+}
+
 function readLocal() {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -145,13 +169,21 @@ function readLocal() {
 
 // ─── Облачное хранение (Supabase) ─────────────────────────────────────────────
 
-/** Загрузить state текущего пользователя из public.app_state. */
-export async function tryLoadFromApi(setStatus) {
+/**
+ * fetchCloudState() — низкоуровневое чтение public.app_state.
+ * Возвращает объект-результат вместо bool — важно различать:
+ *   { ok: true,  found: true,  state }  — в облаке есть запись
+ *   { ok: true,  found: false }         — запрос выполнился, записи нет (новый аккаунт)
+ *   { ok: false, error }                — сеть/ошибка (пользователь НЕ должен в таком
+ *                                          случае получить дефолтный state в облако!)
+ * Не трогает текущий state в памяти и не пишет в localStorage.
+ */
+export async function fetchCloudState(setStatus) {
   let user = cachedUser;
   if (!user) {
     try { user = await getCurrentUser(); } catch { user = null; }
   }
-  if (!user) return false;
+  if (!user) return { ok: false, error: new Error('No user') };
 
   try {
     const { data, error } = await supabase
@@ -162,24 +194,48 @@ export async function tryLoadFromApi(setStatus) {
 
     if (error) {
       notify(setStatus, `Ошибка загрузки из облака: ${error.message}`);
-      return false;
+      return { ok: false, error };
     }
-    if (!data?.state) return false;
+    if (!data || !data.state) {
+      // Запись отсутствует — это НЕ ошибка, это новый аккаунт
+      return { ok: true, found: false };
+    }
+    return { ok: true, found: true, state: normalizeImportedState(data.state) };
+  } catch (e) {
+    console.warn('[storage] fetchCloudState error:', e);
+    notify(setStatus, 'Ошибка чтения облачных данных');
+    return { ok: false, error: e };
+  }
+}
 
-    setState(normalizeImportedState(data.state));
+/**
+ * Старый API: пробует загрузить и выставить state. Сейчас это обёртка
+ * над fetchCloudState. Различает «запись не найдена» и «ошибка» — во втором
+ * случае возвращает false, НО НЕ выставляет default — это решает app.js.
+ */
+export async function tryLoadFromApi(setStatus) {
+  const res = await fetchCloudState(setStatus);
+  if (res.ok && res.found) {
+    setState(res.state);
     // Локальный write-through, чтобы офлайн-перезагрузка тоже что-то показала
     writeLocal();
     notify(setStatus, `Загружено из облака в ${nowLabel()}`);
     return true;
-  } catch (e) {
-    console.warn('[storage] tryLoadFromApi error:', e);
-    notify(setStatus, 'Ошибка чтения облачных данных');
-    return false;
   }
+  return false;
 }
 
 /** Записать текущий state в public.app_state (upsert по user_id). */
 export async function syncToApi(setStatus, silent = false) {
+  // Главный замок: пока идёт бутстрап после входа — никаких записей в облако.
+  // Это защищает от гонки: «событие SIGNED_IN пришло, но fetchCloudState ещё
+  // не завершился — а какой-нибудь persistState() из events.js уже хочет упсертнуть
+  // дефолтный state в облако». После завершения бутстрапа флаг снимется в app.js.
+  if (isHydratingFromCloud) {
+    console.warn('[storage] syncToApi blocked: hydrating from cloud');
+    return false;
+  }
+
   let user = cachedUser;
   if (!user) {
     try { user = await getCurrentUser(); } catch { user = null; }
@@ -232,6 +288,15 @@ export async function migrateLocalToCloud(setStatus) {
  *   - облака нет, не пытаемся
  */
 export async function persistState(setStatus, silent = false) {
+  // КРИТИЧЕСКИ: во время бутстрапа (загрузка state из облака после входа)
+  // НЕ разрешаем НИКАКОГО сохранения — ни в локалку, ни в облако.
+  // Иначе фоновые persistState() (от render/events) затрут облачные данные
+  // дефолтом или гостевым state'ом.
+  if (isHydratingFromCloud) {
+    console.warn('[storage] persistState blocked: hydrating from cloud');
+    return false;
+  }
+
   // Локальный write-through всегда — он быстрый, синхронный, не сетевой
   const localOk = writeLocal();
 
