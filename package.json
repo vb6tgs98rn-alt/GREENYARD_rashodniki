@@ -2,11 +2,7 @@
   "name": "green-yard-app",
   "version": "1.0.0",
   "private": true,
-  "type": "module",
-  "scripts": {
-    "build": "npx esbuild app.js --bundle --format=esm --outfile=bundle.js --platform=browser"
-  },
   "dependencies": {
-    "@supabase/supabase-js": "^2.108.2"
+    "@supabase/supabase-js": "^2.49.2"
   }
 }
