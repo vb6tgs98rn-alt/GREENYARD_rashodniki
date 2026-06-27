@@ -132,6 +132,11 @@ button,input,select{font:inherit} button{cursor:pointer;border:none;background:n
 .auth-hint{font-size:var(--text-sm);color:var(--color-text-muted);margin-bottom:.65rem;line-height:1.4}
 .auth-form{display:flex;flex-direction:column;gap:.5rem}
 .auth-form input[type="email"]{padding:.55rem .75rem;font-size:var(--text-sm);border:1.5px solid color-mix(in oklab,var(--color-text) 14%,transparent);border-radius:var(--radius-md);background:var(--color-surface);color:var(--color-text);outline:none;transition:border-color .15s}
+
+.auth-password-wrap{position:relative;display:flex;align-items:center}
+.auth-password-wrap input{flex:1;padding-right:2.4rem}
+.auth-eye{position:absolute;right:.5rem;background:none;border:none;cursor:pointer;font-size:1rem;line-height:1;padding:.2rem;color:var(--color-text-muted)}
+.auth-btns{display:flex;gap:.5rem}
 .auth-form input[type="email"]:focus{border-color:var(--color-primary)}
 .auth-msg{font-size:var(--text-sm);margin-top:.45rem;min-height:1.2rem;color:var(--color-text-muted)}
 .auth-msg.error{color:var(--color-error)}

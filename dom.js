@@ -81,6 +81,8 @@ const dom = {
   authSignedOut: byId('authSignedOut'),
   authSignedIn: byId('authSignedIn'),
   authEmailInput: byId('authEmailInput'),
+  authPasswordInput: byId('authPasswordInput'),
+  authSignUpBtn: byId('authSignUpBtn'),
   authSignInBtn: byId('authSignInBtn'),
   authSignOutBtn: byId('authSignOutBtn'),
   authMsg: byId('authMsg'),

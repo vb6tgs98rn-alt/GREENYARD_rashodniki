@@ -4,7 +4,7 @@ import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringR
 import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, updateState } from './state.js';
 import { saveToBrowser, exportJson, importJson } from './storage.js';
-import { signInWithEmail, signOut, getCurrentUser } from './supabase-client.js';
+import { signInWithPassword, signUpWithPassword, signOut, getCurrentUser } from './supabase-client.js';
 import { addApartment, addCustomItem, applyWriteoff, createPurchaseRequest, deleteApartment, deleteItem, newCheckin, renameCurrentApartment, resetAll, restockDefaults, toggleAutoRequest, toggleRequestDone, updateItemField, updateRequestItemCost } from './actions.js';
 
 async function rerender(statusText = 'Сохранено') {
@@ -680,41 +680,87 @@ export function bindEvents() {
 
 // ─── Auth UI ──────────────────────────────────────────────────────────────
 
+function authGetFields() {
+  return {
+    email: dom.authEmailInput?.value?.trim() ?? '',
+    password: dom.authPasswordInput?.value ?? '',
+    msgEl: dom.authMsg,
+  };
+}
+
+function authSetMsg(msgEl, text, type = '') {
+  if (!msgEl) return;
+  msgEl.textContent = text;
+  msgEl.className = 'auth-msg' + (type ? ' ' + type : '');
+}
+
+function authSetLoading(on) {
+  if (dom.authSignInBtn) dom.authSignInBtn.disabled = on;
+  if (dom.authSignUpBtn) dom.authSignUpBtn.disabled = on;
+}
+
+function authValidate(email, password, msgEl) {
+  if (!email) { authSetMsg(msgEl, 'Введите email.', 'error'); return false; }
+  if (!/^[^@]+@[^@]+\.[^@]+$/.test(email)) { authSetMsg(msgEl, 'Неверный формат email.', 'error'); return false; }
+  if (!password) { authSetMsg(msgEl, 'Введите пароль.', 'error'); return false; }
+  if (password.length < 6) { authSetMsg(msgEl, 'Пароль минимум 6 символов.', 'error'); return false; }
+  return true;
+}
+
 function bindAuth() {
-  // Кнопка «Войти по email»
+  // Показать/скрыть пароль
+  byId('authTogglePassword')?.addEventListener('click', () => {
+    const inp = dom.authPasswordInput;
+    if (!inp) return;
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+  });
+
+  // Войти
   dom.authSignInBtn?.addEventListener('click', async () => {
-    const email = dom.authEmailInput?.value?.trim();
-    const msgEl = dom.authMsg;
-    if (!email) {
-      if (msgEl) { msgEl.textContent = 'Введите email.'; msgEl.className = 'auth-msg error'; }
-      return;
-    }
-
-    if (dom.authSignInBtn) dom.authSignInBtn.disabled = true;
-    if (msgEl) { msgEl.textContent = 'Отправляем письмо...'; msgEl.className = 'auth-msg'; }
-
-    const { error } = await signInWithEmail(email);
-
-    if (dom.authSignInBtn) dom.authSignInBtn.disabled = false;
-
+    const { email, password, msgEl } = authGetFields();
+    if (!authValidate(email, password, msgEl)) return;
+    authSetLoading(true);
+    authSetMsg(msgEl, 'Выполняется вход...');
+    const { error } = await signInWithPassword(email, password);
+    authSetLoading(false);
     if (error) {
-      if (msgEl) { msgEl.textContent = `Ошибка: ${error.message}`; msgEl.className = 'auth-msg error'; }
+      const msg = error.message.includes('Invalid login') || error.message.includes('invalid_credentials')
+        ? 'Неверный email или пароль.'
+        : `Ошибка: ${error.message}`;
+      authSetMsg(msgEl, msg, 'error');
     } else {
-      if (msgEl) {
-        msgEl.textContent = `Письмо отправлено на ${email}. Откройте ссылку из письма — данные синхронизируются автоматически.`;
-        msgEl.className = 'auth-msg success';
-      }
+      authSetMsg(msgEl, 'Вход выполнен!', 'success');
+      if (dom.authPasswordInput) dom.authPasswordInput.value = '';
     }
   });
 
-  // Enter в поле email — тоже запускает вход
-  dom.authEmailInput?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') dom.authSignInBtn?.click();
+  // Регистрация
+  dom.authSignUpBtn?.addEventListener('click', async () => {
+    const { email, password, msgEl } = authGetFields();
+    if (!authValidate(email, password, msgEl)) return;
+    authSetLoading(true);
+    authSetMsg(msgEl, 'Создаём аккаунт...');
+    const { user, error } = await signUpWithPassword(email, password);
+    authSetLoading(false);
+    if (error) {
+      const msg = error.message.includes('already registered') || error.message.includes('already exists')
+        ? 'Этот email уже зарегистрирован. Попробуйте войти.'
+        : `Ошибка: ${error.message}`;
+      authSetMsg(msgEl, msg, 'error');
+    } else if (user && !user.confirmed_at) {
+      authSetMsg(msgEl, `Аккаунт создан! Проверьте почту ${email} для подтверждения.`, 'success');
+    } else {
+      authSetMsg(msgEl, 'Аккаунт создан, выполняется вход...', 'success');
+    }
   });
 
-  // Кнопка «Выйти»
+  // Enter в любом поле — войти
+  [dom.authEmailInput, dom.authPasswordInput].forEach(inp => {
+    inp?.addEventListener('keydown', (e) => { if (e.key === 'Enter') dom.authSignInBtn?.click(); });
+  });
+
+  // Выйти
   dom.authSignOutBtn?.addEventListener('click', async () => {
     await signOut();
-    // onAuthStateChange в app.js сам вызовет renderAuthStatus(null)
   });
 }
