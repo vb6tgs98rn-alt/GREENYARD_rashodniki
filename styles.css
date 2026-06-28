@@ -167,3 +167,91 @@ button,input,select{font:inherit} button{cursor:pointer;border:none;background:n
 /* Сдвиг основной шапки sidebar, чтобы кнопка-виджет не наезжала */
 .sidebar .brand{padding-right:5rem}
 @media (max-width:1180px){.sidebar .brand{padding-right:5.5rem}}
+
+/* ─── RealtyCalendar integration ─────────────────────────────────────── */
+.rc-block{
+  border:1px solid var(--color-border);
+  border-radius:var(--radius-lg);
+  padding:1rem;
+  background:var(--color-surface);
+  margin-top:.5rem;
+}
+.rc-block-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:.75rem;
+  margin-bottom:1rem;
+}
+.rc-status{
+  display:inline-flex;
+  align-items:center;
+  gap:.35rem;
+  padding:.3rem .6rem;
+  border-radius:var(--radius-sm,.5rem);
+  font-size:var(--text-sm,.85rem);
+  font-weight:500;
+  background:color-mix(in oklab,var(--color-text-muted) 10%,var(--color-surface-2));
+  color:var(--color-text-muted);
+  white-space:nowrap;
+}
+.rc-status[data-kind="connected"]{
+  background:color-mix(in oklab,var(--color-success) 12%,var(--color-surface-2));
+  color:var(--color-success);
+}
+.rc-status[data-kind="disconnected"]{
+  background:color-mix(in oklab,var(--color-error) 10%,var(--color-surface-2));
+  color:var(--color-error);
+}
+.rc-step{
+  display:flex;
+  gap:.75rem;
+  padding:.85rem 0;
+  border-top:1px solid var(--color-border);
+}
+.rc-step:first-of-type{border-top:none;padding-top:0}
+.rc-step-num{
+  flex-shrink:0;
+  width:2rem;
+  height:2rem;
+  border-radius:50%;
+  background:color-mix(in oklab,var(--color-accent,var(--color-text)) 12%,var(--color-surface-2));
+  color:var(--color-accent,var(--color-text));
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-weight:700;
+  font-size:var(--text-sm,.9rem);
+}
+.rc-step-body{flex:1;min-width:0}
+.rc-step-body strong{display:block;margin-bottom:.15rem}
+.rc-msg{
+  padding:.55rem .75rem;
+  border-radius:var(--radius-sm,.5rem);
+  margin:.5rem 0;
+  font-size:var(--text-sm,.9rem);
+}
+.rc-msg[data-kind="info"]{
+  background:color-mix(in oklab,var(--color-text-muted) 8%,var(--color-surface-2));
+  color:var(--color-text);
+}
+.rc-msg[data-kind="success"]{
+  background:color-mix(in oklab,var(--color-success) 12%,var(--color-surface-2));
+  color:var(--color-success);
+}
+.rc-msg[data-kind="error"]{
+  background:color-mix(in oklab,var(--color-error) 12%,var(--color-surface-2));
+  color:var(--color-error);
+}
+.rc-log-block{
+  margin-top:1rem;
+  padding-top:1rem;
+  border-top:1px solid var(--color-border);
+}
+.rc-log-list{
+  max-height:240px;
+  overflow:auto;
+  font-size:var(--text-sm,.9rem);
+}
+.rc-log-row{border-bottom:1px dashed var(--color-border)}
+.rc-log-row:last-child{border-bottom:none}

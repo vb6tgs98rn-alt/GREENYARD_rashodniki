@@ -1,50 +1,173 @@
+// =============================================================================
+// API-слой для интеграции с RealtyCalendar через Supabase
+// =============================================================================
+// Архитектура:
+//   RC → POST → Supabase Edge Function (realtycalendar-webhook)
+//   Edge Function → INSERT/UPDATE → rc_bookings + rc_webhook_log
+//   Приложение → SELECT FROM rc_bookings → applyRealtyCalendarBookings (finance.js)
+//
+// Один webhook URL общий для всех пользователей: внутри Edge Function
+// мы определяем пользователя по agency_id (он уникален в RealtyCalendar).
+// =============================================================================
+
+import { getSupabaseClient } from './supabase-client.js';
+
 export const API_CONFIG = {
-  realtyCalendarWebhookPath: '/api/realtycalendar/bookings',
-  realtyCalendarPullPath: '/api/realtycalendar/bookings/sync'
+  webhookUrl: 'https://wpwuxcxmtvdxftqrrxuu.supabase.co/functions/v1/realtycalendar-webhook',
 };
 
-async function safeJson(response) {
-  const text = await response.text();
-  try {
-    return text ? JSON.parse(text) : {};
-  } catch {
-    return { raw: text };
+/**
+ * Публичный URL вебхука, который пользователь вставит в настройки RealtyCalendar.
+ */
+export function getWebhookUrl() {
+  return API_CONFIG.webhookUrl;
+}
+
+/**
+ * Загрузить RC-бронирования текущего пользователя.
+ * RLS-политика фильтрует по auth.uid().
+ * @param {number} [limit=2000]
+ * @returns {Promise<Array>}
+ */
+export async function fetchRealtyCalendarBookings(limit = 2000) {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return [];
+  const { data, error } = await supabase
+    .from('rc_bookings')
+    .select('*')
+    .eq('user_id', user.id)
+    .order('rc_created_at', { ascending: false })
+    .limit(Math.max(1, Math.min(5000, Number(limit) || 2000)));
+  if (error) {
+    console.warn('[RC] fetchRealtyCalendarBookings error:', error.message);
+    return [];
   }
+  return data || [];
 }
 
-export async function postRealtyCalendarBookings(payload, endpoint = API_CONFIG.realtyCalendarWebhookPath) {
-  const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-  if (!response.ok) throw new Error(`Webhook error: ${response.status}`);
-  return safeJson(response);
+/**
+ * Последние строки журнала вебхуков (для блока «Последние события»).
+ * @param {number} [limit=20]
+ */
+export async function fetchRealtyCalendarLog(limit = 20) {
+  const supabase = getSupabaseClient();
+  if (!supabase) return [];
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return [];
+  const { data, error } = await supabase
+    .from('rc_webhook_log')
+    .select('id, action, status, booking_id, http_status, error_text, received_at')
+    .eq('user_id', user.id)
+    .order('received_at', { ascending: false })
+    .limit(Math.max(1, Math.min(200, Number(limit) || 20)));
+  if (error) {
+    console.warn('[RC] fetchRealtyCalendarLog error:', error.message);
+    return [];
+  }
+  return data || [];
 }
 
-export async function syncRealtyCalendarBookings(params = {}, endpoint = API_CONFIG.realtyCalendarPullPath) {
-  const query = new URLSearchParams(params).toString();
-  const response = await fetch(query ? `${endpoint}?${query}` : endpoint);
-  if (!response.ok) throw new Error(`Sync error: ${response.status}`);
-  return safeJson(response);
+/**
+ * Прочитать текущую интеграцию пользователя.
+ * @returns {Promise<{agency_id:number, enabled:boolean, last_event_at?:string}|null>}
+ */
+export async function fetchRealtyCalendarIntegration() {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+  const { data, error } = await supabase
+    .from('rc_integrations')
+    .select('agency_id, enabled, last_event_at, created_at, updated_at')
+    .eq('user_id', user.id)
+    .maybeSingle();
+  if (error) {
+    console.warn('[RC] fetchRealtyCalendarIntegration error:', error.message);
+    return null;
+  }
+  return data || null;
 }
 
-export function normalizeRealtyCalendarBooking(raw) {
-  return {
-    externalBookingId: String(raw.externalBookingId || raw.id || crypto.randomUUID()),
-    apartmentExternalId: String(raw.apartmentExternalId || raw.unitId || ''),
-    apartmentId: String(raw.apartmentId || ''),
-    guestName: raw.guestName || raw.guest || 'Гость',
-    checkIn: raw.checkIn || raw.arrivalDate || raw.startDate || '',
-    checkOut: raw.checkOut || raw.departureDate || raw.endDate || '',
-    amount: Number(raw.amount || raw.total || raw.payout || 0),
-    currency: raw.currency || 'RUB',
-    channel: raw.channel || raw.source || 'RealtyCalendar',
-    status: raw.status || 'confirmed',
-    importedAt: new Date().toISOString(),
-    raw
-  };
+/**
+ * Сохранить/обновить интеграцию: привязать agency_id текущему пользователю.
+ * Бросает ошибку с понятным текстом, если что-то пошло не так.
+ * @param {number|string} agencyId
+ */
+export async function saveRealtyCalendarIntegration(agencyId) {
+  const supabase = getSupabaseClient();
+  if (!supabase) throw new Error('Supabase не подключён');
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Войдите в аккаунт');
+  const num = Number(agencyId);
+  if (!Number.isInteger(num) || num <= 0) {
+    throw new Error('agency_id должен быть положительным числом');
+  }
+  const { error } = await supabase
+    .from('rc_integrations')
+    .upsert(
+      {
+        user_id: user.id,
+        agency_id: num,
+        enabled: true,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' }
+    );
+  if (error) {
+    const msg = String(error.message || '');
+    if (msg.includes('rc_integrations_agency_id_key') || msg.toLowerCase().includes('duplicate')) {
+      throw new Error('Этот agency_id уже подключён к другому аккаунту');
+    }
+    throw new Error(msg || 'Не удалось сохранить интеграцию');
+  }
+  return { ok: true };
 }
 
+/**
+ * Отключить интеграцию: удалить связку user ↔ agency_id.
+ */
+export async function disconnectRealtyCalendar() {
+  const supabase = getSupabaseClient();
+  if (!supabase) throw new Error('Supabase не подключён');
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Войдите в аккаунт');
+  const { error } = await supabase
+    .from('rc_integrations')
+    .delete()
+    .eq('user_id', user.id);
+  if (error) throw new Error(error.message || 'Не удалось отключить интеграцию');
+  return { ok: true };
+}
+
+/**
+ * Пример payload от RealtyCalendar (для блока диагностики).
+ * Возвращает строку JSON, готовую к выводу в <pre>.
+ */
 export function buildFinanceWebhookExample() {
-  return {
-    event: 'booking.created',
-    bookings: [{ externalBookingId: 'rc-1001', apartmentExternalId: 'unit-101', guestName: 'Иван Петров', checkIn: '2026-06-28', checkOut: '2026-07-02', amount: 18500, currency: 'RUB', channel: 'Airbnb', status: 'confirmed' }]
-  };
+  return JSON.stringify(
+    {
+      action: 'create_booking',
+      status: 'booked',
+      data: {
+        booking: {
+          id: 113386019,
+          agency_id: 65408,
+          realty_id: 208656,
+          begin_date: '2026-07-01',
+          end_date: '2026-07-03',
+          amount: 5000,
+          prepayment: 4500,
+          apartment: { id: 208656, title: 'Тверская 18' },
+          client: { fio: 'Иван Петров', phone: '+7 999 888-88-88' },
+          source: 'manual',
+          url: 'https://realtycalendar.ru/event_calendars/113386019',
+          created_at: '2026-06-28T11:30:24.239+03:00',
+        },
+      },
+    },
+    null,
+    2
+  );
 }

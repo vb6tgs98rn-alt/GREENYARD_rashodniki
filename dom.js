@@ -91,5 +91,21 @@ const dom = {
   authBarMsg: byId('authBarMsg'),
   authBarUserEmail: byId('authBarUserEmail'),
   authBarStorageBadge: byId('authBarStorageBadge'),
+
+  // ─── Интеграция с RealtyCalendar ────────────────────────────────
+  // Блок в модалке "Настройки и интеграции".
+  rcStatusBox:           byId('rcStatusBox'),
+  rcAgencyIdInput:       byId('rcAgencyIdInput'),
+  rcSaveBtn:             byId('rcSaveBtn'),
+  rcDisconnectBtn:       byId('rcDisconnectBtn'),
+  rcRefreshBtn:          byId('rcRefreshBtn'),
+  rcWebhookUrl:          byId('rcWebhookUrl'),
+  rcCopyWebhookBtn:      byId('rcCopyWebhookBtn'),
+  rcLogList:             byId('rcLogList'),
+  rcMsg:                 byId('rcMsg'),
+
+  // Поле realty_id в форме переименования квартиры
+  apartmentRealtyId:     byId('apartmentRealtyId'),
+  saveApartmentRealtyId: byId('saveApartmentRealtyId'),
 };
 export default dom;

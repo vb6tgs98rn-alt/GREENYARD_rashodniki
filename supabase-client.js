@@ -82,6 +82,12 @@ export function onAuthStateChange(callback) {
   return () => data?.subscription?.unsubscribe?.();
 }
 
+/** Возвращает уже созданный Supabase-клиент. Удобный геттер для модулей, которым
+ *  нужен прямой доступ (например, для realtime-подписок). */
+export function getSupabaseClient() {
+  return supabase;
+}
+
 // Алиасы для обратной совместимости со старым кодом, если он где-то остался
 export const signInWithPassword = signInWithEmail;
 export const signUpWithPassword = signUpWithEmail;

@@ -1,5 +1,4 @@
 import dom, { byId } from './dom.js';
-import { buildFinanceWebhookExample } from './api.js';
 import { getFinanceSummary, monthKey, STATUS_LABELS } from './finance.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, statusBy } from './state.js';
 
@@ -38,6 +37,8 @@ function renderInventory(state) {
   if (!apartment || !dom.pageTitle) return;
   dom.pageTitle.textContent = getDisplayApartmentName(apartment.name);
   dom.apartmentName.value = apartment.name;
+  // ID объекта в RealtyCalendar (редактируется внутри карточки)
+  if (dom.apartmentRealtyId) dom.apartmentRealtyId.value = apartment.realtyCalendarUnitId || '';
   dom.apartmentSearch.value = state.ui.apartmentSearch || '';
   const filteredApartments = state.apartments.filter((a) =>
     getDisplayApartmentName(a.name).toLowerCase().includes((state.ui.apartmentSearch || '').toLowerCase())
@@ -75,6 +76,9 @@ function financeEntryCard(entry) {
   const isIncome = entry.type === 'income';
   const st = STATUS_LABELS[entry.status] || { label: entry.status, cls: 'planned' };
   const canConfirm = entry.status === 'planned' || entry.status === 'pending';
+  const gross = Number(entry.amount || 0);
+  const net = Number(entry.netAmount != null ? entry.netAmount : gross);
+  const showTwoSums = isIncome && net !== gross;
   return `<article class="finance-card ${entry.type}" data-entry-id="${entry.id}">
     <div class="finance-card-top">
       <div class="finance-card-left">
@@ -90,7 +94,8 @@ function financeEntryCard(entry) {
         ${entry.notes ? `<div class="finance-card-notes">${entry.notes}</div>` : ''}
       </div>
       <div class="finance-card-right">
-        <div class="finance-amount ${entry.type}">${isIncome ? '+' : '−'}${fmt(entry.amount)} ₽</div>
+        <div class="finance-amount ${entry.type}">${isIncome ? '+' : '−'}${fmt(showTwoSums ? net : gross)} ₽</div>
+        ${showTwoSums ? `<div class="small" style="margin-top:.15rem;color:var(--color-text-muted)">валовый: ${fmt(gross)} ₽</div>` : ''}
         <span class="finance-status ${st.cls}">${st.label}</span>
       </div>
     </div>
@@ -144,39 +149,46 @@ function renderFinance(state) {
   dom.financeMonthFilter.value = filter.month || monthKey(new Date());
   dom.financeOnlyPending.checked = !!filter.showOnlyPending;
 
-  // Итоговые статы
-  const profitColor = summary.profit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
+  // Итоговые статы: валовый и чистый доход / прибыль
+  const netProfitColor = summary.netProfit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
+  const showGross = summary.income !== summary.netIncome;
   dom.financeSummary.innerHTML = `
     <article class="stat">
-      <span>Доходы</span>
-      <strong style="color:var(--color-success)">${fmt(summary.income)} ₽</strong>
+      <span>Чистый доход</span>
+      <strong style="color:var(--color-success)">${fmt(summary.netIncome)} ₽</strong>
+      ${showGross ? `<span class="small" style="color:var(--color-text-muted)">валовый: ${fmt(summary.income)} ₽</span>` : ''}
     </article>
     <article class="stat">
       <span>Расходы</span>
       <strong style="color:var(--color-error)">${fmt(summary.expense)} ₽</strong>
     </article>
     <article class="stat">
-      <span>Прибыль</span>
-      <strong style="color:${profitColor}">${summary.profit >= 0 ? '+' : ''}${fmt(summary.profit)} ₽</strong>
+      <span>Чистая прибыль</span>
+      <strong style="color:${netProfitColor}">${summary.netProfit >= 0 ? '+' : ''}${fmt(summary.netProfit)} ₽</strong>
+      ${showGross ? `<span class="small" style="color:var(--color-text-muted)">валовая: ${summary.profit >= 0 ? '+' : ''}${fmt(summary.profit)} ₽</span>` : ''}
     </article>
     <article class="stat">
       <span>Проводок</span>
       <strong>${entries.length}</strong>
     </article>`;
 
-  // По квартирам (мини-блок)
+  // По квартирам (мини-блок) — чистая прибыль в приоритете
   const aptEntries = Object.values(summary.byApartment);
   if (dom.financeByApartment) {
     dom.financeByApartment.innerHTML = aptEntries.length
       ? aptEntries.map((apt) => {
-          const profit = apt.income - apt.expense;
-          const pc = profit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
+          const netIncome = Number(apt.netIncome != null ? apt.netIncome : apt.income || 0);
+          const grossIncome = Number(apt.income || 0);
+          const expense = Number(apt.expense || 0);
+          const netProfit = netIncome - expense;
+          const pc = netProfit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
+          const hasGross = grossIncome !== netIncome;
           return `<div class="apt-finance-row">
             <div class="apt-finance-name">${apt.name}</div>
             <div class="apt-finance-nums">
-              <span style="color:var(--color-success)">+${fmt(apt.income)}</span>
-              <span style="color:var(--color-error)">−${fmt(apt.expense)}</span>
-              <span style="color:${pc};font-weight:700">${profit >= 0 ? '+' : ''}${fmt(profit)} ₽</span>
+              <span style="color:var(--color-success)" title="Чистый доход">+${fmt(netIncome)}${hasGross ? ` <span class="small" style="color:var(--color-text-muted)">(вал. ${fmt(grossIncome)})</span>` : ''}</span>
+              <span style="color:var(--color-error)">−${fmt(expense)}</span>
+              <span style="color:${pc};font-weight:700">${netProfit >= 0 ? '+' : ''}${fmt(netProfit)} ₽</span>
             </div>
           </div>`;
         }).join('')
@@ -193,18 +205,8 @@ function renderFinance(state) {
     ? state.finance.recurringRules.map(recurringRuleCard).join('')
     : '<div class="empty">Регулярные расходы ещё не настроены.</div>';
 
-  // Webhook
-  const syncText = state.finance.bookingSync.lastSyncedAt
-    ? new Date(state.finance.bookingSync.lastSyncedAt).toLocaleString('ru-RU')
-    : 'Ещё не выполнялась';
-  if (dom.financeWebhookEndpoint) dom.financeWebhookEndpoint.textContent = state.finance.bookingSync.endpointUrl;
-  if (dom.financeLastSync) dom.financeLastSync.textContent = syncText;
-  // Дублируем в settingsModal display-элементы
-  const endpointDisplay = byId('financeEndpointDisplay');
-  const syncDisplay = byId('financeLastSyncDisplay');
-  if (endpointDisplay) endpointDisplay.textContent = state.finance.bookingSync.endpointUrl;
-  if (syncDisplay) syncDisplay.textContent = syncText;
-  if (dom.financeWebhookExample) dom.financeWebhookExample.textContent = JSON.stringify(buildFinanceWebhookExample(), null, 2);
+  // RealtyCalendar интеграция — статус + журнал в financeSettingsModal
+  renderRcIntegration(state);
 
   // Селекты квартир в модалках
   [dom.financeEntryApartment, dom.recurringApartment].forEach((el) => {
@@ -214,6 +216,60 @@ function renderFinance(state) {
   });
   if (dom.financeEntryDate && !dom.financeEntryDate.value) dom.financeEntryDate.value = new Date().toISOString().slice(0, 10);
   if (dom.recurringStartDate && !dom.recurringStartDate.value) dom.recurringStartDate.value = new Date().toISOString().slice(0, 10);
+}
+
+// ─── RealtyCalendar: статус + журнал ─────────────────────────────────────
+function rcStatusLabelText(action, status, errorText) {
+  if (errorText && errorText === 'agency_not_registered') return 'не найдено агентство';
+  if (errorText && errorText === 'integration_disabled') return 'интеграция отключена';
+  if (errorText && errorText === 'skipped_request_status') return 'заявка (пропущено)';
+  if (errorText && errorText.startsWith('upsert_failed')) return 'ошибка записи';
+  if (action === 'create_booking') return 'новая бронь';
+  if (action === 'update_booking') return 'изменение брони';
+  if (action === 'cancel_booking') return 'отмена брони';
+  if (action === 'delete_booking') return 'удаление брони';
+  return action || status || '—';
+}
+
+function renderRcIntegration(state) {
+  const rc = state.integrations?.realtycalendar || { connected: false, agencyId: '', lastEventAt: null, recentLog: [] };
+
+  // Статусный бэдж
+  if (dom.rcStatusBox) {
+    if (rc.connected) {
+      const last = rc.lastEventAt ? new Date(rc.lastEventAt).toLocaleString('ru-RU') : 'событий ещё не было';
+      dom.rcStatusBox.textContent = `Подключено · ${last}`;
+      dom.rcStatusBox.dataset.kind = 'connected';
+    } else {
+      dom.rcStatusBox.textContent = 'Не подключено';
+      dom.rcStatusBox.dataset.kind = 'disconnected';
+    }
+  }
+
+  // Поле agency_id
+  if (dom.rcAgencyIdInput && dom.rcAgencyIdInput.value !== (rc.agencyId || '')) {
+    dom.rcAgencyIdInput.value = rc.agencyId || '';
+  }
+  if (dom.rcAgencyIdInput) dom.rcAgencyIdInput.disabled = !!rc.connected;
+  if (dom.rcSaveBtn) dom.rcSaveBtn.hidden = !!rc.connected;
+  if (dom.rcDisconnectBtn) dom.rcDisconnectBtn.hidden = !rc.connected;
+
+  // Журнал: источник — rc.recentLog (заполняется в app.js / events.js)
+  if (dom.rcLogList) {
+    const log = Array.isArray(rc.recentLog) ? rc.recentLog : [];
+    if (!log.length) {
+      dom.rcLogList.innerHTML = '<div class="empty">Пока пусто. После подключения и вставки URL в RC здесь появятся входящие события.</div>';
+    } else {
+      dom.rcLogList.innerHTML = log.map((row) => {
+        const when = row.received_at ? new Date(row.received_at).toLocaleString('ru-RU') : '';
+        const label = rcStatusLabelText(row.action, row.status, row.error_text);
+        const ok = !row.error_text || row.error_text === 'skipped_request_status';
+        const color = ok ? 'var(--color-text)' : 'var(--color-error)';
+        const idStr = row.booking_id ? ` <span class="small" style="color:var(--color-text-muted)">#${row.booking_id}</span>` : '';
+        return `<div class="rc-log-row" style="display:flex;justify-content:space-between;gap:.5rem;padding:.4rem 0;border-bottom:1px dashed var(--color-border)"><div style="color:${color}">${label}${idStr}</div><div class="small" style="color:var(--color-text-muted)">${when}</div></div>`;
+      }).join('');
+    }
+  }
 }
 
 export function openModal(id) { document.getElementById(id)?.classList.add('open'); }

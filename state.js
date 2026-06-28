@@ -1,5 +1,5 @@
 
-export const STORAGE_VERSION = 2;
+export const STORAGE_VERSION = 3;
 export const AUTO_STORAGE_KEY = 'green-yard-refactor-v2';
 export const MAX_HISTORY = 40;
 export const ALL_APARTMENTS_FILTER = 'all';
@@ -36,6 +36,9 @@ export function createDefaultState() {
       recurringRules: [],
       bookingSync: { provider: 'realtycalendar', lastSyncedAt: '', endpointUrl: '/api/realtycalendar/bookings', importMode: 'merge' }
     },
+    integrations: {
+      realtycalendar: { connected: false, agencyId: '', lastEventAt: '' }
+    },
     ui: {
       historyFilterApartmentId: ALL_APARTMENTS_FILTER,
       theme: 'light',
@@ -57,6 +60,15 @@ export function ensureStateShape(rawState) {
   if (!Array.isArray(next.finance.entries)) next.finance.entries = [];
   if (!Array.isArray(next.finance.recurringRules)) next.finance.recurringRules = [];
   if (!next.finance.bookingSync || typeof next.finance.bookingSync !== 'object') next.finance.bookingSync = { provider: 'realtycalendar', lastSyncedAt: '', endpointUrl: '/api/realtycalendar/bookings', importMode: 'merge' };
+  if (!next.integrations || typeof next.integrations !== 'object') next.integrations = {};
+  if (!next.integrations.realtycalendar || typeof next.integrations.realtycalendar !== 'object') next.integrations.realtycalendar = { connected: false, agencyId: '', lastEventAt: '' };
+  if (typeof next.integrations.realtycalendar.agencyId !== 'string') next.integrations.realtycalendar.agencyId = String(next.integrations.realtycalendar.agencyId || '');
+  // Мигрируем финансовые записи: добавляем netAmount, если его нет (по умолчанию = amount).
+  next.finance.entries = next.finance.entries.map((entry) => {
+    if (!entry || typeof entry !== 'object') return entry;
+    if (typeof entry.netAmount !== 'number') entry.netAmount = Number(entry.amount || 0);
+    return entry;
+  });
   if (!next.ui || typeof next.ui !== 'object') next.ui = {};
   if (!next.ui.historyFilterApartmentId) next.ui.historyFilterApartmentId = ALL_APARTMENTS_FILTER;
   if (!next.ui.theme) next.ui.theme = 'light';

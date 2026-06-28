@@ -24,6 +24,9 @@ export function ensureFinanceGeneratedForCurrentMonth() {
 
 export function createFinanceEntryDraft(data = {}) {
   const apartment = findApartmentById(data.apartmentId) || currentApartment();
+  const amount = Number(data.amount || 0);
+  // Чистая прибыль: если явно не указана — равна полной сумме (для ручных записей комиссии нет).
+  const netAmount = data.netAmount != null ? Number(data.netAmount) : amount;
   return {
     id: crypto.randomUUID(),
     apartmentId: apartment?.id || '',
@@ -31,7 +34,8 @@ export function createFinanceEntryDraft(data = {}) {
     type: data.type || FINANCE_TYPES.expense,
     category: data.category || '',
     title: data.title || '',
-    amount: Number(data.amount || 0),
+    amount,                            // оборот (валовая сумма, включая комиссию площадки)
+    netAmount,                         // чистая прибыль (без комиссии)
     currency: data.currency || 'RUB',
     date: data.date || new Date().toISOString().slice(0, 10),
     source: data.source || 'manual',
@@ -140,43 +144,126 @@ export function generateRecurringEntriesForMonth(month) {
   return created;
 }
 
-export function importBookingsToFinance(bookings = []) {
-  const added = [];
+// =============================================================================
+// Синхронизация бронирований RealtyCalendar в финучёт
+// =============================================================================
+// Правила:
+//   • 1 бронь = 1 запись в финучете (тип: доход)
+//   • Дата = дата создания брони в RC (rc_created_at)
+//   • amount = booking.amount (валовая сумма, с комиссией площадки)
+//   • netAmount = booking.prepayment (чистая прибыль)
+//   • Отмена/удаление в RC → удаляем запись
+//   • Изменение в RC → обновляем существующую запись (по externalBookingId)
+//   • Если в карточке квартиры не указан realtyCalendarUnitId — бронь пропускается
+// =============================================================================
+
+function findApartmentByRealtyId(state, realtyId) {
+  if (realtyId == null || realtyId === '') return null;
+  const target = String(realtyId);
+  return state.apartments.find(
+    (a) => a.externalIds?.realtyCalendarUnitId && String(a.externalIds.realtyCalendarUnitId) === target
+  ) || null;
+}
+
+function formatRange(beginDate, endDate) {
+  if (!beginDate && !endDate) return '';
+  return `${beginDate || '—'} → ${endDate || '—'}`;
+}
+
+/**
+ * Приводит финансовые записи к текущему состоянию RC-бронирований из Supabase.
+ * Идемпотентна: можно вызывать многократно — результат одинаковый.
+ * @param {Array} bookings — ряды из таблицы rc_bookings
+ * @returns {{ added:number, updated:number, removed:number, skipped:number }}
+ */
+export function applyRealtyCalendarBookings(bookings = []) {
+  const result = { added: 0, updated: 0, removed: 0, skipped: 0 };
   updateState((state) => {
-    const existing = new Set(
-      state.finance.entries
-        .filter((entry) => entry.externalBookingId)
-        .map((entry) => entry.externalBookingId)
-    );
-    bookings.forEach((booking) => {
-      if (!booking.externalBookingId || existing.has(booking.externalBookingId)) return;
-      let apartment = state.apartments.find(
-        (item) => item.externalIds?.realtyCalendarUnitId && item.externalIds.realtyCalendarUnitId === booking.apartmentExternalId
-      );
-      if (!apartment && booking.apartmentId) apartment = state.apartments.find((item) => item.id === booking.apartmentId);
-      if (!apartment) return;
-      const entry = createFinanceEntryDraft({
+    const existingByBookingId = new Map();
+    state.finance.entries.forEach((entry, idx) => {
+      if (entry.source === 'realtycalendar' && entry.externalBookingId) {
+        existingByBookingId.set(String(entry.externalBookingId), { entry, idx });
+      }
+    });
+
+    bookings.forEach((b) => {
+      const bookingId = String(b.booking_id);
+      const apartment = findApartmentByRealtyId(state, b.realty_id);
+
+      // Отменённые/удалённые — убираем из финучёта
+      if (b.status === 'canceled' || b.status === 'deleted') {
+        if (existingByBookingId.has(bookingId)) {
+          state.finance.entries = state.finance.entries.filter(
+            (e) => !(e.source === 'realtycalendar' && String(e.externalBookingId) === bookingId)
+          );
+          existingByBookingId.delete(bookingId);
+          result.removed++;
+        }
+        return;
+      }
+
+      // Квартира не привязана — пропускаем
+      if (!apartment) { result.skipped++; return; }
+
+      // Активная бронь — обновляем или создаём
+      const date = (b.rc_created_at ? String(b.rc_created_at).slice(0, 10) : '') || b.begin_date || new Date().toISOString().slice(0, 10);
+      const title = `Бронь #${b.booking_id}${b.client_fio ? ' · ' + b.client_fio : ''}`;
+      const notes = [
+        formatRange(b.begin_date, b.end_date),
+        b.client_phone || '',
+        b.source ? `Источник: ${b.source}` : '',
+        b.booking_url || ''
+      ].filter(Boolean).join(' · ');
+
+      const payload = {
         apartmentId: apartment.id,
         type: FINANCE_TYPES.income,
         category: 'Бронирование',
-        title: `${booking.channel || 'RealtyCalendar'} · ${booking.guestName || 'Гость'}`,
-        amount: booking.amount,
-        currency: booking.currency || 'RUB',
-        date: booking.checkIn || new Date().toISOString().slice(0, 10),
+        title,
+        amount: Number(b.amount || 0),
+        netAmount: Number(b.prepayment || 0),
+        currency: 'RUB',
+        date,
         source: 'realtycalendar',
-        status: booking.status === 'cancelled' ? 'cancelled' : 'confirmed',
-        notes: `${booking.checkIn || '—'} → ${booking.checkOut || '—'}`,
-        externalBookingId: booking.externalBookingId,
-        meta: booking,
-      });
-      state.finance.entries.unshift(entry);
-      added.push(entry);
-      existing.add(booking.externalBookingId);
+        status: 'confirmed',
+        notes,
+        externalBookingId: bookingId,
+        meta: {
+          realty_id: b.realty_id,
+          apartment_title: b.apartment_title,
+          begin_date: b.begin_date,
+          end_date: b.end_date,
+          booking_url: b.booking_url,
+          rc_status: b.status,
+        },
+      };
+
+      if (existingByBookingId.has(bookingId)) {
+        const { entry, idx } = existingByBookingId.get(bookingId);
+        state.finance.entries[idx] = {
+          ...entry,
+          ...payload,
+          apartmentName: getDisplayApartmentName(apartment.name),
+          id: entry.id,
+        };
+        result.updated++;
+      } else {
+        const entry = createFinanceEntryDraft(payload);
+        state.finance.entries.unshift(entry);
+        result.added++;
+      }
     });
+
     state.finance.bookingSync.lastSyncedAt = new Date().toISOString();
+    if (state.integrations?.realtycalendar) {
+      state.integrations.realtycalendar.lastEventAt = new Date().toISOString();
+    }
   });
-  return added;
+  return result;
 }
+
+// Совместимость со старым кодом, который мог импортировать importBookingsToFinance.
+export function importBookingsToFinance() { return []; }
 
 export function getFilteredFinanceEntries() {
   const state = getState();
@@ -196,26 +283,32 @@ export function getFinanceSummary() {
   const entries = getFilteredFinanceEntries();
   const totals = entries.reduce(
     (acc, entry) => {
-      if (entry.type === FINANCE_TYPES.income) acc.income += Number(entry.amount || 0);
-      if (entry.type === FINANCE_TYPES.expense) acc.expense += Number(entry.amount || 0);
+      const gross = Number(entry.amount || 0);
+      const net = Number(entry.netAmount != null ? entry.netAmount : entry.amount || 0);
+      if (entry.type === FINANCE_TYPES.income) { acc.income += gross; acc.netIncome += net; }
+      if (entry.type === FINANCE_TYPES.expense) { acc.expense += gross; }
       return acc;
     },
-    { income: 0, expense: 0 }
+    { income: 0, netIncome: 0, expense: 0 }
   );
   // Итоги по квартирам (из всего массива, без фильтра)
   const state = getState();
   const byApartment = {};
   state.finance.entries.forEach((entry) => {
     if (!byApartment[entry.apartmentId]) {
-      byApartment[entry.apartmentId] = { name: entry.apartmentName, income: 0, expense: 0 };
+      byApartment[entry.apartmentId] = { name: entry.apartmentName, income: 0, netIncome: 0, expense: 0 };
     }
-    if (entry.type === 'income') byApartment[entry.apartmentId].income += Number(entry.amount || 0);
-    if (entry.type === 'expense') byApartment[entry.apartmentId].expense += Number(entry.amount || 0);
+    const gross = Number(entry.amount || 0);
+    const net = Number(entry.netAmount != null ? entry.netAmount : entry.amount || 0);
+    if (entry.type === 'income') { byApartment[entry.apartmentId].income += gross; byApartment[entry.apartmentId].netIncome += net; }
+    if (entry.type === 'expense') byApartment[entry.apartmentId].expense += gross;
   });
   return {
     income: totals.income,
+    netIncome: totals.netIncome,
     expense: totals.expense,
     profit: totals.income - totals.expense,
+    netProfit: totals.netIncome - totals.expense,
     entries,
     recurring: state.finance.recurringRules,
     byApartment,

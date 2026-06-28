@@ -1,6 +1,6 @@
 import dom, { byId } from './dom.js';
-import { normalizeRealtyCalendarBooking, syncRealtyCalendarBookings } from './api.js';
-import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, importBookingsToFinance, monthKey, createFinanceEntryDraft } from './finance.js';
+import { fetchRealtyCalendarBookings, fetchRealtyCalendarLog, fetchRealtyCalendarIntegration, saveRealtyCalendarIntegration, disconnectRealtyCalendar, buildFinanceWebhookExample, getWebhookUrl } from './api.js';
+import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft } from './finance.js';
 import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus, setAuthMsg } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, updateState } from './state.js';
 import { persistState, exportJson, importJson } from './storage.js';
@@ -585,10 +585,6 @@ function bindFinanceModals() {
     await rerender('Регулярное правило создано');
   });
 
-  // Webhook/API info
-  dom.financeOpenWebhookHelpBtn?.addEventListener('click', () => openModal('financeWebhookModal'));
-  dom.closeFinanceWebhookModal?.addEventListener('click', () => closeModal('financeWebhookModal'));
-
   // Делегированные клики по карточкам проводок и правил
   document.addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-action]');
@@ -625,18 +621,146 @@ function bindFinanceModals() {
   });
 }
 
-function bindRealtyCalendarSync() {
-  dom.financePullBookingsBtn?.addEventListener('click', async () => {
+// ─── RealtyCalendar интеграция ──────────────────────────────────────────────
+function showRcMsg(text, kind = 'info') {
+  if (!dom.rcMsg) return;
+  dom.rcMsg.textContent = text || '';
+  dom.rcMsg.hidden = !text;
+  dom.rcMsg.dataset.kind = kind;
+}
+
+async function refreshRcStatusAndLog() {
+  // Подтягиваем интеграцию (agency_id, last_event_at)
+  try {
+    const integ = await fetchRealtyCalendarIntegration();
+    updateState((s) => {
+      s.integrations = s.integrations || {};
+      s.integrations.realtycalendar = {
+        ...(s.integrations.realtycalendar || {}),
+        connected: !!integ?.agency_id,
+        agencyId: integ?.agency_id ? String(integ.agency_id) : '',
+        lastEventAt: integ?.last_event_at || s.integrations?.realtycalendar?.lastEventAt || null,
+      };
+    });
+  } catch (err) {
+    console.warn('[rc] fetch integration error:', err);
+    showRcMsg(`Не удалось получить статус: ${err.message}`, 'error');
+  }
+  if (dom.rcWebhookUrl) dom.rcWebhookUrl.value = getWebhookUrl();
+
+  // Журнал и применение свежих броней
+  try {
+    const [log, bookings] = await Promise.all([
+      fetchRealtyCalendarLog(20),
+      fetchRealtyCalendarBookings(500),
+    ]);
+    updateState((s) => {
+      s.integrations = s.integrations || {};
+      s.integrations.realtycalendar = s.integrations.realtycalendar || { connected: false, agencyId: '', lastEventAt: null };
+      s.integrations.realtycalendar.recentLog = Array.isArray(log) ? log : [];
+    });
+    const added = applyRealtyCalendarBookings(bookings);
+    if (added > 0) {
+      await rerender(`Применено бронирований из RealtyCalendar: ${added}`);
+    } else {
+      render();
+    }
+  } catch (err) {
+    console.warn('[rc] refresh log/bookings error:', err);
+    render();
+  }
+}
+
+function bindRealtyCalendarIntegration() {
+  // Открытие модалки настроек
+  dom.openFinanceSettings?.addEventListener('click', () => {
+    openModal('financeSettingsModal');
+    if (dom.rcWebhookUrl) dom.rcWebhookUrl.value = getWebhookUrl();
+    const exampleEl = byId('financeWebhookExample');
+    if (exampleEl) exampleEl.textContent = buildFinanceWebhookExample();
+    showRcMsg('');
+    refreshRcStatusAndLog();
+  });
+  dom.closeFinanceSettings?.addEventListener('click', () => closeModal('financeSettingsModal'));
+
+  // Подключение: сохранить agency_id
+  dom.rcSaveBtn?.addEventListener('click', async () => {
+    const raw = (dom.rcAgencyIdInput?.value || '').trim();
+    const agencyId = Number(raw);
+    if (!agencyId || !Number.isFinite(agencyId)) {
+      showRcMsg('Укажите корректный agency_id (число).', 'error');
+      return;
+    }
     try {
-      setStatus('Синхронизация...');
-      const data = await syncRealtyCalendarBookings();
-      const bookings = Array.isArray(data?.bookings) ? data.bookings.map(normalizeRealtyCalendarBooking) : [];
-      const added = importBookingsToFinance(bookings);
-      await rerender(added.length ? `Импортировано бронирований: ${added.length}` : 'Новых бронирований нет');
+      setStatus('Подключение RealtyCalendar...');
+      showRcMsg('Подключаем...', 'info');
+      await saveRealtyCalendarIntegration(agencyId);
+      showRcMsg('Подключено. Теперь скопируйте URL и вставьте его в RealtyCalendar.', 'success');
+      await refreshRcStatusAndLog();
+      setStatus('RealtyCalendar подключён');
     } catch (err) {
-      setStatus(`Ошибка синхронизации: ${err.message}`);
+      showRcMsg(`Ошибка: ${err.message}`, 'error');
+      setStatus(`Ошибка: ${err.message}`);
     }
   });
+
+  // Отключение
+  dom.rcDisconnectBtn?.addEventListener('click', async () => {
+    if (!confirm('Отключить RealtyCalendar? Новые брони перестанут поступать.')) return;
+    try {
+      setStatus('Отключение...');
+      await disconnectRealtyCalendar();
+      showRcMsg('Интеграция отключена.', 'info');
+      await refreshRcStatusAndLog();
+      setStatus('RealtyCalendar отключён');
+    } catch (err) {
+      showRcMsg(`Ошибка: ${err.message}`, 'error');
+      setStatus(`Ошибка: ${err.message}`);
+    }
+  });
+
+  // Копирование webhook URL
+  dom.rcCopyWebhookBtn?.addEventListener('click', async () => {
+    const url = getWebhookUrl();
+    try {
+      await navigator.clipboard.writeText(url);
+      showRcMsg('URL скопирован в буфер обмена.', 'success');
+    } catch {
+      dom.rcWebhookUrl?.select?.();
+      showRcMsg('Скопируйте URL вручную (Ctrl+C).', 'info');
+    }
+  });
+
+  // Обновить журнал вручную
+  dom.rcRefreshBtn?.addEventListener('click', async () => {
+    setStatus('Обновляем журнал...');
+    await refreshRcStatusAndLog();
+    setStatus('Журнал обновлён');
+  });
+}
+
+// Сохранение realty_id для текущей квартиры
+function bindApartmentRealtyId() {
+  const save = async () => {
+    const apt = currentApartment();
+    if (!apt) return;
+    const raw = (dom.apartmentRealtyId?.value || '').trim();
+    const next = raw === '' ? '' : String(Number(raw) || raw);
+    updateState((state) => {
+      const a = (state.apartments || []).find((x) => x.id === apt.id);
+      if (a) a.realtyCalendarUnitId = next;
+    });
+    // После сохранения попробуем заново применить полученные брони
+    try {
+      const bookings = await fetchRealtyCalendarBookings(500);
+      applyRealtyCalendarBookings(bookings);
+    } catch (err) {
+      console.warn('[rc] apply on realtyId save error:', err);
+    }
+    await rerender(next ? 'ID объекта сохранён' : 'ID объекта очищен');
+  };
+  dom.saveApartmentRealtyId?.addEventListener('click', save);
+  dom.apartmentRealtyId?.addEventListener('change', save);
 }
 
 // ─── Аккордеоны (универсальные) ────────────────────────────────────────────
@@ -680,7 +804,8 @@ export function bindEvents() {
   bindPurchaseModal();
   bindFinanceFilters();
   bindFinanceModals();
-  bindRealtyCalendarSync();
+  bindRealtyCalendarIntegration();
+  bindApartmentRealtyId();
   bindAccordions();
   updateState((state) => { if (!state.ui.finance.month) state.ui.finance.month = monthKey(new Date()); });
   bindAuth();

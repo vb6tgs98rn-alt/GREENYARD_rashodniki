@@ -21,7 +21,7 @@
  * данные пользователя дефолтным/гостевым state'ом.
  */
 
-import { createDefaultState, ensureStateShape, getState, setState } from './state.js';
+import { createDefaultState, ensureStateShape, getState, setState, updateState } from './state.js';
 import {
   loadInitialState,
   persistState,
@@ -34,12 +34,19 @@ import {
 } from './storage.js';
 import { render, setStatus, renderAuthStatus, renderStorageBadge } from './render.js';
 import { bindEvents } from './events.js';
-import { ensureFinanceGeneratedForCurrentMonth } from './finance.js';
-import { getCurrentUser, onAuthStateChange } from './supabase-client.js';
+import { ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings } from './finance.js';
+import { getCurrentUser, onAuthStateChange, getSupabaseClient } from './supabase-client.js';
+import {
+  fetchRealtyCalendarBookings,
+  fetchRealtyCalendarLog,
+  fetchRealtyCalendarIntegration,
+} from './api.js';
 
 // ─── Защита от двойной инициализации ───────────────────────────────────────
 let booted = false;
 let authBusy = false;
+let rcRealtimeChannel = null;
+let rcCurrentUserId = null;
 
 // ─── Основная инициализация ────────────────────────────────────────────────
 async function init() {
@@ -166,6 +173,135 @@ async function bootstrapForSignedInUser(user, { firstBoot = false } = {}) {
     //    и любые правки пользователя начнут сохраняться в облако (источник истины).
     setHydrating(false);
   }
+
+  // 6. Поднимаем интеграцию с RealtyCalendar: тянем существующие брони/лог,
+  //    подписываемся на realtime-обновления rc_bookings. Не блокирует UI.
+  bootstrapRealtyCalendar(user).catch((e) => {
+    console.warn('[bootstrap] RealtyCalendar bootstrap failed:', e);
+  });
+}
+
+
+// ─── RealtyCalendar bootstrap ──────────────────────────────────────────────
+/**
+ * Подтягивает интеграцию RealtyCalendar для текущего пользователя и подписывается
+ * на realtime-обновления rc_bookings. Любые ошибки гасятся в консоль —
+ * это вспомогательная фича, она не должна ронять основной UI.
+ *
+ * @param {object} user
+ */
+async function bootstrapRealtyCalendar(user) {
+  if (!user || !user.id) return;
+
+  // Если для этого же пользователя уже подняли подписку — ничего не делаем.
+  if (rcRealtimeChannel && rcCurrentUserId === user.id) return;
+
+  // Если была подписка для другого пользователя — снимаем.
+  await teardownRealtyCalendar();
+
+  rcCurrentUserId = user.id;
+
+  // 1. Первичная загрузка данных интеграции
+  await refreshRealtyCalendarData();
+
+  // 2. Подписка на realtime: любые изменения rc_bookings → перечитываем и применяем
+  try {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const channelName = 'rc_bookings_user_' + user.id;
+    rcRealtimeChannel = supabase
+      .channel(channelName)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'rc_bookings',
+          filter: 'user_id=eq.' + user.id,
+        },
+        () => {
+          refreshRealtyCalendarData().catch((e) => {
+            console.warn('[rc] realtime refresh failed:', e);
+          });
+        },
+      )
+      .subscribe();
+  } catch (e) {
+    console.warn('[rc] realtime subscribe failed:', e);
+  }
+}
+
+/**
+ * Снимает realtime-подписку и сбрасывает локальные ссылки.
+ */
+async function teardownRealtyCalendar() {
+  if (!rcRealtimeChannel) {
+    rcCurrentUserId = null;
+    return;
+  }
+  try {
+    const supabase = getSupabaseClient();
+    if (supabase && rcRealtimeChannel) {
+      await supabase.removeChannel(rcRealtimeChannel);
+    }
+  } catch (e) {
+    console.warn('[rc] removeChannel failed:', e);
+  } finally {
+    rcRealtimeChannel = null;
+    rcCurrentUserId = null;
+  }
+}
+
+/**
+ * Загружает свежие данные RC из Supabase и применяет к state:
+ *  - integrations.realtycalendar = настройки интеграции (agency_id, last_event_at)
+ *  - rcBookings = массив броней
+ *  - rcLog = последние записи webhook log
+ * После обновления state — финансы пересчитываются через applyRealtyCalendarBookings,
+ * затем выполняется render().
+ */
+async function refreshRealtyCalendarData() {
+  try {
+    const [integration, bookings, log] = await Promise.all([
+      fetchRealtyCalendarIntegration().catch(() => null),
+      fetchRealtyCalendarBookings(500).catch(() => []),
+      fetchRealtyCalendarLog(50).catch(() => []),
+    ]);
+
+    updateState((s) => {
+      if (!s.integrations) s.integrations = {};
+      const prev = s.integrations.realtycalendar || { connected: false, agencyId: '', lastEventAt: null };
+      if (integration && integration.agency_id) {
+        s.integrations.realtycalendar = {
+          ...prev,
+          connected: true,
+          agencyId: String(integration.agency_id),
+          lastEventAt: integration.last_event_at || prev.lastEventAt || null,
+          recentLog: Array.isArray(log) ? log : [],
+        };
+      } else {
+        s.integrations.realtycalendar = {
+          ...prev,
+          connected: false,
+          agencyId: '',
+          lastEventAt: null,
+          recentLog: Array.isArray(log) ? log : [],
+        };
+      }
+    });
+
+    // Пересчитываем финансовые записи из RC-броней
+    try {
+      applyRealtyCalendarBookings(Array.isArray(bookings) ? bookings : []);
+    } catch (e) {
+      console.warn('[rc] applyRealtyCalendarBookings failed:', e);
+    }
+
+    render();
+  } catch (e) {
+    console.warn('[rc] refresh failed:', e);
+  }
 }
 
 // ─── Auth state machine ────────────────────────────────────────────────────
@@ -185,6 +321,7 @@ async function handleAuthChange(event, session) {
       // state = default, localStorage перезаписывается дефолтом, чтобы данные
       // предыдущего аккаунта не остались в браузере. ОБЛАЧНЫЕ данные пользователя
       // остаются нетронутыми — они подтянутся при следующем входе в этот аккаунт.
+      await teardownRealtyCalendar().catch(() => {});
       setStorageMode('local', null);
       setState(createDefaultState());
       ensureFinanceGeneratedForCurrentMonth();
