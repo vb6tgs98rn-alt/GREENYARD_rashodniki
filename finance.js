@@ -215,13 +215,21 @@ export function applyRealtyCalendarBookings(bookings = []) {
         b.booking_url || ''
       ].filter(Boolean).join(' · ');
 
+      // Комиссия площадки (Avito/ЦИАН/Суточно и т.п.) приходит в platform_tax.
+      // Для ручных броней (source=manual) это поле null → комиссия = 0 → netAmount = amount.
+      // Колонки platform_tax в rc_bookings пока нет — берём из raw_payload.data.booking.
+      const grossAmount = Number(b.amount || 0);
+      const rawBooking = b.raw_payload?.data?.booking || {};
+      const platformTax = Number(rawBooking.platform_tax || 0);
+      const netAmount = Math.max(0, grossAmount - platformTax);
+
       const payload = {
         apartmentId: apartment.id,
         type: FINANCE_TYPES.income,
         category: 'Бронирование',
         title,
-        amount: Number(b.amount || 0),
-        netAmount: Number(b.prepayment || 0),
+        amount: grossAmount,
+        netAmount,
         currency: 'RUB',
         date,
         source: 'realtycalendar',
@@ -235,6 +243,7 @@ export function applyRealtyCalendarBookings(bookings = []) {
           end_date: b.end_date,
           booking_url: b.booking_url,
           rc_status: b.status,
+          platform_tax: platformTax,
         },
       };
 
