@@ -6,6 +6,7 @@ import { currentApartment, getDisplayApartmentName, getState, roundSmart, update
 import { persistState, exportJson, importJson } from './storage.js';
 import { signInWithEmail, signUpWithEmail, signOutUser } from './supabase-client.js';
 import { addApartment, addCustomItem, applyWriteoff, createPurchaseRequest, deleteApartment, deleteItem, newCheckin, renameCurrentApartment, resetAll, restockDefaults, toggleAutoRequest, toggleRequestDone, updateItemField, updateRequestItemCost } from './actions.js';
+import { bindGuestBotEvents } from './guestBot.js';
 
 async function rerender(statusText = 'Сохранено') {
   ensureFinanceGeneratedForCurrentMonth();
@@ -77,7 +78,7 @@ function bindDrawerModals() {
   byId('openKnowledgeBase')?.addEventListener('click', () => { openModal('kbModal'); closeDrawer(); });
   byId('kbClose')?.addEventListener('click', () => closeModal('kbModal'));
 
-  byId('openGuestBotChats')?.addEventListener('click', () => { window.open('https://n8n.example.com', '_blank'); closeDrawer(); });
+  // Старый openGuestBotChats заменяется в bindGuestBotEvents() — там полноценный чат.
 }
 
 // ─── История ───────────────────────────────────────────────────────────────
@@ -1007,6 +1008,11 @@ export function bindEvents() {
   bindAccordions();
   updateState((state) => { if (!state.ui.finance.month) state.ui.finance.month = monthKey(new Date()); });
   bindAuth();
+  // — Новые разделы: брони, инструкции для гостей, чаты, настройки бота.
+  //   передаём всегда актуальный state через getState() (обёртка).
+  try {
+    bindGuestBotEvents({ get apartments() { return getState().apartments || []; } });
+  } catch (e) { console.warn('[events] bindGuestBotEvents:', e?.message || e); }
 }
 
 // ─── Auth UI ──────────────────────────────────────────────────────────────
