@@ -659,9 +659,10 @@ async function refreshRcStatusAndLog() {
       s.integrations.realtycalendar = s.integrations.realtycalendar || { connected: false, agencyId: '', lastEventAt: null };
       s.integrations.realtycalendar.recentLog = Array.isArray(log) ? log : [];
     });
-    const added = applyRealtyCalendarBookings(bookings);
-    if (added > 0) {
-      await rerender(`Применено бронирований из RealtyCalendar: ${added}`);
+    const result = applyRealtyCalendarBookings(bookings) || { added: 0, updated: 0, removed: 0, skipped: 0 };
+    const changed = (result.added || 0) + (result.updated || 0) + (result.removed || 0);
+    if (changed > 0) {
+      await rerender(`RealtyCalendar: +${result.added || 0} / ±${result.updated || 0} / -${result.removed || 0}`);
     } else {
       render();
     }
@@ -736,6 +737,58 @@ function bindRealtyCalendarIntegration() {
     setStatus('Обновляем журнал...');
     await refreshRcStatusAndLog();
     setStatus('Журнал обновлён');
+  });
+
+  // Кнопка «Пересинхронизировать» — выводит подробный отчёт по броням и привязке квартир
+  byId('rcDiagBtn')?.addEventListener('click', async () => {
+    const box = byId('rcDiagBox');
+    if (!box) return;
+    box.innerHTML = '<div class="empty">Загружаем…</div>';
+    setStatus('Пересинхронизация…');
+    try {
+      const bookings = await fetchRealtyCalendarBookings(500);
+      const result = applyRealtyCalendarBookings(bookings) || { added: 0, updated: 0, removed: 0, skipped: 0 };
+      await rerender('Синхронизация завершена');
+      // Строим отчёт
+      const state = getState();
+      const apartments = state.apartments || [];
+      const linkedIds = new Set();
+      apartments.forEach((a) => {
+        const rid = a.externalIds?.realtyCalendarUnitId;
+        if (rid) linkedIds.add(String(rid));
+      });
+      const bookingRealtyIds = new Set();
+      (bookings || []).forEach((b) => { if (b.realty_id != null) bookingRealtyIds.add(String(b.realty_id)); });
+      const unmatched = [...bookingRealtyIds].filter((id) => !linkedIds.has(id));
+      const matched = [...bookingRealtyIds].filter((id) => linkedIds.has(id));
+
+      const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+      const aptRows = apartments.map((a) => {
+        const rid = a.externalIds?.realtyCalendarUnitId || '';
+        const ok = rid && bookingRealtyIds.has(String(rid));
+        const color = rid ? (ok ? 'var(--color-success)' : 'var(--color-text-muted)') : 'var(--color-error)';
+        const status = rid ? (ok ? 'есть брони' : 'броней пока нет') : '— ID не указан';
+        return `<div class="rc-log-row" style="padding:.4rem 0;"><span>${esc(a.name || a.id)}</span> → <code>${esc(rid || '—')}</code> <span style="color:${color};margin-left:.4rem;">${status}</span></div>`;
+      }).join('') || '<div class="empty">Нет квартир.</div>';
+
+      const unmatchedRow = unmatched.length
+        ? `<div class="rc-log-row" style="padding:.4rem 0;color:var(--color-error);">⚠ Брони с realty_id, к которым не привязана ни одна квартира: <code>${unmatched.map(esc).join(', ')}</code></div>`
+        : '';
+
+      box.innerHTML = `
+        <div class="rc-log-row" style="padding:.4rem 0;"><strong>Броней в Supabase:</strong> ${bookings.length} · уникальных realty_id: ${bookingRealtyIds.size}</div>
+        <div class="rc-log-row" style="padding:.4rem 0;"><strong>Совпало по ID:</strong> ${matched.length} · <strong>Не совпало:</strong> ${unmatched.length}</div>
+        <div class="rc-log-row" style="padding:.4rem 0;"><strong>Применено к финансам:</strong> +${result.added} / ±${result.updated} / -${result.removed} · <strong>Пропущено (нет привязки):</strong> ${result.skipped}</div>
+        ${unmatchedRow}
+        <div class="rc-log-row" style="padding:.5rem 0 .25rem;color:var(--color-text-muted);"><strong>Привязки квартир:</strong></div>
+        ${aptRows}
+      `;
+      setStatus('Готово');
+    } catch (err) {
+      console.warn('[rc] diag error:', err);
+      box.innerHTML = `<div class="empty" style="color:var(--color-error)">Ошибка: ${String(err.message || err)}</div>`;
+      setStatus('Ошибка диагностики');
+    }
   });
 }
 
@@ -824,24 +877,61 @@ function bindApartmentRealtyId() {
       return;
     }
     const targetId = syncTargetApartmentId;
-    setSyncMsg('Сохраняем...', 'info');
+    setSyncMsg('Сохраняем и проверяем брони…', 'info');
     try {
+      // 1. Сохраняем ID в правильное место в state
       updateState((state) => {
         const a = (state.apartments || []).find((x) => x.id === targetId);
         if (!a) return;
         if (!a.externalIds) a.externalIds = {};
         a.externalIds.realtyCalendarUnitId = String(idNum);
       });
-      // Подтягиваем брони и применяем — если ID неверный, просто ничего не применится
+
+      // 2. Подтягиваем все брони пользователя из Supabase
+      let bookings = [];
       try {
-        const bookings = await fetchRealtyCalendarBookings(500);
-        applyRealtyCalendarBookings(bookings);
+        bookings = await fetchRealtyCalendarBookings(500);
+      } catch (err) {
+        console.warn('[rc] fetch after sync save:', err);
+      }
+
+      // 3. Считаем, сколько броней совпадает с введённым realty_id
+      const idStr = String(idNum);
+      const matching = (bookings || []).filter((b) => String(b.realty_id) === idStr);
+      const activeMatching = matching.filter((b) => b.status !== 'canceled' && b.status !== 'deleted');
+
+      // 4. Применяем брони к финансам (создаём/обновляем записи)
+      let applyResult = { added: 0, updated: 0, removed: 0, skipped: 0 };
+      try {
+        applyResult = applyRealtyCalendarBookings(bookings) || applyResult;
       } catch (err) {
         console.warn('[rc] apply after sync save:', err);
       }
-      setSyncMsg('Сохранено.', 'success');
+
+      // 5. Сохраняем state + ререндер
       await rerender('ID объекта сохранён');
-      closeApartmentSyncModal();
+
+      // 6. Показываем точную диагностику в модалке
+      if (matching.length === 0) {
+        setSyncMsg(
+          `ID сохранён. Но для realty_id=${idStr} в RealtyCalendar пока нет броней. ` +
+          `Создайте новую бронь в RC — она автоматически появится в финансах.`,
+          'info'
+        );
+      } else {
+        const parts = [];
+        if (applyResult.added) parts.push(`добавлено ${applyResult.added}`);
+        if (applyResult.updated) parts.push(`обновлено ${applyResult.updated}`);
+        if (applyResult.removed) parts.push(`удалено ${applyResult.removed}`);
+        const detail = parts.length ? ` (${parts.join(', ')})` : '';
+        setSyncMsg(
+          `Готово. Найдено броней по этому ID: ${matching.length}, активных: ${activeMatching.length}${detail}. ` +
+          `Откройте «Финансовый учёт» — должны появиться доходы.`,
+          'success'
+        );
+        // Закрываем модалку через 2.5 сек, чтобы пользователь успел прочитать
+        setTimeout(() => closeApartmentSyncModal(), 2500);
+      }
     } catch (err) {
       console.warn('[sync] save error:', err);
       setSyncMsg('Ошибка сохранения. Попробуйте ещё раз.', 'error');

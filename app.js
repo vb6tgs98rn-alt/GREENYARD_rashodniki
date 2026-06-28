@@ -292,13 +292,20 @@ async function refreshRealtyCalendarData() {
     });
 
     // Пересчитываем финансовые записи из RC-броней
+    let rcResult = { added: 0, updated: 0, removed: 0, skipped: 0 };
     try {
-      applyRealtyCalendarBookings(Array.isArray(bookings) ? bookings : []);
+      rcResult = applyRealtyCalendarBookings(Array.isArray(bookings) ? bookings : []) || rcResult;
     } catch (e) {
       console.warn('[rc] applyRealtyCalendarBookings failed:', e);
     }
 
     render();
+
+    // Если были изменения в финучёте — сохраняем в облако, чтобы не пропали при перезагрузке
+    const changed = (rcResult.added || 0) + (rcResult.updated || 0) + (rcResult.removed || 0);
+    if (changed > 0) {
+      persistState(setStatus, true).catch((e) => console.warn('[rc] persist after apply failed:', e));
+    }
   } catch (e) {
     console.warn('[rc] refresh failed:', e);
   }
