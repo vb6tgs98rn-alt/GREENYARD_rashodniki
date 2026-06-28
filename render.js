@@ -8,7 +8,14 @@ function fmt(n) { return Number(n || 0).toLocaleString('ru-RU', { maximumFractio
 
 function apartmentButton(apartment, activeApartmentId) {
   const low = apartment.items.filter((item) => statusBy(item).cls === 'low').length;
-  return `<div class="apartment-row"><button class="apartment-btn ${apartment.id === activeApartmentId ? 'active' : ''}" data-apartment-id="${apartment.id}"><div class="apartment-meta"><strong>${getDisplayApartmentName(apartment.name)}</strong><span class="small">${low ? `Низкий остаток: ${low}` : 'Без критичных позиций'}</span></div><span class="small">${apartment.items.length} поз.</span></button></div>`;
+  const realtyId = apartment.externalIds?.realtyCalendarUnitId || '';
+  const isSynced = !!realtyId;
+  const syncedTitle = isSynced
+    ? `Синхронизировано с RealtyCalendar (ID ${realtyId}). Нажмите, чтобы изменить.`
+    : 'Синхронизировать с RealtyCalendar';
+  const syncBtn = `<button type="button" class="apt-sync-btn ${isSynced ? 'is-synced' : ''}" data-sync-apartment="${apartment.id}" title="${syncedTitle}" aria-label="${syncedTitle}">${isSynced ? '✓ Синхронизировано' : 'Синхронизация'}</button>`;
+  const deleteBtn = `<button type="button" class="apt-delete-btn" data-delete-apartment="${apartment.id}" data-delete-apartment-name="${apartment.name || ''}" title="Удалить квартиру" aria-label="Удалить квартиру"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>`;
+  return `<div class="apartment-row"><button class="apartment-btn ${apartment.id === activeApartmentId ? 'active' : ''}" data-apartment-id="${apartment.id}"><div class="apartment-meta"><strong>${getDisplayApartmentName(apartment.name)}</strong><span class="small">${low ? `Низкий остаток: ${low}` : 'Без критичных позиций'}</span></div><span class="small">${apartment.items.length} поз.</span></button><div class="apartment-row-actions">${syncBtn}${deleteBtn}</div></div>`;
 }
 
 function itemCard(item) {
@@ -37,8 +44,8 @@ function renderInventory(state) {
   if (!apartment || !dom.pageTitle) return;
   dom.pageTitle.textContent = getDisplayApartmentName(apartment.name);
   dom.apartmentName.value = apartment.name;
-  // ID объекта в RealtyCalendar (редактируется внутри карточки)
-  if (dom.apartmentRealtyId) dom.apartmentRealtyId.value = apartment.realtyCalendarUnitId || '';
+  // ID объекта в RealtyCalendar (легаси-поле в «Параметры квартиры», если осталось)
+  if (dom.apartmentRealtyId) dom.apartmentRealtyId.value = apartment.externalIds?.realtyCalendarUnitId || '';
   dom.apartmentSearch.value = state.ui.apartmentSearch || '';
   const filteredApartments = state.apartments.filter((a) =>
     getDisplayApartmentName(a.name).toLowerCase().includes((state.ui.apartmentSearch || '').toLowerCase())

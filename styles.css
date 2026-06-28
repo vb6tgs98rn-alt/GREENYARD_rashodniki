@@ -255,3 +255,90 @@ button,input,select{font:inherit} button{cursor:pointer;border:none;background:n
 }
 .rc-log-row{border-bottom:1px dashed var(--color-border)}
 .rc-log-row:last-child{border-bottom:none}
+
+/* ─── Квартиры: блок действий (Синхронизация + Удалить) ─────────────── */
+.apartment-row-actions{
+  display:flex;
+  align-items:center;
+  gap:.5rem;
+  margin-left:auto;
+}
+.apt-sync-btn{
+  display:inline-flex;
+  align-items:center;
+  gap:.4rem;
+  padding:.35rem .75rem;
+  font-size:var(--text-sm,.85rem);
+  font-weight:500;
+  border-radius:8px;
+  border:1px solid var(--color-border);
+  background:var(--color-surface-2);
+  color:var(--color-text);
+  cursor:pointer;
+  transition:background .15s ease,border-color .15s ease;
+  white-space:nowrap;
+}
+.apt-sync-btn:hover{
+  background:color-mix(in oklab,var(--color-primary) 8%,var(--color-surface-2));
+  border-color:var(--color-primary);
+}
+.apt-sync-btn.is-synced{
+  background:color-mix(in oklab,var(--color-success) 18%,var(--color-surface-2));
+  color:var(--color-success);
+  border-color:color-mix(in oklab,var(--color-success) 35%,transparent);
+}
+.apt-sync-btn.is-synced:hover{
+  background:color-mix(in oklab,var(--color-success) 26%,var(--color-surface-2));
+}
+.apt-delete-btn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:34px;
+  height:34px;
+  padding:0;
+  border-radius:8px;
+  border:1px solid var(--color-border);
+  background:transparent;
+  color:var(--color-text-muted);
+  cursor:pointer;
+  transition:background .15s ease,color .15s ease,border-color .15s ease;
+}
+.apt-delete-btn:hover{
+  background:color-mix(in oklab,var(--color-error) 12%,transparent);
+  color:var(--color-error);
+  border-color:color-mix(in oklab,var(--color-error) 35%,transparent);
+}
+.apt-delete-btn svg{
+  width:16px;
+  height:16px;
+  pointer-events:none;
+}
+
+/* ─── Модалка синхронизации: сообщения ──────────────────────────────── */
+#apartmentSyncMsg{
+  margin-top:.5rem;
+  padding:.55rem .75rem;
+  border-radius:8px;
+}
+#apartmentSyncMsg[data-kind="error"]{
+  background:color-mix(in oklab,var(--color-error) 12%,var(--color-surface-2));
+  color:var(--color-error);
+}
+#apartmentSyncMsg[data-kind="success"]{
+  background:color-mix(in oklab,var(--color-success) 12%,var(--color-surface-2));
+  color:var(--color-success);
+}
+#apartmentSyncMsg[data-kind="info"]{
+  background:color-mix(in oklab,var(--color-primary) 10%,var(--color-surface-2));
+  color:var(--color-text-muted);
+}
+
+/* ─── Скрываем auth-corner-btn на не-главной секции ─────────────────── */
+.auth-corner[data-hide-button="1"] .auth-corner-btn{ display:none !important; }
+
+/* Скрываем кнопку Меню/Выход, когда открыта любая модалка
+   (финансы, заявки, история — пользователь не на главной) */
+body:has(.modal-backdrop.open) .auth-corner-btn{ display:none !important; }
+/* Скрываем кнопку Меню/Выход, когда открыт drawer (боковое меню) */
+body:has(.drawer.open) .auth-corner-btn{ display:none !important; }

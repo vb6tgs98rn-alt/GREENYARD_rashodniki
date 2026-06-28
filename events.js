@@ -739,18 +739,52 @@ function bindRealtyCalendarIntegration() {
   });
 }
 
-// Сохранение realty_id для текущей квартиры
+// ─── Синхронизация квартиры с RealtyCalendar ──────────────────────────────
+let syncTargetApartmentId = null;
+
+function setSyncMsg(text, kind = 'info') {
+  const el = byId('apartmentSyncMsg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.hidden = !text;
+  el.dataset.kind = kind;
+}
+
+async function openApartmentSyncModal(apartmentId) {
+  syncTargetApartmentId = apartmentId;
+  const state = getState();
+  const apt = (state.apartments || []).find((a) => a.id === apartmentId);
+  if (!apt) return;
+  const input = byId('apartmentSyncInput');
+  const title = byId('apartmentSyncTitle');
+  if (title) title.textContent = `Синхронизация: ${getDisplayApartmentName(apt.name)}`;
+  if (input) {
+    input.value = apt?.externalIds?.realtyCalendarUnitId || '';
+    setTimeout(() => input.focus(), 30);
+  }
+  setSyncMsg('');
+  openModal('apartmentSyncModal');
+}
+
+function closeApartmentSyncModal() {
+  syncTargetApartmentId = null;
+  closeModal('apartmentSyncModal');
+}
+
+// Сохранение realty_id из модалки и из легаси-блока (если остался)
 function bindApartmentRealtyId() {
-  const save = async () => {
+  // Старый блок «Параметры квартиры» — сохраняем в правильное место externalIds
+  const legacySave = async () => {
     const apt = currentApartment();
     if (!apt) return;
     const raw = (dom.apartmentRealtyId?.value || '').trim();
     const next = raw === '' ? '' : String(Number(raw) || raw);
     updateState((state) => {
       const a = (state.apartments || []).find((x) => x.id === apt.id);
-      if (a) a.realtyCalendarUnitId = next;
+      if (!a) return;
+      if (!a.externalIds) a.externalIds = {};
+      a.externalIds.realtyCalendarUnitId = next;
     });
-    // После сохранения попробуем заново применить полученные брони
     try {
       const bookings = await fetchRealtyCalendarBookings(500);
       applyRealtyCalendarBookings(bookings);
@@ -759,8 +793,65 @@ function bindApartmentRealtyId() {
     }
     await rerender(next ? 'ID объекта сохранён' : 'ID объекта очищен');
   };
-  dom.saveApartmentRealtyId?.addEventListener('click', save);
-  dom.apartmentRealtyId?.addEventListener('change', save);
+  dom.saveApartmentRealtyId?.addEventListener('click', legacySave);
+  dom.apartmentRealtyId?.addEventListener('change', legacySave);
+
+  // Открытие модалки синхронизации по клику на кнопку в карточке квартиры
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-sync-apartment]');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openApartmentSyncModal(btn.dataset.syncApartment);
+  });
+
+  // Закрытие
+  byId('apartmentSyncClose')?.addEventListener('click', closeApartmentSyncModal);
+  byId('apartmentSyncCancelBtn')?.addEventListener('click', closeApartmentSyncModal);
+
+  // Сохранение ID из модалки
+  byId('apartmentSyncSaveBtn')?.addEventListener('click', async () => {
+    if (!syncTargetApartmentId) return;
+    const input = byId('apartmentSyncInput');
+    const raw = (input?.value || '').trim();
+    if (!raw) {
+      setSyncMsg('Введите ID объекта.', 'error');
+      return;
+    }
+    const idNum = Number(raw);
+    if (!Number.isFinite(idNum) || idNum <= 0 || !/^\d+$/.test(raw)) {
+      setSyncMsg('ID неверный. Должно быть целое положительное число.', 'error');
+      return;
+    }
+    const targetId = syncTargetApartmentId;
+    setSyncMsg('Сохраняем...', 'info');
+    try {
+      updateState((state) => {
+        const a = (state.apartments || []).find((x) => x.id === targetId);
+        if (!a) return;
+        if (!a.externalIds) a.externalIds = {};
+        a.externalIds.realtyCalendarUnitId = String(idNum);
+      });
+      // Подтягиваем брони и применяем — если ID неверный, просто ничего не применится
+      try {
+        const bookings = await fetchRealtyCalendarBookings(500);
+        applyRealtyCalendarBookings(bookings);
+      } catch (err) {
+        console.warn('[rc] apply after sync save:', err);
+      }
+      setSyncMsg('Сохранено.', 'success');
+      await rerender('ID объекта сохранён');
+      closeApartmentSyncModal();
+    } catch (err) {
+      console.warn('[sync] save error:', err);
+      setSyncMsg('Ошибка сохранения. Попробуйте ещё раз.', 'error');
+    }
+  });
+
+  // Enter в поле — срабатывает как Сохранить
+  byId('apartmentSyncInput')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') byId('apartmentSyncSaveBtn')?.click();
+  });
 }
 
 // ─── Аккордеоны (универсальные) ────────────────────────────────────────────
