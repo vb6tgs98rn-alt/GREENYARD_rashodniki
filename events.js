@@ -775,6 +775,22 @@ function bindRealtyCalendarIntegration() {
         ? `<div class="rc-log-row" style="padding:.4rem 0;color:var(--color-error);">⚠ Брони с realty_id, к которым не привязана ни одна квартира: <code>${unmatched.map(esc).join(', ')}</code></div>`
         : '';
 
+      // Сырой payload последних 2 броней — чтобы увидеть какие поля передаёт RealtyCalendar (комиссия, скидки и т.д.)
+      const recent = (bookings || []).slice(0, 2);
+      const payloadBlocks = recent.map((b, i) => {
+        let pretty = '';
+        try {
+          pretty = JSON.stringify(b.raw_payload ?? b, null, 2);
+        } catch (_e) {
+          pretty = String(b.raw_payload || '');
+        }
+        const head = `№${i + 1} · realty_id=${esc(b.realty_id)} · amount=${esc(b.amount)} · prepayment=${esc(b.prepayment)} · status=${esc(b.status)}`;
+        return `<details style="margin:.4rem 0;"><summary style="cursor:pointer;color:var(--color-text-muted);">Сырой payload брони ${head}</summary><pre style="max-height:340px;overflow:auto;background:rgba(0,0,0,.04);padding:.6rem;border-radius:8px;font-size:11px;line-height:1.4;white-space:pre-wrap;word-break:break-word;">${esc(pretty)}</pre></details>`;
+      }).join('');
+      const payloadSection = recent.length
+        ? `<div class="rc-log-row" style="padding:.6rem 0 .25rem;color:var(--color-text-muted);"><strong>Сырые данные от RealtyCalendar (для поиска полей комиссии):</strong></div>${payloadBlocks}`
+        : '';
+
       box.innerHTML = `
         <div class="rc-log-row" style="padding:.4rem 0;"><strong>Броней в Supabase:</strong> ${bookings.length} · уникальных realty_id: ${bookingRealtyIds.size}</div>
         <div class="rc-log-row" style="padding:.4rem 0;"><strong>Совпало по ID:</strong> ${matched.length} · <strong>Не совпало:</strong> ${unmatched.length}</div>
@@ -782,6 +798,7 @@ function bindRealtyCalendarIntegration() {
         ${unmatchedRow}
         <div class="rc-log-row" style="padding:.5rem 0 .25rem;color:var(--color-text-muted);"><strong>Привязки квартир:</strong></div>
         ${aptRows}
+        ${payloadSection}
       `;
       setStatus('Готово');
     } catch (err) {
