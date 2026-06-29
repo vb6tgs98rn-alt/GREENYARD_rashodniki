@@ -142,12 +142,27 @@ export async function saveInstruction(apartmentId, apartmentTitle, patch) {
   if (!supabase) throw new Error('Supabase не подключён');
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Войдите в аккаунт');
+  // Без apartment_id upsert упадёт в БД (NOT NULL),
+  // поэтому отлавливаем раньше и с понятным сообщением.
+  if (apartmentId === null || apartmentId === undefined || String(apartmentId).trim() === '') {
+    throw new Error('Не выбрана квартира — нечего сохранять');
+  }
+  // Из patch принудительно вырезаем служебные поля, чтобы при копировании
+  // инструкций из другой квартиры не попадал чужой id/user_id.
+  const safePatch = { ...(patch || {}) };
+  delete safePatch.id;
+  delete safePatch.user_id;
+  delete safePatch.apartment_id;
+  delete safePatch.apartment_title;
+  delete safePatch.created_at;
+  delete safePatch.updated_at;
+
   const row = {
     user_id: user.id,
     apartment_id: String(apartmentId),
     apartment_title: apartmentTitle || null,
     updated_at: new Date().toISOString(),
-    ...patch,
+    ...safePatch,
   };
   const { error } = await supabase
     .from('guest_instructions')
@@ -699,12 +714,13 @@ function renderChatsList() {
 async function renderActiveChat() {
   const box = document.getElementById('chatThreadBox');
   const head = document.getElementById('chatThreadHead');
+  const composer = document.getElementById('chatComposer');
   if (!box) return;
   const sessionId = _chatsState.activeSessionId;
   if (!sessionId) {
     box.innerHTML = `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;">Выберите чат слева</div>`;
     if (head) head.innerHTML = '';
-    document.getElementById('chatComposer').style.display = 'none';
+    if (composer) composer.style.display = 'none';
     return;
   }
   const meta = _chatsState.items.find(c => c.session_id === sessionId);
@@ -717,7 +733,7 @@ async function renderActiveChat() {
       <div class="small" style="opacity:.7;">${esc(meta.begin_date ? fmtDate(meta.begin_date) + ' → ' + fmtDate(meta.end_date) : '')}</div>
     `;
   }
-  document.getElementById('chatComposer').style.display = 'flex';
+  if (composer) composer.style.display = 'flex';
 
   const msgs = await fetchMessages(sessionId);
   box.innerHTML = msgs.map(m => {
@@ -751,8 +767,20 @@ function attachRealtimeForChats() {
     _chatsState.realtimeChannel = supabase
       .channel('guest_messages_changes')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'guest_messages' },
-        async () => {
-          await reloadChats();
+        async (payload) => {
+          // Обновляем список (бейджи), но активный чат перерисовываем только
+          // если новое сообщение пришло в открытый диалог — меньше дёрганий.
+          try {
+            const newSessionId = payload?.new?.session_id;
+            const chats = await fetchGuestChats();
+            _chatsState.items = chats;
+            renderChatsList();
+            if (newSessionId && newSessionId === _chatsState.activeSessionId) {
+              await renderActiveChat();
+            }
+          } catch (err) {
+            console.warn('[bot] realtime handler:', err?.message || err);
+          }
         }
       )
       .subscribe();
