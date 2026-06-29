@@ -15,7 +15,8 @@ function apartmentButton(apartment, activeApartmentId) {
     : 'Синхронизировать с RealtyCalendar';
   const syncBtn = `<button type="button" class="apt-sync-btn ${isSynced ? 'is-synced' : ''}" data-sync-apartment="${apartment.id}" title="${syncedTitle}" aria-label="${syncedTitle}">${isSynced ? '✓ Синхронизировано' : 'Синхронизация'}</button>`;
   const deleteBtn = `<button type="button" class="apt-delete-btn" data-delete-apartment="${apartment.id}" data-delete-apartment-name="${apartment.name || ''}" title="Удалить квартиру" aria-label="Удалить квартиру"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>`;
-  return `<div class="apartment-row"><button class="apartment-btn ${apartment.id === activeApartmentId ? 'active' : ''}" data-apartment-id="${apartment.id}"><div class="apartment-meta"><strong>${getDisplayApartmentName(apartment.name)}</strong><span class="small">${low ? `Низкий остаток: ${low}` : 'Без критичных позиций'}</span></div><span class="small">${apartment.items.length} поз.</span></button><div class="apartment-row-actions">${syncBtn}${deleteBtn}</div></div>`;
+  const isActive = apartment.id === activeApartmentId;
+  return `<div class="apartment-row${isActive ? ' is-active' : ''}"><button class="apartment-btn ${isActive ? 'active' : ''}" data-apartment-id="${apartment.id}" aria-pressed="${isActive}"><div class="apartment-meta"><strong>${getDisplayApartmentName(apartment.name)}</strong><span class="small">${low ? `Низкий остаток: ${low}` : 'Без критичных позиций'}</span></div><span class="small">${apartment.items.length} поз.</span></button><div class="apartment-row-actions">${syncBtn}${deleteBtn}</div></div>`;
 }
 
 function itemCard(item) {

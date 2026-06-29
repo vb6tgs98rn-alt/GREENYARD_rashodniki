@@ -619,23 +619,29 @@ function ensureInstructionsModal() {
         <label><span class="small">Парковка</span><input data-instr-field id="instr_parking_info" type="text" placeholder="Платная во дворе, 200 ₽/сут. Бесплатная на ул. Партизанская" /></label>
 
         <h3 class="instr-h">🔑 Заселение</h3>
-        <label><span class="small">Код от подъезда</span><input data-instr-field id="instr_entrance_code" type="text" placeholder="К1234" /></label>
-        <label><span class="small">Код от двери / где ключи</span><input data-instr-field id="instr_door_code" type="text" placeholder="5678" /></label>
+        <div class="instr-grid-2">
+          <label><span class="small">Код от подъезда</span><input data-instr-field id="instr_entrance_code" type="text" placeholder="К1234" /></label>
+          <label><span class="small">Код от двери / где ключи</span><input data-instr-field id="instr_door_code" type="text" placeholder="5678" /></label>
+        </div>
         <label><span class="small">Где взять ключи</span><input data-instr-field id="instr_key_location" type="text" placeholder="Сейф у двери справа. Внутри 2 ключа" /></label>
         <label><span class="small">Время заезда с</span><input data-instr-field id="instr_checkin_from" type="text" placeholder="14:00" /></label>
         <label><span class="small">Инструкция заселения (свободный текст)</span><textarea data-instr-field id="instr_checkin_instruction" rows="3" placeholder="Поднимитесь на 5 этаж, квартира направо от лифта"></textarea></label>
 
         <h3 class="instr-h">📶 Wi-Fi</h3>
-        <label><span class="small">Имя сети</span><input data-instr-field id="instr_wifi_ssid" type="text" placeholder="GreenYard_5G" /></label>
-        <label><span class="small">Пароль</span><input data-instr-field id="instr_wifi_password" type="text" placeholder="welcome2024" /></label>
+        <div class="instr-grid-2">
+          <label><span class="small">Имя сети</span><input data-instr-field id="instr_wifi_ssid" type="text" placeholder="GreenYard_5G" /></label>
+          <label><span class="small">Пароль</span><input data-instr-field id="instr_wifi_password" type="text" placeholder="welcome2024" /></label>
+        </div>
 
         <h3 class="instr-h">🏠 О квартире</h3>
         <label><span class="small">Что есть (через запятую)</span><input data-instr-field id="instr_amenities" type="text" placeholder="стиралка, фен, утюг, посудомойка, кондиционер" /></label>
         <label><span class="small">Особенности</span><textarea data-instr-field id="instr_apartment_notes" rows="2" placeholder="Балкон выходит на парк, окна шумоизолированные"></textarea></label>
 
         <h3 class="instr-h">📋 Правила</h3>
-        <label><span class="small">Курение</span><input data-instr-field id="instr_smoking_policy" type="text" placeholder="запрещено / только на балконе / разрешено" /></label>
-        <label><span class="small">Животные</span><input data-instr-field id="instr_pets_policy" type="text" placeholder="можно / нельзя" /></label>
+        <div class="instr-grid-2">
+          <label><span class="small">Курение</span><input data-instr-field id="instr_smoking_policy" type="text" placeholder="запрещено / только на балконе / разрешено" /></label>
+          <label><span class="small">Животные</span><input data-instr-field id="instr_pets_policy" type="text" placeholder="можно / нельзя" /></label>
+        </div>
         <label><span class="small">Часы тишины</span><input data-instr-field id="instr_quiet_hours" type="text" placeholder="С 23:00 до 8:00 — тишина" /></label>
         <label><span class="small">Другие правила</span><textarea data-instr-field id="instr_other_rules" rows="2"></textarea></label>
 
@@ -645,8 +651,10 @@ function ensureInstructionsModal() {
         <label><span class="small">Куда оставить ключи</span><input data-instr-field id="instr_key_return_info" type="text" placeholder="В сейф, код 5678" /></label>
 
         <h3 class="instr-h">📞 Контакты</h3>
-        <label><span class="small">Телефон для экстренных</span><input data-instr-field id="instr_emergency_phone" type="text" placeholder="+7 999 123-45-67" /></label>
-        <label><span class="small">Telegram (без @)</span><input data-instr-field id="instr_emergency_telegram" type="text" placeholder="ivan_manager" /></label>
+        <div class="instr-grid-2">
+          <label><span class="small">Телефон для экстренных</span><input data-instr-field id="instr_emergency_phone" type="text" placeholder="+7 999 123-45-67" /></label>
+          <label><span class="small">Telegram (без @)</span><input data-instr-field id="instr_emergency_telegram" type="text" placeholder="ivan_manager" /></label>
+        </div>
 
         <div id="instrSaveMsg" class="small" style="margin-top:.5rem;" hidden></div>
         <div class="actions" style="justify-content:flex-end;gap:.5rem;margin-top:1rem;">
