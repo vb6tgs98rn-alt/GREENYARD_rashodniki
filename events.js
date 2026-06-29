@@ -68,7 +68,7 @@ function bindDrawerModals() {
     const chip = e.target.closest('[data-finance-tab]');
     if (!chip) return;
     const tab = chip.dataset.financeTab;
-    ['entries','recurring','summary'].forEach(t => {
+    ['entries','recurring','summary','unit'].forEach(t => {
       const el = byId(`financeTab${t.charAt(0).toUpperCase() + t.slice(1)}`);
       if (el) el.hidden = t !== tab;
     });
@@ -518,6 +518,47 @@ function bindFinanceFilters() {
       state.ui.finance.showOnlyPending = false;
     });
     await rerender('Фильтры сброшены');
+  });
+}
+
+function bindUnitEconomicsFilters() {
+  const apply = async () => {
+    updateState((state) => {
+      state.ui.finance.unitDateFrom = dom.unitEcoDateFrom?.value || '';
+      state.ui.finance.unitDateTo = dom.unitEcoDateTo?.value || '';
+    });
+    await rerender('Период юнит экономики обновлён');
+  };
+  dom.unitEcoDateFrom?.addEventListener('change', apply);
+  dom.unitEcoDateTo?.addEventListener('change', apply);
+
+  const setPreset = async (from, to) => {
+    updateState((state) => {
+      state.ui.finance.unitDateFrom = from;
+      state.ui.finance.unitDateTo = to;
+    });
+    await rerender('Период установлен');
+  };
+
+  dom.unitEcoThisMonth?.addEventListener('click', () => {
+    const d = new Date();
+    const y = d.getFullYear(); const m = d.getMonth();
+    const from = `${y}-${String(m + 1).padStart(2, '0')}-01`;
+    const last = new Date(y, m + 1, 0).getDate();
+    const to = `${y}-${String(m + 1).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
+    setPreset(from, to);
+  });
+  dom.unitEcoPrevMonth?.addEventListener('click', () => {
+    const d = new Date(); d.setMonth(d.getMonth() - 1);
+    const y = d.getFullYear(); const m = d.getMonth();
+    const from = `${y}-${String(m + 1).padStart(2, '0')}-01`;
+    const last = new Date(y, m + 1, 0).getDate();
+    const to = `${y}-${String(m + 1).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
+    setPreset(from, to);
+  });
+  dom.unitEcoYear?.addEventListener('click', () => {
+    const d = new Date(); const y = d.getFullYear();
+    setPreset(`${y}-01-01`, `${y}-12-31`);
   });
 }
 
@@ -1031,6 +1072,7 @@ export function bindEvents() {
   bindAutoRequest();
   bindPurchaseModal();
   bindFinanceFilters();
+  bindUnitEconomicsFilters();
   bindFinanceModals();
   bindRealtyCalendarIntegration();
   bindApartmentRealtyId();

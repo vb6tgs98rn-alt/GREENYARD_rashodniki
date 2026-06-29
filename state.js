@@ -44,7 +44,7 @@ export function createDefaultState() {
       theme: 'light',
       apartmentSearch: '',
       activeSection: 'inventory',
-      finance: { apartmentFilter: 'all', typeFilter: 'all', month: '', showOnlyPending: false }
+      finance: { apartmentFilter: 'all', typeFilter: 'all', month: '', showOnlyPending: false, dateFrom: '', dateTo: '', unitDateFrom: '', unitDateTo: '' }
     }
   };
 }
@@ -79,6 +79,10 @@ export function ensureStateShape(rawState) {
   if (!next.ui.finance.typeFilter) next.ui.finance.typeFilter = 'all';
   if (typeof next.ui.finance.month !== 'string') next.ui.finance.month = '';
   if (typeof next.ui.finance.showOnlyPending !== 'boolean') next.ui.finance.showOnlyPending = false;
+  if (typeof next.ui.finance.dateFrom !== 'string') next.ui.finance.dateFrom = '';
+  if (typeof next.ui.finance.dateTo !== 'string') next.ui.finance.dateTo = '';
+  if (typeof next.ui.finance.unitDateFrom !== 'string') next.ui.finance.unitDateFrom = '';
+  if (typeof next.ui.finance.unitDateTo !== 'string') next.ui.finance.unitDateTo = '';
   next.apartments = next.apartments.map((apartment, index) => ({ ...apartment, name: apartment?.name || `Квартира ${index + 1}`, items: Array.isArray(apartment?.items) ? apartment.items : [], externalIds: { realtyCalendarUnitId: apartment?.externalIds?.realtyCalendarUnitId || '' } }));
   return next;
 }

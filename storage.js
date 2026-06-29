@@ -130,6 +130,10 @@ export function normalizeImportedState(raw) {
         typeFilter: raw?.ui?.finance?.typeFilter || 'all',
         month: typeof raw?.ui?.finance?.month === 'string' ? raw.ui.finance.month : '',
         showOnlyPending: raw?.ui?.finance?.showOnlyPending === true,
+        dateFrom: typeof raw?.ui?.finance?.dateFrom === 'string' ? raw.ui.finance.dateFrom : '',
+        dateTo: typeof raw?.ui?.finance?.dateTo === 'string' ? raw.ui.finance.dateTo : '',
+        unitDateFrom: typeof raw?.ui?.finance?.unitDateFrom === 'string' ? raw.ui.finance.unitDateFrom : '',
+        unitDateTo: typeof raw?.ui?.finance?.unitDateTo === 'string' ? raw.ui.finance.unitDateTo : '',
       },
     },
   };

@@ -114,5 +114,15 @@ const dom = {
 
   // Регулярные расходы — вид/категория
   recurringKind:         byId('recurringKind'),
+
+  // Юнит экономика
+  financeTabUnit:        byId('financeTabUnit'),
+  unitEcoDateFrom:       byId('unitEcoDateFrom'),
+  unitEcoDateTo:         byId('unitEcoDateTo'),
+  unitEcoThisMonth:      byId('unitEcoThisMonth'),
+  unitEcoPrevMonth:      byId('unitEcoPrevMonth'),
+  unitEcoYear:           byId('unitEcoYear'),
+  unitEcoSummary:        byId('unitEcoSummary'),
+  unitEcoTableWrap:      byId('unitEcoTableWrap'),
 };
 export default dom;

@@ -328,6 +328,121 @@ export function applyRealtyCalendarBookings(bookings = []) {
 // Совместимость со старым кодом, который мог импортировать importBookingsToFinance.
 export function importBookingsToFinance() { return []; }
 
+// =============================================================================
+// Юнит-экономика по квартирам
+// =============================================================================
+// За выбранный период (dateFrom..dateTo, по умолчанию — текущий месяц) считаем
+// для каждой квартиры: брутто-доход, комиссию площадки, чистый доход, уборку,
+// регулярные расходы (по kind), прочие расходы, маржу, ROI и количество броней.
+// Источник истины — state.finance.entries (как и весь остальной финансовый учёт).
+// =============================================================================
+export function computeUnitEconomics({ dateFrom = '', dateTo = '' } = {}) {
+  const state = getState();
+  const apartments = state.apartments || [];
+  const entries = state.finance.entries || [];
+
+  const inRange = (date) => {
+    if (!date) return false;
+    if (dateFrom && date < dateFrom) return false;
+    if (dateTo && date > dateTo) return false;
+    return true;
+  };
+
+  const empty = () => ({
+    grossIncome: 0,
+    platformTax: 0,
+    netIncome: 0,
+    cleaning: 0,
+    rent: 0,
+    internet: 0,
+    utilities: 0,
+    subscription: 0,
+    otherExpense: 0,
+    expense: 0,
+    profit: 0,
+    roi: 0,
+    bookings: 0,
+    nights: 0,
+  });
+
+  // Карта правил → kind (для регулярных расходов).
+  const ruleKindById = new Map();
+  (state.finance.recurringRules || []).forEach((r) => ruleKindById.set(r.id, r.kind || 'other'));
+
+  const byApartment = new Map();
+  apartments.forEach((apt) => {
+    byApartment.set(apt.id, { id: apt.id, name: getDisplayApartmentName(apt.name), ...empty() });
+  });
+
+  entries.forEach((e) => {
+    if (!inRange(e.date)) return;
+    if (e.status === 'cancelled') return;
+    const apt = byApartment.get(e.apartmentId);
+    if (!apt) return;
+
+    const gross = Number(e.amount || 0);
+    const net = Number(e.netAmount != null ? e.netAmount : gross);
+
+    if (e.type === FINANCE_TYPES.income) {
+      apt.grossIncome += gross;
+      apt.netIncome += net;
+      apt.platformTax += Math.max(0, gross - net);
+      if (e.source === 'realtycalendar' && !String(e.externalBookingId || '').endsWith(':cleaning')) {
+        apt.bookings += 1;
+        const begin = e.meta?.begin_date;
+        const end = e.meta?.end_date;
+        if (begin && end) {
+          const d1 = new Date(begin); const d2 = new Date(end);
+          const n = Math.max(0, Math.round((d2 - d1) / 86400000));
+          apt.nights += n;
+        }
+      }
+    } else if (e.type === FINANCE_TYPES.expense) {
+      // Категоризация расходов
+      let kind = 'other';
+      if (e.category === 'Уборка' || e.meta?.kind === 'cleaning') kind = 'cleaning';
+      else if (e.source === 'recurring' && e.meta?.ruleId) {
+        kind = ruleKindById.get(e.meta.ruleId) || 'other';
+      }
+      apt.expense += gross;
+      if (kind === 'cleaning') apt.cleaning += gross;
+      else if (kind === 'rent') apt.rent += gross;
+      else if (kind === 'internet') apt.internet += gross;
+      else if (kind === 'utilities') apt.utilities += gross;
+      else if (kind === 'subscription') apt.subscription += gross;
+      else apt.otherExpense += gross;
+    }
+  });
+
+  const rows = Array.from(byApartment.values()).map((r) => {
+    r.profit = r.netIncome - r.expense;
+    r.roi = r.expense > 0 ? (r.profit / r.expense) * 100 : 0;
+    r.adr = r.nights > 0 ? r.netIncome / r.nights : 0;
+    return r;
+  }).sort((a, b) => b.profit - a.profit);
+
+  const totals = rows.reduce((acc, r) => {
+    acc.grossIncome += r.grossIncome;
+    acc.platformTax += r.platformTax;
+    acc.netIncome += r.netIncome;
+    acc.cleaning += r.cleaning;
+    acc.rent += r.rent;
+    acc.internet += r.internet;
+    acc.utilities += r.utilities;
+    acc.subscription += r.subscription;
+    acc.otherExpense += r.otherExpense;
+    acc.expense += r.expense;
+    acc.bookings += r.bookings;
+    acc.nights += r.nights;
+    return acc;
+  }, empty());
+  totals.profit = totals.netIncome - totals.expense;
+  totals.roi = totals.expense > 0 ? (totals.profit / totals.expense) * 100 : 0;
+  totals.adr = totals.nights > 0 ? totals.netIncome / totals.nights : 0;
+
+  return { rows, totals, period: { dateFrom, dateTo } };
+}
+
 export function getFilteredFinanceEntries() {
   const state = getState();
   const filter = state.ui.finance || {};

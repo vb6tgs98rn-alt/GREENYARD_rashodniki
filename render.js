@@ -230,6 +230,88 @@ function renderFinance(state) {
 }
 
 // ─── RealtyCalendar: статус + журнал ─────────────────────────────────────
+function renderUnitEconomics(state) {
+  if (!dom.financeTabUnit || !dom.unitEcoTableWrap) return;
+  const filter = state.ui?.finance || {};
+  const dateFrom = filter.unitDateFrom || '';
+  const dateTo = filter.unitDateTo || '';
+  if (dom.unitEcoDateFrom) dom.unitEcoDateFrom.value = dateFrom;
+  if (dom.unitEcoDateTo) dom.unitEcoDateTo.value = dateTo;
+
+  const data = computeUnitEconomics({ dateFrom, dateTo });
+  const t = data.totals;
+  const profitColor = t.profit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
+  const periodLabel = dateFrom || dateTo
+    ? `${dateFrom || '…'} — ${dateTo || '…'}`
+    : 'Весь период';
+
+  if (dom.unitEcoSummary) {
+    dom.unitEcoSummary.innerHTML = `
+      <article class="stat"><span>Чистый доход</span><strong style="color:var(--color-success)">${fmt(t.netIncome)} ₽</strong><span class="small" style="color:var(--color-text-muted)">вал: ${fmt(t.grossIncome)} ₽</span></article>
+      <article class="stat"><span>Расходы</span><strong style="color:var(--color-error)">${fmt(t.expense)} ₽</strong><span class="small" style="color:var(--color-text-muted)">комиссия: ${fmt(t.platformTax)} ₽</span></article>
+      <article class="stat"><span>Маржа</span><strong style="color:${profitColor}">${t.profit >= 0 ? '+' : ''}${fmt(t.profit)} ₽</strong><span class="small" style="color:var(--color-text-muted)">ROI: ${t.roi.toFixed(0)}%</span></article>
+      <article class="stat"><span>Брони · Ночи</span><strong>${t.bookings} · ${t.nights}</strong><span class="small" style="color:var(--color-text-muted)">ADR: ${fmt(t.adr)} ₽</span></article>`;
+  }
+
+  if (!data.rows.length) {
+    dom.unitEcoTableWrap.innerHTML = '<div class="empty">Нет квартир.</div>';
+    return;
+  }
+
+  const rows = data.rows.map((r) => {
+    const pc = r.profit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
+    return `<tr>
+      <td class="unit-eco-name">${r.name}</td>
+      <td class="num" style="color:var(--color-success)">${fmt(r.netIncome)}</td>
+      <td class="num small muted">${fmt(r.platformTax)}</td>
+      <td class="num">${fmt(r.cleaning)}</td>
+      <td class="num">${fmt(r.rent)}</td>
+      <td class="num">${fmt(r.internet + r.utilities + r.subscription)}</td>
+      <td class="num">${fmt(r.otherExpense)}</td>
+      <td class="num" style="color:var(--color-error)">−${fmt(r.expense)}</td>
+      <td class="num" style="color:${pc};font-weight:700">${r.profit >= 0 ? '+' : ''}${fmt(r.profit)}</td>
+      <td class="num small">${r.expense > 0 ? r.roi.toFixed(0) + '%' : '—'}</td>
+      <td class="num small">${r.bookings} · ${r.nights}н</td>
+    </tr>`;
+  }).join('');
+
+  const footer = `<tr class="unit-eco-total">
+    <td>Итого</td>
+    <td class="num" style="color:var(--color-success)">${fmt(t.netIncome)}</td>
+    <td class="num small muted">${fmt(t.platformTax)}</td>
+    <td class="num">${fmt(t.cleaning)}</td>
+    <td class="num">${fmt(t.rent)}</td>
+    <td class="num">${fmt(t.internet + t.utilities + t.subscription)}</td>
+    <td class="num">${fmt(t.otherExpense)}</td>
+    <td class="num" style="color:var(--color-error)">−${fmt(t.expense)}</td>
+    <td class="num" style="color:${profitColor};font-weight:700">${t.profit >= 0 ? '+' : ''}${fmt(t.profit)}</td>
+    <td class="num small">${t.expense > 0 ? t.roi.toFixed(0) + '%' : '—'}</td>
+    <td class="num small">${t.bookings} · ${t.nights}н</td>
+  </tr>`;
+
+  dom.unitEcoTableWrap.innerHTML = `
+    <div class="small muted" style="margin-bottom:.5rem;">Период: ${periodLabel}</div>
+    <div class="unit-eco-table-scroll">
+      <table class="unit-eco-table">
+        <thead><tr>
+          <th>Квартира</th>
+          <th class="num">Чистый доход</th>
+          <th class="num">Комиссия</th>
+          <th class="num">Уборка</th>
+          <th class="num">Аренда</th>
+          <th class="num">Комм./Инт./Подп.</th>
+          <th class="num">Прочее</th>
+          <th class="num">Итого расходы</th>
+          <th class="num">Маржа</th>
+          <th class="num">ROI</th>
+          <th class="num">Брони</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot>${footer}</tfoot>
+      </table>
+    </div>`;
+}
+
 function rcStatusLabelText(action, status, errorText) {
   if (errorText && errorText === 'agency_not_registered') return 'не найдено агентство';
   if (errorText && errorText === 'integration_disabled') return 'интеграция отключена';

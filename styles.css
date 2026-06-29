@@ -649,3 +649,51 @@ body:has(.drawer.open) .auth-corner-btn{ display:none !important; }
   .chats-grid{ grid-template-columns:1fr; height:auto; }
   .chats-side{ max-height:30vh; }
 }
+
+/* ─── Юнит экономика (таблица) ────────────────────────────────────────── */
+.unit-eco-wrap{ margin-top:.75rem; }
+.unit-eco-table-scroll{
+  overflow-x:auto;
+  border:1px solid var(--color-border, rgba(0,0,0,.08));
+  border-radius:var(--radius-lg, 12px);
+  background:var(--color-surface, #fff);
+}
+.unit-eco-table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:.88rem;
+  min-width:880px;
+}
+.unit-eco-table th,
+.unit-eco-table td{
+  padding:.55rem .65rem;
+  border-bottom:1px solid var(--color-border, rgba(0,0,0,.06));
+  text-align:left;
+  vertical-align:middle;
+  white-space:nowrap;
+}
+.unit-eco-table thead th{
+  position:sticky;
+  top:0;
+  background:var(--color-surface-2, #f5f5f7);
+  font-weight:600;
+  font-size:.78rem;
+  color:var(--color-text-muted, #666);
+  text-transform:uppercase;
+  letter-spacing:.02em;
+}
+.unit-eco-table td.num,
+.unit-eco-table th.num{ text-align:right; font-variant-numeric:tabular-nums; }
+.unit-eco-table td.unit-eco-name{ font-weight:600; }
+.unit-eco-table td.small,
+.unit-eco-table td.muted{ color:var(--color-text-muted, #888); }
+.unit-eco-table tbody tr:hover{ background:rgba(0,0,0,.02); }
+.unit-eco-table tfoot tr.unit-eco-total td{
+  background:var(--color-surface-2, #f5f5f7);
+  border-top:2px solid var(--color-border, rgba(0,0,0,.12));
+  font-weight:700;
+}
+@media (max-width:720px){
+  .unit-eco-table{ font-size:.82rem; min-width:760px; }
+  .unit-eco-table th, .unit-eco-table td{ padding:.45rem .5rem; }
+}
