@@ -517,17 +517,17 @@ export async function openInstructionsModal(state) {
   openModal('guestInstructionsModal');
   const apts = state?.apartments || [];
   const sel = document.getElementById('instrApartmentSelect');
-  if (sel) {
-    sel.innerHTML = apts.map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
-    if (apts.length) {
-      _instructionsState.apartmentId = apts[0].id;
-      _instructionsState.apartmentTitle = apts[0].name;
-      sel.value = apts[0].id;
-      await loadInstructionIntoForm(apts[0].id, apts[0].name);
-    } else {
-      clearInstructionForm();
-    }
-  }
+  if (!sel) return;
+  sel.innerHTML = apts.map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
+  if (!apts.length) { clearInstructionForm(); return; }
+  // Сохраняем выбор между открытиями модалки:
+  // берём ранее выбранную квартиру, если она всё ещё в списке;
+  // иначе первую.
+  let pick = apts.find(a => a.id === _instructionsState.apartmentId) || apts[0];
+  _instructionsState.apartmentId = pick.id;
+  _instructionsState.apartmentTitle = pick.name;
+  sel.value = pick.id;
+  await loadInstructionIntoForm(pick.id, pick.name);
 }
 
 async function loadInstructionIntoForm(apartmentId, apartmentTitle) {
