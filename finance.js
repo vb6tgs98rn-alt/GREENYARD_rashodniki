@@ -46,14 +46,29 @@ export function createFinanceEntryDraft(data = {}) {
   };
 }
 
+export const RECURRING_KIND_LABELS = {
+  rent: 'Аренда',
+  internet: 'Интернет',
+  utilities: 'Коммуналка',
+  subscription: 'Подписка',
+  other: 'Другое',
+};
+
 export function createRecurringRuleDraft(data = {}) {
   const apartment = findApartmentById(data.apartmentId) || currentApartment();
+  const kind = data.kind || 'other';
+  // Если выбран конкретный вид — подставляем лейбл как title, иначе берём введённый текст.
+  const titleFromKind = (kind !== 'other' && RECURRING_KIND_LABELS[kind]) ? RECURRING_KIND_LABELS[kind] : '';
+  const title = (kind === 'other')
+    ? (data.title || 'Правило')
+    : (titleFromKind || data.title || 'Правило');
   return {
     id: crypto.randomUUID(),
     apartmentId: apartment?.id || '',
     apartmentName: getDisplayApartmentName(apartment?.name || '—'),
-    title: data.title || '',
-    category: data.category || '',
+    title,
+    kind,
+    category: data.category || (kind !== 'other' ? RECURRING_KIND_LABELS[kind] : ''),
     amount: Number(data.amount || 0),
     currency: data.currency || 'RUB',
     type: data.type || FINANCE_TYPES.expense,
@@ -188,15 +203,17 @@ export function applyRealtyCalendarBookings(bookings = []) {
 
     bookings.forEach((b) => {
       const bookingId = String(b.booking_id);
+      const cleaningId = `${bookingId}:cleaning`;
       const apartment = findApartmentByRealtyId(state, b.realty_id);
 
-      // Отменённые/удалённые — убираем из финучёта
+      // Отменённые/удалённые — убираем из финучёта и связанный расход уборки
       if (b.status === 'canceled' || b.status === 'deleted') {
-        if (existingByBookingId.has(bookingId)) {
+        if (existingByBookingId.has(bookingId) || existingByBookingId.has(cleaningId)) {
           state.finance.entries = state.finance.entries.filter(
-            (e) => !(e.source === 'realtycalendar' && String(e.externalBookingId) === bookingId)
+            (e) => !(e.source === 'realtycalendar' && (String(e.externalBookingId) === bookingId || String(e.externalBookingId) === cleaningId))
           );
           existingByBookingId.delete(bookingId);
+          existingByBookingId.delete(cleaningId);
           result.removed++;
         }
         return;
@@ -261,6 +278,43 @@ export function applyRealtyCalendarBookings(bookings = []) {
         state.finance.entries.unshift(entry);
         result.added++;
       }
+
+      // Автоуборка: если у квартиры задана cleaningPrice > 0 — создаём/обновляем расход на дату выезда
+      const cleaningPrice = Number(apartment.cleaningPrice || 0);
+      if (cleaningPrice > 0 && b.end_date) {
+        const cleaningPayload = {
+          apartmentId: apartment.id,
+          type: FINANCE_TYPES.expense,
+          category: 'Уборка',
+          title: `Уборка после брони #${b.booking_id}`,
+          amount: cleaningPrice,
+          netAmount: cleaningPrice,
+          currency: 'RUB',
+          date: b.end_date,
+          source: 'realtycalendar',
+          status: 'planned',
+          notes: `Автоматический расход. Связан с бронью #${b.booking_id}.`,
+          externalBookingId: cleaningId,
+          meta: { booking_id: b.booking_id, kind: 'cleaning' },
+        };
+        if (existingByBookingId.has(cleaningId)) {
+          const { entry, idx } = existingByBookingId.get(cleaningId);
+          state.finance.entries[idx] = {
+            ...entry,
+            ...cleaningPayload,
+            apartmentName: getDisplayApartmentName(apartment.name),
+            id: entry.id,
+          };
+        } else {
+          const entry = createFinanceEntryDraft(cleaningPayload);
+          state.finance.entries.unshift(entry);
+        }
+      } else if (existingByBookingId.has(cleaningId)) {
+        // cleaningPrice убрали — удаляем вручную связанную запись
+        state.finance.entries = state.finance.entries.filter(
+          (e) => !(e.source === 'realtycalendar' && String(e.externalBookingId) === cleaningId)
+        );
+      }
     });
 
     state.finance.bookingSync.lastSyncedAt = new Date().toISOString();
@@ -281,11 +335,29 @@ export function getFilteredFinanceEntries() {
     .filter((entry) => {
       if (filter.apartmentFilter && filter.apartmentFilter !== 'all' && entry.apartmentId !== filter.apartmentFilter) return false;
       if (filter.typeFilter && filter.typeFilter !== 'all' && entry.type !== filter.typeFilter) return false;
-      if (filter.month && monthKey(entry.date) !== filter.month) return false;
+      // Диапазон дат явный
+      const date = entry.date || '';
+      if (filter.dateFrom && date && date < filter.dateFrom) return false;
+      if (filter.dateTo && date && date > filter.dateTo) return false;
+      // Легаси: filter.month — если явный диапазон не выбран
+      if (!filter.dateFrom && !filter.dateTo && filter.month && monthKey(entry.date) !== filter.month) return false;
       if (filter.showOnlyPending && !['planned', 'pending'].includes(entry.status)) return false;
       return true;
     })
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+function lastDateOfMonthIso(monthIso) {
+  // monthIso в формате 'YYYY-MM' → 'YYYY-MM-DD' (последний день)
+  if (!monthIso) return '';
+  const [y, m] = monthIso.split('-').map(Number);
+  const last = new Date(y, m, 0).getDate();
+  return `${y}-${String(m).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
+}
+
+export function monthToDateRange(monthIso) {
+  if (!monthIso) return { from: '', to: '' };
+  return { from: `${monthIso}-01`, to: lastDateOfMonthIso(monthIso) };
 }
 
 export function getFinanceSummary() {

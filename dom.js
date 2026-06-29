@@ -41,6 +41,9 @@ const dom = {
   financeApartmentFilter: byId('financeApartmentFilter'),
   financeTypeFilter: byId('financeTypeFilter'),
   financeMonthFilter: byId('financeMonthFilter'),
+  financeDateFrom: byId('financeDateFrom'),
+  financeDateTo: byId('financeDateTo'),
+  financeResetFilters: byId('financeResetFilters'),
   financeOnlyPending: byId('financeOnlyPending'),
   financeSummary: byId('financeSummary'),
   financeByApartment: byId('financeByApartment'),
@@ -107,5 +110,9 @@ const dom = {
   // Поле realty_id в форме переименования квартиры
   apartmentRealtyId:     byId('apartmentRealtyId'),
   saveApartmentRealtyId: byId('saveApartmentRealtyId'),
+  apartmentCleaningPrice:byId('apartmentCleaningPrice'),
+
+  // Регулярные расходы — вид/категория
+  recurringKind:         byId('recurringKind'),
 };
 export default dom;

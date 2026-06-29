@@ -47,6 +47,7 @@ function renderInventory(state) {
   dom.apartmentName.value = apartment.name;
   // ID объекта в RealtyCalendar (легаси-поле в «Параметры квартиры», если осталось)
   if (dom.apartmentRealtyId) dom.apartmentRealtyId.value = apartment.externalIds?.realtyCalendarUnitId || '';
+  if (dom.apartmentCleaningPrice) dom.apartmentCleaningPrice.value = apartment.cleaningPrice ? String(apartment.cleaningPrice) : '';
   dom.apartmentSearch.value = state.ui.apartmentSearch || '';
   const filteredApartments = state.apartments.filter((a) =>
     getDisplayApartmentName(a.name).toLowerCase().includes((state.ui.apartmentSearch || '').toLowerCase())
@@ -154,7 +155,9 @@ function renderFinance(state) {
   dom.financeApartmentFilter.innerHTML = apartmentOptions;
   dom.financeApartmentFilter.value = filter.apartmentFilter || 'all';
   dom.financeTypeFilter.value = filter.typeFilter || 'all';
-  dom.financeMonthFilter.value = filter.month || monthKey(new Date());
+  if (dom.financeMonthFilter) dom.financeMonthFilter.value = filter.month || '';
+  if (dom.financeDateFrom) dom.financeDateFrom.value = filter.dateFrom || '';
+  if (dom.financeDateTo) dom.financeDateTo.value = filter.dateTo || '';
   dom.financeOnlyPending.checked = !!filter.showOnlyPending;
 
   // Итоговые статы: валовый и чистый доход / прибыль

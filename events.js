@@ -346,19 +346,6 @@ function bindDeleteApartment() {
   });
 }
 
-// ─── Экспорт / Импорт JSON ────────────────────────────────────────────────
-function bindJsonIo() {
-  byId('exportJsonBtn')?.addEventListener('click', () => { exportJson(); setStatus('JSON экспортирован'); });
-  byId('importJsonBtn')?.addEventListener('click', () => byId('importJsonInput')?.click());
-  byId('importJsonInput')?.addEventListener('change', async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try { await importJson(file); await rerender('Данные импортированы'); }
-    catch (err) { setStatus(`Ошибка импорта: ${err.message}`); }
-    e.target.value = '';
-  });
-}
-
 // ─── Авто-заявка тумблер ──────────────────────────────────────────────────
 function syncAutoToggleUI() {
   const on = getState().autoRequest;
@@ -511,13 +498,27 @@ function bindFinanceFilters() {
     updateState((state) => {
       state.ui.finance.apartmentFilter = dom.financeApartmentFilter?.value || 'all';
       state.ui.finance.typeFilter = dom.financeTypeFilter?.value || 'all';
-      state.ui.finance.month = dom.financeMonthFilter?.value || monthKey(new Date());
+      state.ui.finance.dateFrom = dom.financeDateFrom?.value || '';
+      state.ui.finance.dateTo = dom.financeDateTo?.value || '';
+      // Сброс легаси-фильтра по месяцу, если выбран явный диапазон
+      if (state.ui.finance.dateFrom || state.ui.finance.dateTo) state.ui.finance.month = '';
       state.ui.finance.showOnlyPending = dom.financeOnlyPending?.checked || false;
     });
     await rerender('Фильтры обновлены');
   };
-  [dom.financeApartmentFilter, dom.financeTypeFilter, dom.financeMonthFilter].forEach(el => el?.addEventListener('input', updateFilters));
+  [dom.financeApartmentFilter, dom.financeTypeFilter, dom.financeDateFrom, dom.financeDateTo].forEach(el => el?.addEventListener('input', updateFilters));
   dom.financeOnlyPending?.addEventListener('change', updateFilters);
+  dom.financeResetFilters?.addEventListener('click', async () => {
+    updateState((state) => {
+      state.ui.finance.apartmentFilter = 'all';
+      state.ui.finance.typeFilter = 'all';
+      state.ui.finance.dateFrom = '';
+      state.ui.finance.dateTo = '';
+      state.ui.finance.month = '';
+      state.ui.finance.showOnlyPending = false;
+    });
+    await rerender('Фильтры сброшены');
+  });
 }
 
 function bindFinanceModals() {
@@ -554,8 +555,14 @@ function bindFinanceModals() {
   });
 
   // Регулярные расходы
+  const updateRecurringTitleVisibility = () => {
+    const kind = dom.recurringKind?.value || 'other';
+    const titleField = dom.recurringTitle?.closest('label');
+    if (titleField) titleField.style.display = (kind === 'other') ? '' : 'none';
+  };
   dom.financeAddRecurringBtn?.addEventListener('click', () => {
     if (dom.recurringApartment) dom.recurringApartment.value = currentApartment()?.id || '';
+    if (dom.recurringKind) dom.recurringKind.value = 'rent';
     if (dom.recurringTitle) dom.recurringTitle.value = '';
     if (dom.recurringCategory) dom.recurringCategory.value = '';
     if (dom.recurringAmount) dom.recurringAmount.value = '';
@@ -563,16 +570,20 @@ function bindFinanceModals() {
     if (dom.recurringStartDate) dom.recurringStartDate.value = new Date().toISOString().slice(0,10);
     if (dom.recurringEndDate) dom.recurringEndDate.value = '';
     if (dom.recurringNotes) dom.recurringNotes.value = '';
+    updateRecurringTitleVisibility();
     openModal('recurringExpenseModal');
   });
+  dom.recurringKind?.addEventListener('change', updateRecurringTitleVisibility);
   dom.cancelRecurringExpense?.addEventListener('click', () => closeModal('recurringExpenseModal'));
   document.getElementById('cancelRecurringExpense2')?.addEventListener('click', () => closeModal('recurringExpenseModal'));
   dom.saveRecurringExpense?.addEventListener('click', async () => {
     const amount = Number(dom.recurringAmount?.value || 0);
     if (!amount) { setStatus('Укажите сумму'); return; }
-    if (!dom.recurringTitle?.value) { setStatus('Укажите название'); return; }
+    const kind = dom.recurringKind?.value || 'other';
+    if (kind === 'other' && !dom.recurringTitle?.value) { setStatus('Укажите название'); return; }
     addRecurringRule({
       apartmentId: dom.recurringApartment?.value,
+      kind,
       title: dom.recurringTitle?.value,
       category: dom.recurringCategory?.value,
       amount,
@@ -867,6 +878,25 @@ function bindApartmentRealtyId() {
   dom.saveApartmentRealtyId?.addEventListener('click', legacySave);
   dom.apartmentRealtyId?.addEventListener('change', legacySave);
 
+  // Цена уборки квартиры (для автоуборки)
+  dom.apartmentCleaningPrice?.addEventListener('change', async () => {
+    const apt = currentApartment();
+    if (!apt) return;
+    const val = Number(dom.apartmentCleaningPrice.value || 0);
+    updateState((state) => {
+      const a = (state.apartments || []).find((x) => x.id === apt.id);
+      if (!a) return;
+      a.cleaningPrice = val > 0 ? val : 0;
+    });
+    try {
+      const bookings = await fetchRealtyCalendarBookings(500);
+      applyRealtyCalendarBookings(bookings);
+    } catch (err) {
+      console.warn('[cleaning] apply on cleaningPrice save error:', err);
+    }
+    await rerender(val > 0 ? 'Цена уборки сохранена' : 'Цена уборки очищена');
+  });
+
   // Открытие модалки синхронизации по клику на кнопку в карточке квартиры
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-sync-apartment]');
@@ -998,7 +1028,6 @@ export function bindEvents() {
   bindItemCards();
   bindWriteoffModal();
   bindDeleteApartment();
-  bindJsonIo();
   bindAutoRequest();
   bindPurchaseModal();
   bindFinanceFilters();
