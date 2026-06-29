@@ -555,11 +555,35 @@ async function loadInstructionIntoForm(apartmentId, apartmentTitle) {
   setFieldVal('instr_emergency_telegram', data.emergency_telegram);
   _instructionsState.apartmentId = apartmentId;
   _instructionsState.apartmentTitle = apartmentTitle;
+  // Если данные уже введены — блокируем все поля, кнопка «Редактировать». Иначе — ввод, кнопка «Сохранить».
+  setInstructionsReadOnly(hasAnyInstructionData(data));
 }
 
 function clearInstructionForm() {
   document.querySelectorAll('#guestInstructionsModal [data-instr-field]')
     .forEach(el => { el.value = ''; });
+  setInstructionsReadOnly(false);
+}
+
+// Read-only паттерн для полей инструкций — после ввода блокируем, кнопка меняется на «Редактировать».
+function setInstructionsReadOnly(readOnly) {
+  document.querySelectorAll('#guestInstructionsModal [data-instr-field]').forEach(el => {
+    if (readOnly) el.setAttribute('readonly', '');
+    else el.removeAttribute('readonly');
+  });
+  const saveBtn = document.getElementById('instrSaveBtn');
+  if (saveBtn) {
+    saveBtn.textContent = readOnly ? 'Редактировать' : 'Сохранить';
+    saveBtn.dataset.mode = readOnly ? 'edit' : 'save';
+  }
+}
+
+function hasAnyInstructionData(data) {
+  if (!data) return false;
+  const keys = ['full_address','directions_metro','parking_info','entrance_code','door_code','key_location','checkin_instruction','wifi_ssid','wifi_password','apartment_notes','smoking_policy','pets_policy','quiet_hours','other_rules','checkout_checklist','key_return_info','emergency_phone','emergency_telegram'];
+  if (keys.some(k => data[k] && String(data[k]).trim())) return true;
+  if (Array.isArray(data.amenities) && data.amenities.length) return true;
+  return false;
 }
 
 function setFieldVal(id, val) {
@@ -1036,11 +1060,21 @@ export function bindGuestBotEvents(state) {
   document.body.addEventListener('click', async (e) => {
     if (e.target.closest('#closeInstructionsModal')) { closeModal('guestInstructionsModal'); return; }
     if (e.target.closest('#instrSaveBtn')) {
+      const btn = document.getElementById('instrSaveBtn');
+      // Если кнопка в режиме «Редактировать» — переводим поля в редактируемые и выходим.
+      if (btn?.dataset.mode === 'edit') {
+        setInstructionsReadOnly(false);
+        const first = document.querySelector('#guestInstructionsModal [data-instr-field]');
+        if (first) first.focus();
+        return;
+      }
       try {
         const patch = readInstructionForm();
         await saveInstruction(_instructionsState.apartmentId, _instructionsState.apartmentTitle, patch);
         const msg = document.getElementById('instrSaveMsg');
         if (msg) { msg.hidden = false; msg.textContent = '✓ Сохранено'; msg.style.color = 'var(--color-success, #1a7f37)'; }
+        // После успешного сохранения — возвращаемся в read-only, кнопка «Редактировать».
+        setInstructionsReadOnly(hasAnyInstructionData(patch));
       } catch (err) {
         const msg = document.getElementById('instrSaveMsg');
         if (msg) { msg.hidden = false; msg.textContent = 'Ошибка: ' + (err?.message || err); msg.style.color = 'var(--color-error,#c33)'; }

@@ -115,14 +115,28 @@ const dom = {
   // Регулярные расходы — вид/категория
   recurringKind:         byId('recurringKind'),
 
-  // Юнит экономика
+  // Юнит экономика — селектор + форма + активный отчёт + история
   financeTabUnit:        byId('financeTabUnit'),
-  unitEcoDateFrom:       byId('unitEcoDateFrom'),
-  unitEcoDateTo:         byId('unitEcoDateTo'),
-  unitEcoThisMonth:      byId('unitEcoThisMonth'),
-  unitEcoPrevMonth:      byId('unitEcoPrevMonth'),
-  unitEcoYear:           byId('unitEcoYear'),
+  unitApartmentSelect:   byId('unitApartmentSelect'),
+  unitNoReportBlock:     byId('unitNoReportBlock'),
+  unitCreateCadence:     byId('unitCreateCadence'),
+  unitCreateStart:       byId('unitCreateStart'),
+  unitCreateEnd:         byId('unitCreateEnd'),
+  unitCreateBtn:         byId('unitCreateBtn'),
+  unitActiveBlock:       byId('unitActiveBlock'),
+  unitActiveTitle:       byId('unitActiveTitle'),
+  unitActiveDates:       byId('unitActiveDates'),
+  unitEditBtn:           byId('unitEditBtn'),
+  unitFilterType:        byId('unitFilterType'),
+  unitFilterCategory:    byId('unitFilterCategory'),
+  unitFilterSource:      byId('unitFilterSource'),
+  unitFilterStatus:      byId('unitFilterStatus'),
   unitEcoSummary:        byId('unitEcoSummary'),
+  unitCancelledBlock:    byId('unitCancelledBlock'),
   unitEcoTableWrap:      byId('unitEcoTableWrap'),
+  unitHistoryList:       byId('unitHistoryList'),
+  // Кнопки read-only для цены уборки
+  apartmentCleaningPriceEditBtn: byId('apartmentCleaningPriceEditBtn'),
+  apartmentCleaningPriceSaveBtn: byId('apartmentCleaningPriceSaveBtn'),
 };
 export default dom;

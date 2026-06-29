@@ -99,6 +99,11 @@ export function normalizeImportedState(raw) {
     externalIds: {
       realtyCalendarUnitId: apartment?.externalIds?.realtyCalendarUnitId || '',
     },
+    cleaningPrice: Math.max(0, Number(apartment?.cleaningPrice || 0)),
+    unitEcoReports: {
+      active: apartment?.unitEcoReports?.active || null,
+      history: Array.isArray(apartment?.unitEcoReports?.history) ? apartment.unitEcoReports.history : [],
+    },
   }));
 
   return {
@@ -134,6 +139,14 @@ export function normalizeImportedState(raw) {
         dateTo: typeof raw?.ui?.finance?.dateTo === 'string' ? raw.ui.finance.dateTo : '',
         unitDateFrom: typeof raw?.ui?.finance?.unitDateFrom === 'string' ? raw.ui.finance.unitDateFrom : '',
         unitDateTo: typeof raw?.ui?.finance?.unitDateTo === 'string' ? raw.ui.finance.unitDateTo : '',
+        unitApartmentId: typeof raw?.ui?.finance?.unitApartmentId === 'string' ? raw.ui.finance.unitApartmentId : '',
+        unitHistoryReportId: typeof raw?.ui?.finance?.unitHistoryReportId === 'string' ? raw.ui.finance.unitHistoryReportId : '',
+        unitFilters: {
+          type: raw?.ui?.finance?.unitFilters?.type || 'all',
+          category: raw?.ui?.finance?.unitFilters?.category || 'all',
+          source: raw?.ui?.finance?.unitFilters?.source || 'all',
+          status: raw?.ui?.finance?.unitFilters?.status || 'active',
+        },
       },
     },
   };

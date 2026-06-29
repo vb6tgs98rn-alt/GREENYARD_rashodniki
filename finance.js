@@ -279,9 +279,9 @@ export function applyRealtyCalendarBookings(bookings = []) {
         result.added++;
       }
 
-      // Автоуборка: если у квартиры задана cleaningPrice > 0 — создаём/обновляем расход на дату выезда
+      // Автоуборка: если у квартиры задана cleaningPrice > 0 — создаём/обновляем расход на дату создания брони
       const cleaningPrice = Number(apartment.cleaningPrice || 0);
-      if (cleaningPrice > 0 && b.end_date) {
+      if (cleaningPrice > 0) {
         const cleaningPayload = {
           apartmentId: apartment.id,
           type: FINANCE_TYPES.expense,
@@ -290,7 +290,7 @@ export function applyRealtyCalendarBookings(bookings = []) {
           amount: cleaningPrice,
           netAmount: cleaningPrice,
           currency: 'RUB',
-          date: b.end_date,
+          date,
           source: 'realtycalendar',
           status: 'planned',
           notes: `Автоматический расход. Связан с бронью #${b.booking_id}.`,
@@ -336,6 +336,175 @@ export function importBookingsToFinance() { return []; }
 // регулярные расходы (по kind), прочие расходы, маржу, ROI и количество броней.
 // Источник истины — state.finance.entries (как и весь остальной финансовый учёт).
 // =============================================================================
+// =============================================================================
+// Отчётные периоды юнит-экономики: привязка к квартире + автопродление
+// =============================================================================
+export const REPORT_CADENCE_LABELS = {
+  monthly: 'Месяц',
+  quarterly: 'Квартал',
+  yearly: 'Год',
+  custom: 'Свой',
+};
+
+function _lastDayOfMonthIso(year, month1) {
+  const last = new Date(year, month1, 0).getDate();
+  return `${year}-${String(month1).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
+}
+
+function _nextPeriod(prevEndDateIso, cadence) {
+  const [y, m, d] = prevEndDateIso.split('-').map(Number);
+  const start = new Date(y, m - 1, d);
+  start.setDate(start.getDate() + 1);
+  const startIso = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+  let endIso = startIso;
+  if (cadence === 'monthly') {
+    endIso = _lastDayOfMonthIso(start.getFullYear(), start.getMonth() + 1);
+  } else if (cadence === 'quarterly') {
+    const e = new Date(start); e.setMonth(e.getMonth() + 3); e.setDate(e.getDate() - 1);
+    endIso = `${e.getFullYear()}-${String(e.getMonth() + 1).padStart(2, '0')}-${String(e.getDate()).padStart(2, '0')}`;
+  } else if (cadence === 'yearly') {
+    const e = new Date(start); e.setFullYear(e.getFullYear() + 1); e.setDate(e.getDate() - 1);
+    endIso = `${e.getFullYear()}-${String(e.getMonth() + 1).padStart(2, '0')}-${String(e.getDate()).padStart(2, '0')}`;
+  }
+  return { startDate: startIso, endDate: endIso };
+}
+
+export function setUnitEcoActiveReport(apartmentId, { startDate, endDate, cadence = 'monthly' }) {
+  if (!apartmentId || !startDate || !endDate) return null;
+  let created = null;
+  updateState((state) => {
+    const apt = (state.apartments || []).find((a) => a.id === apartmentId);
+    if (!apt) return;
+    if (!apt.unitEcoReports) apt.unitEcoReports = { active: null, history: [] };
+    created = { id: crypto.randomUUID(), startDate, endDate, cadence, createdAt: new Date().toISOString() };
+    apt.unitEcoReports.active = created;
+  });
+  return created;
+}
+
+export function updateUnitEcoActiveReport(apartmentId, patch = {}) {
+  updateState((state) => {
+    const apt = (state.apartments || []).find((a) => a.id === apartmentId);
+    if (!apt || !apt.unitEcoReports?.active) return;
+    const a = apt.unitEcoReports.active;
+    if (typeof patch.startDate === 'string' && patch.startDate) a.startDate = patch.startDate;
+    if (typeof patch.endDate === 'string' && patch.endDate) a.endDate = patch.endDate;
+    if (typeof patch.cadence === 'string' && patch.cadence) a.cadence = patch.cadence;
+    if (a.endDate < a.startDate) a.endDate = a.startDate;
+  });
+}
+
+export function advanceUnitEcoReportIfNeeded(apartmentId) {
+  const todayIso = new Date().toISOString().slice(0, 10);
+  let advanced = false;
+  updateState((state) => {
+    const apt = (state.apartments || []).find((a) => a.id === apartmentId);
+    if (!apt) return;
+    if (!apt.unitEcoReports) apt.unitEcoReports = { active: null, history: [] };
+    let safety = 36;
+    while (safety-- > 0) {
+      const cur = apt.unitEcoReports.active;
+      if (!cur || !cur.endDate || cur.endDate >= todayIso) break;
+      if (cur.cadence === 'custom') break;
+      apt.unitEcoReports.history.unshift({ ...cur, closedAt: new Date().toISOString() });
+      const np = _nextPeriod(cur.endDate, cur.cadence);
+      apt.unitEcoReports.active = { id: crypto.randomUUID(), startDate: np.startDate, endDate: np.endDate, cadence: cur.cadence, createdAt: new Date().toISOString() };
+      advanced = true;
+    }
+  });
+  return advanced;
+}
+
+export function deleteUnitEcoHistoryReport(apartmentId, reportId) {
+  updateState((state) => {
+    const apt = (state.apartments || []).find((a) => a.id === apartmentId);
+    if (!apt || !apt.unitEcoReports?.history) return;
+    apt.unitEcoReports.history = apt.unitEcoReports.history.filter((r) => r.id !== reportId);
+  });
+}
+
+export function computeUnitEcoReport(apartmentId, { startDate, endDate }, filters = {}) {
+  const state = getState();
+  const apt = (state.apartments || []).find((a) => a.id === apartmentId);
+  if (!apt || !startDate || !endDate) return null;
+
+  const type = filters.type || 'all';
+  const category = filters.category || 'all';
+  const source = filters.source || 'all';
+  const status = filters.status || 'active';
+
+  const ruleKindById = new Map();
+  (state.finance.recurringRules || []).forEach((r) => ruleKindById.set(r.id, r.kind || 'other'));
+
+  const stat = {
+    grossIncome: 0, platformTax: 0, netIncome: 0,
+    expense: 0, cleaning: 0, rent: 0, internet: 0, utilities: 0, subscription: 0, otherExpense: 0,
+    bookings: 0, nights: 0,
+    cancelledBookings: 0, cancelledAmount: 0,
+    plannedExpense: 0, confirmedExpense: 0,
+    profit: 0, roi: 0, adr: 0,
+  };
+  const entries = [];
+
+  (state.finance.entries || []).forEach((e) => {
+    if (e.apartmentId !== apartmentId) return;
+    const date = e.date || '';
+    if (!date || date < startDate || date > endDate) return;
+
+    if (e.status === 'cancelled') {
+      if (e.type === FINANCE_TYPES.income && e.source === 'realtycalendar' && !String(e.externalBookingId || '').endsWith(':cleaning')) {
+        stat.cancelledBookings += 1;
+        stat.cancelledAmount += Number(e.amount || 0);
+      }
+      if (status !== 'all' && status !== 'cancelled') return;
+    } else {
+      if (status !== 'active' && status !== 'all' && e.status !== status) return;
+    }
+
+    if (type !== 'all' && e.type !== type) return;
+    if (source !== 'all' && e.source !== source) return;
+
+    let expenseKind = 'other';
+    if (e.type === FINANCE_TYPES.expense) {
+      if (e.category === 'Уборка' || e.meta?.kind === 'cleaning') expenseKind = 'cleaning';
+      else if (e.source === 'recurring' && e.meta?.ruleId) expenseKind = ruleKindById.get(e.meta.ruleId) || 'other';
+    }
+    if (category !== 'all' && e.type === FINANCE_TYPES.expense && expenseKind !== category) return;
+
+    entries.push(e);
+    const gross = Number(e.amount || 0);
+    const net = Number(e.netAmount != null ? e.netAmount : gross);
+
+    if (e.type === FINANCE_TYPES.income) {
+      if (e.status !== 'cancelled') {
+        stat.grossIncome += gross;
+        stat.netIncome += net;
+        stat.platformTax += Math.max(0, gross - net);
+        if (e.source === 'realtycalendar' && !String(e.externalBookingId || '').endsWith(':cleaning')) {
+          stat.bookings += 1;
+          const bd = e.meta?.begin_date; const ed = e.meta?.end_date;
+          if (bd && ed) stat.nights += Math.max(0, Math.round((new Date(ed) - new Date(bd)) / 86400000));
+        }
+      }
+    } else if (e.type === FINANCE_TYPES.expense && e.status !== 'cancelled') {
+      stat.expense += gross;
+      if (expenseKind === 'cleaning') stat.cleaning += gross;
+      else if (expenseKind === 'rent') stat.rent += gross;
+      else if (expenseKind === 'internet') stat.internet += gross;
+      else if (expenseKind === 'utilities') stat.utilities += gross;
+      else if (expenseKind === 'subscription') stat.subscription += gross;
+      else stat.otherExpense += gross;
+      if (e.status === 'planned') stat.plannedExpense += gross;
+      else if (e.status === 'confirmed') stat.confirmedExpense += gross;
+    }
+  });
+
+  stat.profit = stat.netIncome - stat.expense;
+  stat.roi = stat.expense > 0 ? (stat.profit / stat.expense) * 100 : 0;
+  stat.adr = stat.nights > 0 ? stat.netIncome / stat.nights : 0;
+  return { stat, entries, period: { startDate, endDate }, apartment: { id: apt.id, name: getDisplayApartmentName(apt.name) } };
+}
+
 export function computeUnitEconomics({ dateFrom = '', dateTo = '' } = {}) {
   const state = getState();
   const apartments = state.apartments || [];

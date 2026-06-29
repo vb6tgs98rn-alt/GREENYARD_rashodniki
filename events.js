@@ -1,6 +1,6 @@
 import dom, { byId } from './dom.js';
 import { fetchRealtyCalendarBookings, fetchRealtyCalendarLog, fetchRealtyCalendarIntegration, saveRealtyCalendarIntegration, disconnectRealtyCalendar, buildFinanceWebhookExample, getWebhookUrl } from './api.js';
-import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft } from './finance.js';
+import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport } from './finance.js';
 import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus, setAuthMsg } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, updateState } from './state.js';
 import { persistState, exportJson, importJson } from './storage.js';
@@ -521,44 +521,74 @@ function bindFinanceFilters() {
   });
 }
 
-function bindUnitEconomicsFilters() {
-  const apply = async () => {
-    updateState((state) => {
-      state.ui.finance.unitDateFrom = dom.unitEcoDateFrom?.value || '';
-      state.ui.finance.unitDateTo = dom.unitEcoDateTo?.value || '';
-    });
-    await rerender('Период юнит экономики обновлён');
-  };
-  dom.unitEcoDateFrom?.addEventListener('change', apply);
-  dom.unitEcoDateTo?.addEventListener('change', apply);
-
-  const setPreset = async (from, to) => {
-    updateState((state) => {
-      state.ui.finance.unitDateFrom = from;
-      state.ui.finance.unitDateTo = to;
-    });
-    await rerender('Период установлен');
-  };
-
-  dom.unitEcoThisMonth?.addEventListener('click', () => {
-    const d = new Date();
-    const y = d.getFullYear(); const m = d.getMonth();
-    const from = `${y}-${String(m + 1).padStart(2, '0')}-01`;
-    const last = new Date(y, m + 1, 0).getDate();
-    const to = `${y}-${String(m + 1).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
-    setPreset(from, to);
+function bindUnitEconomicsTab() {
+  // Селектор квартиры: выбор → авто-перенос истёкшего периода + ререндер
+  dom.unitApartmentSelect?.addEventListener('change', async (e) => {
+    const aptId = e.target.value;
+    updateState((state) => { state.ui.finance.unitApartmentId = aptId; });
+    advanceUnitEcoReportIfNeeded(aptId);
+    await rerender();
   });
-  dom.unitEcoPrevMonth?.addEventListener('click', () => {
-    const d = new Date(); d.setMonth(d.getMonth() - 1);
-    const y = d.getFullYear(); const m = d.getMonth();
-    const from = `${y}-${String(m + 1).padStart(2, '0')}-01`;
-    const last = new Date(y, m + 1, 0).getDate();
-    const to = `${y}-${String(m + 1).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
-    setPreset(from, to);
+
+  // Создание периода
+  dom.unitCreateBtn?.addEventListener('click', async () => {
+    const aptId = dom.unitApartmentSelect?.value;
+    if (!aptId) { setStatus('Выберите квартиру'); return; }
+    const startDate = dom.unitCreateStart?.value || '';
+    const endDate = dom.unitCreateEnd?.value || '';
+    const cadence = dom.unitCreateCadence?.value || 'monthly';
+    if (!startDate || !endDate) { setStatus('Укажите даты периода'); return; }
+    try {
+      setUnitEcoActiveReport(aptId, { startDate, endDate, cadence });
+      await rerender('Период создан');
+    } catch (err) {
+      setStatus('Не удалось создать: ' + (err?.message || err));
+    }
   });
-  dom.unitEcoYear?.addEventListener('click', () => {
-    const d = new Date(); const y = d.getFullYear();
-    setPreset(`${y}-01-01`, `${y}-12-31`);
+
+  // Редактирование периода (inline-prompt)
+  dom.unitEditBtn?.addEventListener('click', async () => {
+    const aptId = dom.unitApartmentSelect?.value;
+    if (!aptId) return;
+    const state = getState();
+    const apt = (state.apartments || []).find(a => a.id === aptId);
+    const active = apt?.unitEcoReports?.active;
+    if (!active) return;
+    const newStart = prompt('Начало периода (YYYY-MM-DD):', active.startDate || '');
+    if (newStart === null) return;
+    const newEnd = prompt('Конец периода (YYYY-MM-DD):', active.endDate || '');
+    if (newEnd === null) return;
+    try {
+      updateUnitEcoActiveReport(aptId, { startDate: newStart.trim(), endDate: newEnd.trim() });
+      await rerender('Период обновлён');
+    } catch (err) {
+      setStatus('Не удалось обновить: ' + (err?.message || err));
+    }
+  });
+
+  // Фильтры
+  const updateFilter = async (key, value) => {
+    updateState((state) => {
+      if (!state.ui.finance.unitFilters) state.ui.finance.unitFilters = { type: 'all', category: 'all', source: 'all', status: 'active' };
+      state.ui.finance.unitFilters[key] = value;
+    });
+    await rerender();
+  };
+  dom.unitFilterType?.addEventListener('change', (e) => updateFilter('type', e.target.value));
+  dom.unitFilterCategory?.addEventListener('change', (e) => updateFilter('category', e.target.value));
+  dom.unitFilterSource?.addEventListener('change', (e) => updateFilter('source', e.target.value));
+  dom.unitFilterStatus?.addEventListener('change', (e) => updateFilter('status', e.target.value));
+
+  // Удаление отчёта из истории
+  dom.unitHistoryList?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-unit-history-delete]');
+    if (!btn) return;
+    const reportId = btn.getAttribute('data-unit-history-delete');
+    const aptId = dom.unitApartmentSelect?.value;
+    if (!aptId || !reportId) return;
+    if (!confirm('Удалить отчёт из истории?')) return;
+    deleteUnitEcoHistoryReport(aptId, reportId);
+    await rerender('Отчёт удалён');
   });
 }
 
@@ -919,8 +949,8 @@ function bindApartmentRealtyId() {
   dom.saveApartmentRealtyId?.addEventListener('click', legacySave);
   dom.apartmentRealtyId?.addEventListener('change', legacySave);
 
-  // Цена уборки квартиры (для автоуборки)
-  dom.apartmentCleaningPrice?.addEventListener('change', async () => {
+  // Цена уборки квартиры — read-only паттерн: сохранить → readonly + кнопка «Редактировать»
+  const saveCleaningPrice = async () => {
     const apt = currentApartment();
     if (!apt) return;
     const val = Number(dom.apartmentCleaningPrice.value || 0);
@@ -936,6 +966,16 @@ function bindApartmentRealtyId() {
       console.warn('[cleaning] apply on cleaningPrice save error:', err);
     }
     await rerender(val > 0 ? 'Цена уборки сохранена' : 'Цена уборки очищена');
+  };
+  dom.apartmentCleaningPriceSaveBtn?.addEventListener('click', saveCleaningPrice);
+  dom.apartmentCleaningPriceEditBtn?.addEventListener('click', () => {
+    // Переводим в режим редактирования
+    if (dom.apartmentCleaningPrice) {
+      dom.apartmentCleaningPrice.removeAttribute('readonly');
+      dom.apartmentCleaningPrice.focus();
+    }
+    if (dom.apartmentCleaningPriceEditBtn) dom.apartmentCleaningPriceEditBtn.hidden = true;
+    if (dom.apartmentCleaningPriceSaveBtn) dom.apartmentCleaningPriceSaveBtn.hidden = false;
   });
 
   // Открытие модалки синхронизации по клику на кнопку в карточке квартиры
@@ -1072,7 +1112,7 @@ export function bindEvents() {
   bindAutoRequest();
   bindPurchaseModal();
   bindFinanceFilters();
-  bindUnitEconomicsFilters();
+  bindUnitEconomicsTab();
   bindFinanceModals();
   bindRealtyCalendarIntegration();
   bindApartmentRealtyId();

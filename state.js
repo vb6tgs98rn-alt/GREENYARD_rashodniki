@@ -44,7 +44,7 @@ export function createDefaultState() {
       theme: 'light',
       apartmentSearch: '',
       activeSection: 'inventory',
-      finance: { apartmentFilter: 'all', typeFilter: 'all', month: '', showOnlyPending: false, dateFrom: '', dateTo: '', unitDateFrom: '', unitDateTo: '' }
+      finance: { apartmentFilter: 'all', typeFilter: 'all', month: '', showOnlyPending: false, dateFrom: '', dateTo: '', unitDateFrom: '', unitDateTo: '', unitApartmentId: '', unitFilters: { type: 'all', category: 'all', source: 'all', status: 'active' }, unitHistoryReportId: '' }
     }
   };
 }
@@ -83,7 +83,24 @@ export function ensureStateShape(rawState) {
   if (typeof next.ui.finance.dateTo !== 'string') next.ui.finance.dateTo = '';
   if (typeof next.ui.finance.unitDateFrom !== 'string') next.ui.finance.unitDateFrom = '';
   if (typeof next.ui.finance.unitDateTo !== 'string') next.ui.finance.unitDateTo = '';
-  next.apartments = next.apartments.map((apartment, index) => ({ ...apartment, name: apartment?.name || `Квартира ${index + 1}`, items: Array.isArray(apartment?.items) ? apartment.items : [], externalIds: { realtyCalendarUnitId: apartment?.externalIds?.realtyCalendarUnitId || '' } }));
+  if (typeof next.ui.finance.unitApartmentId !== 'string') next.ui.finance.unitApartmentId = '';
+  if (typeof next.ui.finance.unitHistoryReportId !== 'string') next.ui.finance.unitHistoryReportId = '';
+  if (!next.ui.finance.unitFilters || typeof next.ui.finance.unitFilters !== 'object') next.ui.finance.unitFilters = { type: 'all', category: 'all', source: 'all', status: 'active' };
+  if (typeof next.ui.finance.unitFilters.type !== 'string') next.ui.finance.unitFilters.type = 'all';
+  if (typeof next.ui.finance.unitFilters.category !== 'string') next.ui.finance.unitFilters.category = 'all';
+  if (typeof next.ui.finance.unitFilters.source !== 'string') next.ui.finance.unitFilters.source = 'all';
+  if (typeof next.ui.finance.unitFilters.status !== 'string') next.ui.finance.unitFilters.status = 'active';
+  next.apartments = next.apartments.map((apartment, index) => ({
+    ...apartment,
+    name: apartment?.name || `Квартира ${index + 1}`,
+    items: Array.isArray(apartment?.items) ? apartment.items : [],
+    externalIds: { realtyCalendarUnitId: apartment?.externalIds?.realtyCalendarUnitId || '' },
+    cleaningPrice: Number(apartment?.cleaningPrice || 0),
+    unitEcoReports: {
+      active: apartment?.unitEcoReports?.active || null,
+      history: Array.isArray(apartment?.unitEcoReports?.history) ? apartment.unitEcoReports.history : [],
+    },
+  }));
   return next;
 }
 

@@ -1,5 +1,5 @@
 import dom, { byId } from './dom.js';
-import { getFinanceSummary, monthKey, STATUS_LABELS } from './finance.js';
+import { getFinanceSummary, monthKey, STATUS_LABELS, computeUnitEcoReport, advanceUnitEcoReportIfNeeded, REPORT_CADENCE_LABELS } from './finance.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, statusBy } from './state.js';
 
 export function setStatus(text = 'Готово') { if (dom.saveStatus) dom.saveStatus.textContent = text; }
@@ -47,7 +47,20 @@ function renderInventory(state) {
   dom.apartmentName.value = apartment.name;
   // ID объекта в RealtyCalendar (легаси-поле в «Параметры квартиры», если осталось)
   if (dom.apartmentRealtyId) dom.apartmentRealtyId.value = apartment.externalIds?.realtyCalendarUnitId || '';
-  if (dom.apartmentCleaningPrice) dom.apartmentCleaningPrice.value = apartment.cleaningPrice ? String(apartment.cleaningPrice) : '';
+  if (dom.apartmentCleaningPrice) {
+    const hasPrice = Number(apartment.cleaningPrice) > 0;
+    dom.apartmentCleaningPrice.value = hasPrice ? String(apartment.cleaningPrice) : '';
+    // Read-only паттерн: если цена введена — блокируем поле и показываем «Редактировать»
+    if (hasPrice) {
+      dom.apartmentCleaningPrice.setAttribute('readonly', '');
+      if (dom.apartmentCleaningPriceEditBtn) dom.apartmentCleaningPriceEditBtn.hidden = false;
+      if (dom.apartmentCleaningPriceSaveBtn) dom.apartmentCleaningPriceSaveBtn.hidden = true;
+    } else {
+      dom.apartmentCleaningPrice.removeAttribute('readonly');
+      if (dom.apartmentCleaningPriceEditBtn) dom.apartmentCleaningPriceEditBtn.hidden = true;
+      if (dom.apartmentCleaningPriceSaveBtn) dom.apartmentCleaningPriceSaveBtn.hidden = false;
+    }
+  }
   dom.apartmentSearch.value = state.ui.apartmentSearch || '';
   const filteredApartments = state.apartments.filter((a) =>
     getDisplayApartmentName(a.name).toLowerCase().includes((state.ui.apartmentSearch || '').toLowerCase())
@@ -219,6 +232,9 @@ function renderFinance(state) {
   // RealtyCalendar интеграция — статус + журнал в financeSettingsModal
   renderRcIntegration(state);
 
+  // Юнит экономика (отдельная таблица внутри финансовой модалки)
+  renderUnitEconomics(state);
+
   // Селекты квартир в модалках
   [dom.financeEntryApartment, dom.recurringApartment].forEach((el) => {
     if (!el) return;
@@ -229,87 +245,143 @@ function renderFinance(state) {
   if (dom.recurringStartDate && !dom.recurringStartDate.value) dom.recurringStartDate.value = new Date().toISOString().slice(0, 10);
 }
 
-// ─── RealtyCalendar: статус + журнал ─────────────────────────────────────
+// ─── Юнит экономика: селектор квартиры + активный отчёт + история ─────
+function _escUnit(s) {
+  return String(s).replace(/[&<>"\']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+function renderCancelledBlock(stat) {
+  const c = Number(stat.cancelledBookings || 0);
+  const sum = Number(stat.cancelledAmount || 0);
+  if (!c) return '<div class="small muted">Отменённых броней в периоде нет.</div>';
+  return `<div class="cancelled-card" style="padding:.6rem .8rem;border-radius:var(--radius-lg);background:rgba(200,60,60,.08);border:1px solid rgba(200,60,60,.18);">
+    <span class="small" style="font-weight:600;">Отменённые брони:</span>
+    <span class="small" style="margin-left:.5rem;">${c} шт. · ${fmt(sum)} ₽</span>
+  </div>`;
+}
+
+function renderUnitEntries(entries) {
+  if (!entries.length) return '<div class="empty">По текущим фильтрам записей нет.</div>';
+  const rows = entries.slice(0, 200).map((e) => {
+    const sign = e.type === 'income' ? '+' : '−';
+    const color = e.type === 'income' ? 'var(--color-success)' : 'var(--color-error)';
+    const st = STATUS_LABELS[e.status] || { label: e.status, cls: 'planned' };
+    return `<tr>
+      <td class="small">${e.date || ''}</td>
+      <td>${_escUnit(e.title || e.category || '')}</td>
+      <td class="small muted">${_escUnit(e.category || '')}</td>
+      <td class="small muted">${_escUnit(e.source || '')}</td>
+      <td class="small"><span class="chip chip-${st.cls}">${st.label}</span></td>
+      <td class="num" style="color:${color};font-weight:600">${sign}${fmt(e.amount)}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="unit-eco-table-scroll"><table class="unit-eco-table"><thead><tr>
+    <th>Дата</th><th>Название</th><th>Категория</th><th>Источник</th><th>Статус</th><th class="num">Сумма</th>
+  </tr></thead><tbody>${rows}</tbody></table>${entries.length > 200 ? '<div class="small muted" style="margin-top:.4rem;">Показаны первые 200 записей.</div>' : ''}</div>`;
+}
+
 function renderUnitEconomics(state) {
-  if (!dom.financeTabUnit || !dom.unitEcoTableWrap) return;
+  if (!dom.financeTabUnit) return;
   const filter = state.ui?.finance || {};
-  const dateFrom = filter.unitDateFrom || '';
-  const dateTo = filter.unitDateTo || '';
-  if (dom.unitEcoDateFrom) dom.unitEcoDateFrom.value = dateFrom;
-  if (dom.unitEcoDateTo) dom.unitEcoDateTo.value = dateTo;
+  const apts = state.apartments || [];
 
-  const data = computeUnitEconomics({ dateFrom, dateTo });
-  const t = data.totals;
-  const profitColor = t.profit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
-  const periodLabel = dateFrom || dateTo
-    ? `${dateFrom || '…'} — ${dateTo || '…'}`
-    : 'Весь период';
-
-  if (dom.unitEcoSummary) {
-    dom.unitEcoSummary.innerHTML = `
-      <article class="stat"><span>Чистый доход</span><strong style="color:var(--color-success)">${fmt(t.netIncome)} ₽</strong><span class="small" style="color:var(--color-text-muted)">вал: ${fmt(t.grossIncome)} ₽</span></article>
-      <article class="stat"><span>Расходы</span><strong style="color:var(--color-error)">${fmt(t.expense)} ₽</strong><span class="small" style="color:var(--color-text-muted)">комиссия: ${fmt(t.platformTax)} ₽</span></article>
-      <article class="stat"><span>Маржа</span><strong style="color:${profitColor}">${t.profit >= 0 ? '+' : ''}${fmt(t.profit)} ₽</strong><span class="small" style="color:var(--color-text-muted)">ROI: ${t.roi.toFixed(0)}%</span></article>
-      <article class="stat"><span>Брони · Ночи</span><strong>${t.bookings} · ${t.nights}</strong><span class="small" style="color:var(--color-text-muted)">ADR: ${fmt(t.adr)} ₽</span></article>`;
+  // 1) Селектор квартиры
+  let aptId = filter.unitApartmentId || apts[0]?.id || '';
+  if (apts.length && !apts.find(a => a.id === aptId)) aptId = apts[0].id;
+  if (dom.unitApartmentSelect) {
+    dom.unitApartmentSelect.innerHTML = apts.length
+      ? apts.map(a => `<option value="${a.id}">${_escUnit(getDisplayApartmentName(a.name))}</option>`).join('')
+      : '<option value="">Нет квартир</option>';
+    dom.unitApartmentSelect.value = aptId;
   }
 
-  if (!data.rows.length) {
-    dom.unitEcoTableWrap.innerHTML = '<div class="empty">Нет квартир.</div>';
+  if (!apts.length) {
+    if (dom.unitNoReportBlock) dom.unitNoReportBlock.hidden = true;
+    if (dom.unitActiveBlock) dom.unitActiveBlock.hidden = true;
     return;
   }
 
-  const rows = data.rows.map((r) => {
-    const pc = r.profit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
-    return `<tr>
-      <td class="unit-eco-name">${r.name}</td>
-      <td class="num" style="color:var(--color-success)">${fmt(r.netIncome)}</td>
-      <td class="num small muted">${fmt(r.platformTax)}</td>
-      <td class="num">${fmt(r.cleaning)}</td>
-      <td class="num">${fmt(r.rent)}</td>
-      <td class="num">${fmt(r.internet + r.utilities + r.subscription)}</td>
-      <td class="num">${fmt(r.otherExpense)}</td>
-      <td class="num" style="color:var(--color-error)">−${fmt(r.expense)}</td>
-      <td class="num" style="color:${pc};font-weight:700">${r.profit >= 0 ? '+' : ''}${fmt(r.profit)}</td>
-      <td class="num small">${r.expense > 0 ? r.roi.toFixed(0) + '%' : '—'}</td>
-      <td class="num small">${r.bookings} · ${r.nights}н</td>
-    </tr>`;
-  }).join('');
+  // 2) Авто-перенос истекшего периода
+  try { advanceUnitEcoReportIfNeeded(aptId); } catch (err) { console.warn('[unit-eco] advance error', err); }
+  const apt = (state.apartments || []).find(a => a.id === aptId);
+  const active = apt?.unitEcoReports?.active;
 
-  const footer = `<tr class="unit-eco-total">
-    <td>Итого</td>
-    <td class="num" style="color:var(--color-success)">${fmt(t.netIncome)}</td>
-    <td class="num small muted">${fmt(t.platformTax)}</td>
-    <td class="num">${fmt(t.cleaning)}</td>
-    <td class="num">${fmt(t.rent)}</td>
-    <td class="num">${fmt(t.internet + t.utilities + t.subscription)}</td>
-    <td class="num">${fmt(t.otherExpense)}</td>
-    <td class="num" style="color:var(--color-error)">−${fmt(t.expense)}</td>
-    <td class="num" style="color:${profitColor};font-weight:700">${t.profit >= 0 ? '+' : ''}${fmt(t.profit)}</td>
-    <td class="num small">${t.expense > 0 ? t.roi.toFixed(0) + '%' : '—'}</td>
-    <td class="num small">${t.bookings} · ${t.nights}н</td>
-  </tr>`;
+  // 3) Нет активного отчёта → форма создания
+  if (!active) {
+    if (dom.unitNoReportBlock) dom.unitNoReportBlock.hidden = false;
+    if (dom.unitActiveBlock) dom.unitActiveBlock.hidden = true;
+    if (dom.unitCreateStart && !dom.unitCreateStart.value) {
+      dom.unitCreateStart.value = new Date().toISOString().slice(0, 10);
+    }
+    if (dom.unitCreateEnd && !dom.unitCreateEnd.value) {
+      const s = dom.unitCreateStart.value ? new Date(dom.unitCreateStart.value) : new Date();
+      const e = new Date(s); e.setMonth(e.getMonth() + 1); e.setDate(e.getDate() - 1);
+      dom.unitCreateEnd.value = e.toISOString().slice(0, 10);
+    }
+    return;
+  }
 
-  dom.unitEcoTableWrap.innerHTML = `
-    <div class="small muted" style="margin-bottom:.5rem;">Период: ${periodLabel}</div>
-    <div class="unit-eco-table-scroll">
-      <table class="unit-eco-table">
-        <thead><tr>
-          <th>Квартира</th>
-          <th class="num">Чистый доход</th>
-          <th class="num">Комиссия</th>
-          <th class="num">Уборка</th>
-          <th class="num">Аренда</th>
-          <th class="num">Комм./Инт./Подп.</th>
-          <th class="num">Прочее</th>
-          <th class="num">Итого расходы</th>
-          <th class="num">Маржа</th>
-          <th class="num">ROI</th>
-          <th class="num">Брони</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-        <tfoot>${footer}</tfoot>
-      </table>
-    </div>`;
+  // 4) Активный отчёт
+  if (dom.unitNoReportBlock) dom.unitNoReportBlock.hidden = true;
+  if (dom.unitActiveBlock) dom.unitActiveBlock.hidden = false;
+
+  const cadenceLabel = REPORT_CADENCE_LABELS[active.cadence] || active.cadence;
+  if (dom.unitActiveTitle) dom.unitActiveTitle.textContent = `Отчётный период · ${cadenceLabel}`;
+  if (dom.unitActiveDates) dom.unitActiveDates.textContent = `${active.startDate} — ${active.endDate}`;
+
+  // 5) Фильтры: справочники категорий/источников за период
+  const unitFilters = filter.unitFilters || { type: 'all', category: 'all', source: 'all', status: 'active' };
+  const allInPeriod = computeUnitEcoReport(aptId, { startDate: active.startDate, endDate: active.endDate }, { type: 'all', category: 'all', source: 'all', status: 'all' });
+  const categories = Array.from(new Set(allInPeriod.entries.map(e => e.category).filter(Boolean))).sort();
+  const sources = Array.from(new Set(allInPeriod.entries.map(e => e.source).filter(Boolean))).sort();
+
+  if (dom.unitFilterCategory) {
+    dom.unitFilterCategory.innerHTML = '<option value="all">Все</option>' + categories.map(c => `<option value="${_escUnit(c)}">${_escUnit(c)}</option>`).join('');
+    dom.unitFilterCategory.value = categories.includes(unitFilters.category) ? unitFilters.category : 'all';
+  }
+  if (dom.unitFilterSource) {
+    dom.unitFilterSource.innerHTML = '<option value="all">Все</option>' + sources.map(s => `<option value="${_escUnit(s)}">${_escUnit(s)}</option>`).join('');
+    dom.unitFilterSource.value = sources.includes(unitFilters.source) ? unitFilters.source : 'all';
+  }
+  if (dom.unitFilterType) dom.unitFilterType.value = unitFilters.type || 'all';
+  if (dom.unitFilterStatus) dom.unitFilterStatus.value = unitFilters.status || 'active';
+
+  // 6) Расчёт с применёнными фильтрами
+  const report = computeUnitEcoReport(aptId, { startDate: active.startDate, endDate: active.endDate }, unitFilters);
+  const s = report.stat;
+  const profitColor = s.profit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
+
+  if (dom.unitEcoSummary) {
+    dom.unitEcoSummary.innerHTML = `
+      <article class="stat"><span>Чистый доход</span><strong style="color:var(--color-success)">${fmt(s.netIncome)} ₽</strong><span class="small" style="color:var(--color-text-muted)">вал: ${fmt(s.grossIncome)} ₽</span></article>
+      <article class="stat"><span>Комиссия</span><strong style="color:var(--color-error)">${fmt(s.platformTax)} ₽</strong></article>
+      <article class="stat"><span>Расходы</span><strong style="color:var(--color-error)">${fmt(s.expense)} ₽</strong><span class="small" style="color:var(--color-text-muted)">подтв.: ${fmt(s.confirmedExpense || 0)} · план: ${fmt(s.plannedExpense || 0)}</span></article>
+      <article class="stat"><span>Маржа</span><strong style="color:${profitColor}">${s.profit >= 0 ? '+' : ''}${fmt(s.profit)} ₽</strong><span class="small" style="color:var(--color-text-muted)">ROI: ${s.roi.toFixed(0)}%</span></article>
+      <article class="stat"><span>Брони · Ночи</span><strong>${s.bookings} · ${s.nights}</strong><span class="small" style="color:var(--color-text-muted)">ADR: ${fmt(s.adr)} ₽</span></article>`;
+  }
+
+  if (dom.unitCancelledBlock) dom.unitCancelledBlock.innerHTML = renderCancelledBlock(s);
+  if (dom.unitEcoTableWrap) dom.unitEcoTableWrap.innerHTML = renderUnitEntries(report.entries);
+
+  // 7) История отчётов
+  const history = apt?.unitEcoReports?.history || [];
+  if (dom.unitHistoryList) {
+    if (!history.length) {
+      dom.unitHistoryList.innerHTML = '';
+    } else {
+      const items = history.map(h => {
+        const hRep = computeUnitEcoReport(aptId, { startDate: h.startDate, endDate: h.endDate }, { type: 'all', category: 'all', source: 'all', status: 'active' });
+        const hs = hRep.stat;
+        const hc = hs.profit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
+        const hLabel = REPORT_CADENCE_LABELS[h.cadence] || h.cadence;
+        return `<div class="history-card" style="padding:.6rem .8rem;border-radius:var(--radius-lg);background:var(--color-surface-2);margin-bottom:.5rem;display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;justify-content:space-between;">
+          <div><div style="font-weight:600;">${hLabel} · ${h.startDate} — ${h.endDate}</div><div class="small muted">Чист. доход: ${fmt(hs.netIncome)} ₽ · Расходы: ${fmt(hs.expense)} ₽ · Маржа: <span style="color:${hc};font-weight:600;">${hs.profit >= 0 ? '+' : ''}${fmt(hs.profit)} ₽</span></div></div>
+          <button type="button" class="btn btn-icon" data-unit-history-delete="${_escUnit(h.id)}" title="Удалить" style="background:transparent;border:none;color:var(--color-text-muted);cursor:pointer;font-size:1.1rem;line-height:1;padding:.3rem .5rem;">×</button>
+        </div>`;
+      }).join('');
+      dom.unitHistoryList.innerHTML = `<h3 style="margin:.75rem 0 .5rem;font-size:.95rem;">История отчётов</h3>${items}`;
+    }
+  }
 }
 
 function rcStatusLabelText(action, status, errorText) {
