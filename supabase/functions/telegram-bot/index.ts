@@ -41,6 +41,11 @@ const TG_TOKEN     = Deno.env.get("TELEGRAM_BOT_TOKEN")        ?? "";
 const TG_SECRET    = Deno.env.get("TELEGRAM_WEBHOOK_SECRET")   ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")              ?? "";
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+// OpenRouter (бесплатные модели). Если ключ не задан, AI-режим выключен.
+const OR_API_KEY   = Deno.env.get("OPENROUTER_API_KEY")        ?? "";
+const OR_MODEL     = Deno.env.get("OPENROUTER_MODEL")          ?? "google/gemini-2.0-flash-exp:free";
+const OR_REFERER   = Deno.env.get("OPENROUTER_REFERER")        ?? "https://green-yard.app";
+const OR_TITLE     = Deno.env.get("OPENROUTER_TITLE")          ?? "Green Yard Guest Bot";
 
 const TG_API = `https://api.telegram.org/bot${TG_TOKEN}`;
 
@@ -103,16 +108,21 @@ async function tgSendMessage(chatId: number | string, text: string, extra: any =
     return { ok: false, error: "no_token" };
   }
   try {
+    // Поддерживаем явное отключение parse_mode (напр. для AI-ответов, где сырой текст без HTML).
+    const payload: Record<string, any> = {
+      chat_id: chatId,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      ...extra,
+    };
+    if (payload.parse_mode === undefined || payload.parse_mode === null || payload.parse_mode === "") {
+      delete payload.parse_mode;
+    }
     const r = await fetch(`${TG_API}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-        ...extra,
-      }),
+      body: JSON.stringify(payload),
     });
     const data = await r.json();
     if (!data.ok) console.error("[telegram-bot] sendMessage error:", JSON.stringify(data));
@@ -363,6 +373,103 @@ function blockHelp(instr: any): string {
   return parts.join("\n");
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// AI-бот (OpenRouter, бесплатные модели)
+// Строгое правило: отвечает ТОЛЬКО по данным конкретной квартиры, не выдумывает.
+// ──────────────────────────────────────────────────────────────────────────
+function buildAiSystemPrompt(instr: any): string {
+  const emergency = [
+    instr?.emergency_phone ? `телефон ${instr.emergency_phone}` : null,
+    instr?.emergency_telegram ? `Telegram @${String(instr.emergency_telegram).replace(/^@/, "")}` : null,
+  ].filter(Boolean).join(", ") || "связаться с менеджером через этот чат — он всё видит";
+
+  // Компактный контекст квартиры — всё, что AI может цитировать.
+  const facts: string[] = [];
+  if (instr?.apartment_title)     facts.push(`Название квартиры: ${instr.apartment_title}`);
+  if (instr?.full_address)        facts.push(`Полный адрес: ${instr.full_address}`);
+  if (instr?.directions_metro)    facts.push(`Как добраться от метро: ${instr.directions_metro}`);
+  if (instr?.parking_info)        facts.push(`Парковка: ${instr.parking_info}`);
+  if (instr?.checkin_from)        facts.push(`Заезд с: ${instr.checkin_from}`);
+  if (instr?.entrance_code)       facts.push(`Код подъезда: ${instr.entrance_code}`);
+  if (instr?.door_code)           facts.push(`Код двери: ${instr.door_code}`);
+  if (instr?.key_location)        facts.push(`Где ключи: ${instr.key_location}`);
+  if (instr?.checkin_instruction) facts.push(`Инструкция по заселению: ${instr.checkin_instruction}`);
+  if (instr?.wifi_ssid)           facts.push(`Wi-Fi сеть: ${instr.wifi_ssid}`);
+  if (instr?.wifi_password)       facts.push(`Wi-Fi пароль: ${instr.wifi_password}`);
+  if (Array.isArray(instr?.amenities) && instr.amenities.length) {
+    facts.push(`В квартире есть: ${instr.amenities.map((a: any) => String(a)).join(", ")}`);
+  }
+  if (instr?.apartment_notes)     facts.push(`Особенности: ${instr.apartment_notes}`);
+  if (instr?.smoking_policy)      facts.push(`Курение: ${instr.smoking_policy}`);
+  if (instr?.pets_policy)         facts.push(`Животные: ${instr.pets_policy}`);
+  if (instr?.quiet_hours)         facts.push(`Часы тишины: ${instr.quiet_hours}`);
+  if (instr?.other_rules)         facts.push(`Другие правила: ${instr.other_rules}`);
+  if (instr?.checkout_until)      facts.push(`Выезд до: ${instr.checkout_until}`);
+  if (instr?.checkout_checklist)  facts.push(`Чек-лист перед выездом: ${instr.checkout_checklist}`);
+  if (instr?.key_return_info)     facts.push(`Куда оставить ключи: ${instr.key_return_info}`);
+
+  const factsBlock = facts.length ? facts.join("\n") : "(Структурированные данные о квартире не заполнены.)";
+  const aiExtra = (instr?.ai_instructions ?? "").toString().trim() || "(Дополнительные инструкции не заданы.)";
+
+  return [
+    "Ты — AI-помощник для гостя, который снял конкретную квартиру посуточно. Отвечай коротко, вежливо, на русском языке.",
+    "",
+    "ЖЕСТКИЕ ПРАВИЛА (нарушать НЕЛЬЗЯ):",
+    "1. Используй ТОЛЬКО информацию из блока «ДАННЫЕ КВАРТИРЫ» ниже. Любые внешние знания запрещены.",
+    "2. НИКОГДА не выдумывай адреса, коды, пароли, телефоны, правила, время, цены, названия мест, расстояния. Нет в данных — ты НЕ ЗНАЕШЬ ответа.",
+    "3. Если вопрос выходит за рамки данных, ответь честно: «К сожалению, я не знаю этого точно. Лучше спросить менеджера», и укажи контакт: " + emergency + ".",
+    "4. Не предлагай внешние карты, гугл, яндекс, магазины, аптеки, транспорт и т.п., если это явно не указано в данных.",
+    "5. Ответ — обычный текст (легкая Markdown-вёрстка допустима), без HTML-тегов, без вымышленных линков. Коротко, по делу, 1–5 предложений.",
+    "6. Не придумывай за гостя что он хочет сделать. Не выполняй действия от его имени в каких-либо внешних сервисах.",
+    "7. Если гость просит решить проблему быта (поломка, шум соседей, пропал свет, горячая вода) — если в данных нет чёткого решения, переводи на менеджера.",
+    "",
+    "=== ДАННЫЕ КВАРТИРЫ (единственный допустимый источник) ===",
+    factsBlock,
+    "",
+    "=== ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ ОТ МЕНЕДЖЕРА ПО ЭТОЙ КВАРТИРЕ ===",
+    aiExtra,
+    "",
+    "Контакт менеджера для выхода за рамки данных: " + emergency + ".",
+  ].join("\n");
+}
+
+async function callOpenRouter(systemPrompt: string, userText: string): Promise<string | null> {
+  if (!OR_API_KEY) return null;
+  try {
+    const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OR_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": OR_REFERER,
+        "X-Title": OR_TITLE,
+      },
+      body: JSON.stringify({
+        model: OR_MODEL,
+        temperature: 0.2,
+        max_tokens: 500,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user",   content: userText },
+        ],
+      }),
+    });
+    if (!r.ok) {
+      const errText = await r.text().catch(() => "");
+      console.error("[telegram-bot] openrouter http error:", r.status, errText.slice(0, 500));
+      return null;
+    }
+    const data = await r.json();
+    const msg = data?.choices?.[0]?.message?.content;
+    if (typeof msg === "string" && msg.trim()) return msg.trim();
+    console.error("[telegram-bot] openrouter empty response:", JSON.stringify(data).slice(0, 500));
+    return null;
+  } catch (e) {
+    console.error("[telegram-bot] openrouter exception:", e);
+    return null;
+  }
+}
+
 function buildWelcomeMessage(fromName: string, instr: any): string {
   const greeting = `Здравствуйте, ${htmlEscape(fromName || "гость")}! 👋\n\nВаше бронирование найдено. Вот всё, что нужно знать:`;
   const blocks: string[] = [];
@@ -548,8 +655,41 @@ async function handleFreeText(chatId: number, from: any, text: string, tgMessage
 
   await logMessage(session, "inbound", text, { tg_message_id: tgMessageId, from });
 
+  // Загружаем контекст квартиры и настройки менеджера.
+  const apartmentId = await resolveApartmentId(session.user_id, session.realty_id);
+  const instr = await loadInstructions(session.user_id, apartmentId);
+  const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
+  const kb = { reply_markup: guestKeyboard(settings?.guest_channel_url ?? null) };
+
+  // AI-режим включается, если есть ключ OpenRouter И менеджер заполнил ai_instructions.
+  const aiEnabled = !!OR_API_KEY && !!(instr?.ai_instructions && String(instr.ai_instructions).trim());
+
+  if (aiEnabled) {
+    const systemPrompt = buildAiSystemPrompt(instr);
+    const aiText = await callOpenRouter(systemPrompt, text);
+
+    if (aiText) {
+      // Telegram не любит сырой HTML в AI-ответе — отправляем без parse_mode.
+      const outText = aiText.length > 3800 ? aiText.slice(0, 3800) + "…" : aiText;
+      await tgSendMessage(chatId, outText, { ...kb, parse_mode: undefined });
+      await logMessage(session, "bot", outText, { kind: "ai_reply", model: OR_MODEL });
+
+      // Менеджеру всё равно показываем вопрос и AI-ответ — чтобы он мог вмешаться.
+      await notifyManager(
+        session.user_id,
+        `🤖 <b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>) — вопрос:\n${htmlEscape(text)}\n\n<i>AI-ответ гостю:</i>\n${htmlEscape(outText)}`,
+        "notify_on_inbound",
+      );
+      return;
+    }
+
+    // AI не ответил (квота/ошибка) — проваливаемся в обычный сценарий ниже.
+    console.warn("[telegram-bot] AI enabled but call failed; falling back to manager relay");
+  }
+
+  // Fallback: обычное поведение — передаём менеджеру.
   const reply = "Спасибо за сообщение! ✉️ Я передал его менеджеру — он скоро ответит.";
-  await tgSendMessage(chatId, reply);
+  await tgSendMessage(chatId, reply, kb);
   await logMessage(session, "bot", reply, { kind: "ack" });
 
   await notifyManager(

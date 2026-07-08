@@ -553,6 +553,7 @@ async function loadInstructionIntoForm(apartmentId, apartmentTitle) {
   setFieldVal('instr_key_return_info', data.key_return_info);
   setFieldVal('instr_emergency_phone', data.emergency_phone);
   setFieldVal('instr_emergency_telegram', data.emergency_telegram);
+  setFieldVal('instr_ai_instructions', data.ai_instructions);
   _instructionsState.apartmentId = apartmentId;
   _instructionsState.apartmentTitle = apartmentTitle;
   // Если данные уже введены — блокируем все поля, кнопка «Редактировать». Иначе — ввод, кнопка «Сохранить».
@@ -580,7 +581,7 @@ function setInstructionsReadOnly(readOnly) {
 
 function hasAnyInstructionData(data) {
   if (!data) return false;
-  const keys = ['full_address','directions_metro','parking_info','entrance_code','door_code','key_location','checkin_instruction','wifi_ssid','wifi_password','apartment_notes','smoking_policy','pets_policy','quiet_hours','other_rules','checkout_checklist','key_return_info','emergency_phone','emergency_telegram'];
+  const keys = ['full_address','directions_metro','parking_info','entrance_code','door_code','key_location','checkin_instruction','wifi_ssid','wifi_password','apartment_notes','smoking_policy','pets_policy','quiet_hours','other_rules','checkout_checklist','key_return_info','emergency_phone','emergency_telegram','ai_instructions'];
   if (keys.some(k => data[k] && String(data[k]).trim())) return true;
   if (Array.isArray(data.amenities) && data.amenities.length) return true;
   return false;
@@ -617,6 +618,7 @@ function readInstructionForm() {
     key_return_info:     get('instr_key_return_info'),
     emergency_phone:     get('instr_emergency_phone'),
     emergency_telegram:  get('instr_emergency_telegram'),
+    ai_instructions:     get('instr_ai_instructions'),
   };
 }
 
@@ -679,6 +681,10 @@ function ensureInstructionsModal() {
           <label><span class="small">Телефон для экстренных</span><input data-instr-field id="instr_emergency_phone" type="text" placeholder="+7 999 123-45-67" /></label>
           <label><span class="small">Telegram (без @)</span><input data-instr-field id="instr_emergency_telegram" type="text" placeholder="ivan_manager" /></label>
         </div>
+
+        <h3 class="instr-h">🤖 Инструкция для AI-бота</h3>
+        <p class="muted small" style="margin:-.2rem 0 .4rem;">Свободный текст: любые правила, особенности, лайфхаки, ответы на частые вопросы именно по этой квартире. Бот будет отвечать гостю на основе <b>только</b> этого текста и полей выше. Если чего-то нет — предложит связаться с менеджером и не будет ничего выдумывать. Если поле пустое — AI-режим для этой квартиры выключен.</p>
+        <label><textarea data-instr-field id="instr_ai_instructions" rows="8" placeholder="Пример:&#10;— Стиральная машина Bosch, инструкция в ящике под мойкой. Порошок в шкафчике над машиной.&#10;— Ближайшая аптека — на первом этаже дома напротив, работает круглосуточно.&#10;— Мусоропровод в подъезде на площадке между этажами.&#10;— Батарею в спальне можно регулировать вентилем справа."></textarea></label>
 
         <div id="instrSaveMsg" class="small" style="margin-top:.5rem;" hidden></div>
         <div class="actions" style="justify-content:flex-end;gap:.5rem;margin-top:1rem;">
