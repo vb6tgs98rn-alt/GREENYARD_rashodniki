@@ -146,9 +146,10 @@ function ensureModal() {
             <select id="okidokiSigner" style="margin-top:.4rem;width:100%;"></select>
           </label>
 
-          <label style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem;cursor:pointer;">
+          <label class="gy-toggle" style="margin-top:.75rem;">
             <input id="okidokiAutoSend" type="checkbox" />
-            <span>Автоматически отправлять ссылку на договор гостю при первом заходе в бот</span>
+            <span class="gy-toggle-track" aria-hidden="true"><span class="gy-toggle-thumb"></span></span>
+            <span class="gy-toggle-label">Автоматически отправлять ссылку на договор гостю при первом заходе в бот</span>
           </label>
 
           <div class="subsection-title" style="margin-top:1.5rem;margin-bottom:.5rem;">
@@ -333,11 +334,9 @@ async function openApartmentTemplateModal(realtyId, apartmentName) {
 
   delBtn.style.display = current ? 'inline-flex' : 'none';
 
-  // Modal open (простой показ)
-  modal.setAttribute('aria-hidden', 'false');
-  modal.style.display = 'flex';
+  openModal('okidokiAptModal');
 
-  const close = () => { modal.setAttribute('aria-hidden', 'true'); modal.style.display = 'none'; };
+  const close = () => closeModal('okidokiAptModal');
 
   // Reset handlers (навешиваем каждый раз, но снимаем через cloneNode)
   const rebind = (el, fn) => {
