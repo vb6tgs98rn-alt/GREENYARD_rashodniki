@@ -217,15 +217,26 @@ export async function ensureSessionForBooking(booking) {
   return data || row;
 }
 
+// Получить user_id быстро (без network) через кэш сессии; с fallback на getUser() с таймаутом 5с.
+async function getUserIdFast(supabase) {
+  const { data: sess } = await supabase.auth.getSession();
+  const uid = sess?.session?.user?.id;
+  if (uid) return uid;
+  // Фолбэк — с таймаутом
+  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('auth timeout')), 5000));
+  const { data: { user } } = await Promise.race([supabase.auth.getUser(), timeout]);
+  if (!user) throw new Error('not authenticated');
+  return user.id;
+}
+
 export async function fetchGuestChats() {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('no supabase client');
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('not authenticated');
+  const uid = await getUserIdFast(supabase);
   const { data, error } = await supabase
     .from('v_guest_chats')
     .select('*')
-    .eq('user_id', user.id)
+    .eq('user_id', uid)
     .order('last_message_at', { ascending: false, nullsFirst: false });
   if (error) { console.warn('[bot] fetchGuestChats:', error.message); throw error; }
   return data || [];
@@ -238,13 +249,14 @@ export async function fetchGuestChats() {
 export async function fetchMessages(sessionId, limit = 200) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('no supabase client');
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('not authenticated');
-  const { data, error } = await supabase
+  const uid = await getUserIdFast(supabase);
+  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('query timeout')), 8000));
+  const query = supabase
     .from('guest_messages').select('*')
-    .eq('user_id', user.id).eq('session_id', sessionId)
+    .eq('user_id', uid).eq('session_id', sessionId)
     .order('created_at', { ascending: true })
     .limit(limit);
+  const { data, error } = await Promise.race([query, timeout]);
   if (error) { console.warn('[bot] fetchMessages:', error.message); throw error; }
   return data || [];
 }
