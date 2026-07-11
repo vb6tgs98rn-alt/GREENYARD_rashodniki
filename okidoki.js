@@ -173,7 +173,7 @@ function ensureModal() {
     </div>
 
     <!-- Дочерняя модалка привязки шаблона к квартире -->
-    <div class="modal-backdrop" id="okidokiAptModal" aria-hidden="true">
+    <div class="modal-backdrop" id="okidokiAptModal" aria-hidden="true" style="z-index:40;">
       <div class="modal" style="width:min(640px,100%);max-height:92dvh;overflow-y:auto;padding:1rem;">
         <div class="section-head">
           <div>
@@ -284,20 +284,22 @@ async function renderApartmentPicker() {
   };
   updateCur();
 
-  // Снимаем старые хэндлеры через cloneNode
-  const newSel = sel.cloneNode(true);
-  sel.parentNode.replaceChild(newSel, sel);
-  const newBtn = btn.cloneNode(true);
-  btn.parentNode.replaceChild(newBtn, btn);
-
-  newSel.addEventListener('change', updateCur);
-  newBtn.addEventListener('click', () => {
-    const rid = newSel.value;
-    if (!rid) return;
-    const opt = newSel.options[newSel.selectedIndex];
-    const name = opt?.dataset?.name || '';
-    openApartmentTemplateModal(rid, name);
-  });
+  // Навешиваем обработчики только один раз (через dataset-флаг)
+  if (!sel.dataset.bound) {
+    sel.dataset.bound = '1';
+    sel.addEventListener('change', updateCur);
+  }
+  if (!btn.dataset.bound) {
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', () => {
+      const rid = sel.value;
+      console.log('[okidoki] configure click, rid=', rid);
+      if (!rid) return;
+      const opt = sel.options[sel.selectedIndex];
+      const name = opt?.dataset?.name || '';
+      openApartmentTemplateModal(rid, name);
+    });
+  }
 }
 
 async function openApartmentTemplateModal(realtyId, apartmentName) {
@@ -390,14 +392,18 @@ export async function openOkidokiSettings() {
   const saveBtn    = document.getElementById('okidokiSave');
   const disconnectBtn = document.getElementById('okidokiDisconnect');
 
-  // Загружаем текущие настройки
+  // Сбрасываем кэш и сразу открываем модалку (без ожидания сети)
+  cachedTemplates = null; cachedCards = null;
+  keyStatus.textContent = 'Загружаем…';
+  keyStatus.style.color = '';
+  openModal('okidokiModal');
+
+  // Загружаем текущие настройки асинхронно
   let settings = {};
-  try { settings = await loadSettings(); } catch (err) { keyStatus.textContent = 'Ошибка загрузки: ' + err.message; }
+  try { settings = await loadSettings(); } catch (err) { keyStatus.textContent = 'Ошибка загрузки: ' + err.message; keyStatus.style.color = '#c66'; }
 
   keyInput.value = settings.okidoki_api_key || '';
   autoSend.checked = !!settings.okidoki_auto_send;
-
-  cachedTemplates = null; cachedCards = null;   // сбрасываем кэш при открытии
 
   if (settings.okidoki_api_key) {
     config.style.display = 'block';
@@ -405,11 +411,11 @@ export async function openOkidokiSettings() {
       ? `✓ Ключ сохранён (проверен ${new Date(settings.okidoki_verified_at).toLocaleString('ru-RU')})`
       : '✓ Ключ сохранён';
     keyStatus.style.color = '#7fbf7f';
-    await refreshSignerSelect(settings.okidoki_signer_card_id);
-    await renderApartmentPicker();
+    refreshSignerSelect(settings.okidoki_signer_card_id).catch(() => {});
+    renderApartmentPicker().catch(() => {});
+  } else {
+    keyStatus.textContent = '';
   }
-
-  openModal('okidokiModal');
 
   // Handlers (только один раз)
   if (!modal.dataset.bound) {
