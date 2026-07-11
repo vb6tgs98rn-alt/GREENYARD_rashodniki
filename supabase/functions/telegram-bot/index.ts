@@ -1,39 +1,4 @@
-// Edge Function: telegram-bot (v2 — fixed)
-// Назначение:
-//   1) POST /            — вебхук Telegram (приём апдейтов от ботa)
-//   2) POST /send        — отправка сообщения гостю от имени менеджера (вызывается из приложения)
-//   3) POST /test        — тестовое сообщение менеджеру (вызывается из настроек)
-//
-// Все имена колонок выверены по фактической схеме БД:
-//   guest_sessions:     id, user_id, booking_id, secure_id, realty_id,
-//                       tg_chat_id (bigint), tg_username, tg_first_name, tg_last_name,
-//                       link_sent_at, started_at, last_message_at,
-//                       is_subscribed_channel, created_at, updated_at
-//   guest_instructions: full_address, directions_metro, parking_info,
-//                       entrance_code, door_code, key_location,
-//                       checkin_from, checkin_instruction,
-//                       wifi_ssid, wifi_password,
-//                       amenities (jsonb[]), apartment_notes,
-//                       smoking_policy, pets_policy, quiet_hours, other_rules,
-//                       checkout_until, checkout_checklist, key_return_info,
-//                       emergency_phone, emergency_telegram
-//   guest_messages:     id, user_id, session_id, booking_id, direction,
-//                       body (text), payload (jsonb), is_read_by_manager, created_at
-//   guest_events:       id, user_id, session_id, booking_id, event_type,
-//                       details (jsonb), notified_manager_at, resolved_at, created_at
-//   manager_settings:   manager_tg_chat_id, notify_on_inbound, notify_on_checkin,
-//                       notify_on_checkout, notify_on_complaint,
-//                       guest_channel_url, guest_channel_invite, guest_invite_template
-//
-// Маппинг realty_id -> apartment_id выполняется через app_state.state.apartments[],
-// где apartments = [{ id, name, externalIds: { realtyCalendarUnitId } }].
-//
-// Секреты:
-//   TELEGRAM_BOT_TOKEN          (обязателен)
-//   SUPABASE_URL                (авто)
-//   SUPABASE_SERVICE_ROLE_KEY   (авто)
-//   TELEGRAM_WEBHOOK_SECRET     (опционально)
-
+// Edge Function: telegram-bot (v2 — fixed, + AI бот)
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
@@ -43,7 +8,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")              ?? "";
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 // OpenRouter (бесплатные модели). Если ключ не задан, AI-режим выключен.
 const OR_API_KEY   = Deno.env.get("OPENROUTER_API_KEY")        ?? "";
-const OR_MODEL     = Deno.env.get("OPENROUTER_MODEL")          ?? "google/gemini-2.0-flash-exp:free";
+const OR_MODEL     = Deno.env.get("OPENROUTER_MODEL")          ?? "openai/gpt-oss-120b:free";
 const OR_REFERER   = Deno.env.get("OPENROUTER_REFERER")        ?? "https://green-yard.app";
 const OR_TITLE     = Deno.env.get("OPENROUTER_TITLE")          ?? "Green Yard Guest Bot";
 
@@ -56,9 +21,6 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Утилиты
-// ─────────────────────────────────────────────────────────────────────────────
 function json(body: any, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -99,16 +61,12 @@ function htmlEscape(s: string): string {
     .replace(/>/g, "&gt;");
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Telegram API
-// ─────────────────────────────────────────────────────────────────────────────
 async function tgSendMessage(chatId: number | string, text: string, extra: any = {}) {
   if (!TG_TOKEN) {
     console.error("[telegram-bot] TELEGRAM_BOT_TOKEN не задан");
     return { ok: false, error: "no_token" };
   }
   try {
-    // Поддерживаем явное отключение parse_mode (напр. для AI-ответов, где сырой текст без HTML).
     const payload: Record<string, any> = {
       chat_id: chatId,
       text,
@@ -143,9 +101,6 @@ async function tgAnswerCallback(callbackId: string, text = "") {
   } catch { /* ignore */ }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Клавиатура
-// ─────────────────────────────────────────────────────────────────────────────
 function guestKeyboard(channelUrl?: string | null) {
   const rows: any[] = [
     [{ text: "📍 Адрес", callback_data: "address" }, { text: "📶 Wi-Fi", callback_data: "wifi" }],
@@ -157,9 +112,6 @@ function guestKeyboard(channelUrl?: string | null) {
   return { inline_keyboard: rows };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Доступ к данным
-// ─────────────────────────────────────────────────────────────────────────────
 type Session = {
   id: string;
   user_id: string;
@@ -172,13 +124,14 @@ type Session = {
   tg_last_name: string | null;
   started_at: string | null;
   last_message_at: string | null;
+  ai_enabled?: boolean | null;
 };
 
 async function findSessionBySecureId(secureId: string): Promise<Session | null> {
   const sb = svc();
   const { data, error } = await sb
     .from("guest_sessions")
-    .select("id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,started_at,last_message_at")
+    .select("id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,started_at,last_message_at,ai_enabled")
     .eq("secure_id", secureId)
     .maybeSingle();
   if (error) console.error("[telegram-bot] findSessionBySecureId:", error.message);
@@ -189,7 +142,7 @@ async function findSessionByChatId(chatId: number): Promise<Session | null> {
   const sb = svc();
   const { data, error } = await sb
     .from("guest_sessions")
-    .select("id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,started_at,last_message_at")
+    .select("id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,started_at,last_message_at,ai_enabled")
     .eq("tg_chat_id", chatId)
     .order("started_at", { ascending: false, nullsFirst: false })
     .limit(1)
@@ -198,9 +151,9 @@ async function findSessionByChatId(chatId: number): Promise<Session | null> {
   return (data as Session) ?? null;
 }
 
-// Маппинг realty_id -> apartment_id через app_state пользователя
-async function resolveApartmentId(userId: string, realtyId: number | null): Promise<string | null> {
-  if (!realtyId) return null;
+async function resolveApartmentId(userId: string, realtyId: number | null, bookingId?: number | null): Promise<{ id: string | null; diag: any }> {
+  const diag: any = { realty_id: realtyId, booking_id: bookingId ?? null };
+  if (!realtyId && !bookingId) return { id: null, diag: { ...diag, reason: "no_realty_no_booking" } };
   const sb = svc();
   const { data, error } = await sb
     .from("app_state")
@@ -209,11 +162,21 @@ async function resolveApartmentId(userId: string, realtyId: number | null): Prom
     .maybeSingle();
   if (error) {
     console.error("[telegram-bot] resolveApartmentId app_state:", error.message);
-    return null;
+    return { id: null, diag: { ...diag, reason: "app_state_error", error: error.message } };
   }
   const apts = (data?.state?.apartments ?? []) as any[];
-  const found = apts.find((a) => String(a?.externalIds?.realtyCalendarUnitId ?? "") === String(realtyId));
-  return found?.id ? String(found.id) : null;
+  diag.apartments_count = apts.length;
+  if (realtyId) {
+    const found = apts.find((a) => String(a?.externalIds?.realtyCalendarUnitId ?? "") === String(realtyId));
+    if (found?.id) return { id: String(found.id), diag: { ...diag, matched_by: "realty_id" } };
+  }
+  if (bookingId) {
+    const bookings = (data?.state?.bookings ?? []) as any[];
+    diag.bookings_count = bookings.length;
+    const bk = bookings.find((b) => String(b?.externalIds?.realtyCalendarBookingId ?? b?.id ?? "") === String(bookingId));
+    if (bk?.apartmentId) return { id: String(bk.apartmentId), diag: { ...diag, matched_by: "booking_id" } };
+  }
+  return { id: null, diag: { ...diag, reason: "not_matched" } };
 }
 
 async function loadInstructions(userId: string, apartmentId: string | null) {
@@ -257,8 +220,6 @@ async function logMessage(
     is_read_by_manager: direction !== "inbound",
   });
   if (error) console.error("[telegram-bot] logMessage:", error.message);
-
-  // Обновляем last_message_at
   await sb
     .from("guest_sessions")
     .update({ last_message_at: new Date().toISOString() })
@@ -301,9 +262,6 @@ type ManagerSettings = {
   guest_invite_template: string | null;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Форматирование инструкций (под реальные поля guest_instructions)
-// ─────────────────────────────────────────────────────────────────────────────
 function blockAddress(instr: any): string | null {
   if (!instr) return null;
   const parts: string[] = [];
@@ -330,16 +288,6 @@ function blockWifi(instr: any): string | null {
   if (instr.wifi_ssid)     parts.push(`📶 <b>Сеть</b> <code>${htmlEscape(instr.wifi_ssid)}</code>`);
   if (instr.wifi_password) parts.push(`🔑 <b>Пароль</b> <code>${htmlEscape(instr.wifi_password)}</code>`);
   return parts.length ? parts.join("\n") : null;
-}
-
-function blockAbout(instr: any): string | null {
-  if (!instr) return null;
-  const parts: string[] = [];
-  if (Array.isArray(instr.amenities) && instr.amenities.length) {
-    parts.push(`🏠 <b>В квартире есть</b>\n${instr.amenities.map((a: any) => "• " + htmlEscape(String(a))).join("\n")}`);
-  }
-  if (instr.apartment_notes) parts.push(`💡 <b>Особенности</b>\n${htmlEscape(instr.apartment_notes)}`);
-  return parts.length ? parts.join("\n\n") : null;
 }
 
 function blockRules(instr: any): string | null {
@@ -373,17 +321,13 @@ function blockHelp(instr: any): string {
   return parts.join("\n");
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// AI-бот (OpenRouter, бесплатные модели)
-// Строгое правило: отвечает ТОЛЬКО по данным конкретной квартиры, не выдумывает.
-// ──────────────────────────────────────────────────────────────────────────
+// ── AI-бот (OpenRouter, бесплатные модели) ────────────────────────────────
 function buildAiSystemPrompt(instr: any): string {
   const emergency = [
     instr?.emergency_phone ? `телефон ${instr.emergency_phone}` : null,
     instr?.emergency_telegram ? `Telegram @${String(instr.emergency_telegram).replace(/^@/, "")}` : null,
   ].filter(Boolean).join(", ") || "связаться с менеджером через этот чат — он всё видит";
 
-  // Компактный контекст квартиры — всё, что AI может цитировать.
   const facts: string[] = [];
   if (instr?.apartment_title)     facts.push(`Название квартиры: ${instr.apartment_title}`);
   if (instr?.full_address)        facts.push(`Полный адрес: ${instr.full_address}`);
@@ -485,34 +429,18 @@ function buildWelcomeMessage(fromName: string, instr: any): string {
   return `${greeting}\n\n${blocks.join("\n\n━━━━━━━━━━━━━━━\n\n")}\n\n💬 Если что-то непонятно — напишите сюда, я передам менеджеру.`;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Хэндлеры команд
-// ─────────────────────────────────────────────────────────────────────────────
 async function handleStart(chatId: number, args: string, from: any) {
   const secureId = (args || "").trim();
   const fromName = [from?.first_name, from?.last_name].filter(Boolean).join(" ") || from?.username || "";
-
-  console.log(`[telegram-bot] /start chat=${chatId} secure="${secureId}" from="${fromName}"`);
-
   if (!secureId) {
-    await tgSendMessage(
-      chatId,
-      "Здравствуйте! Похоже, вы открыли бота без персональной ссылки.\n\nПожалуйста, используйте ссылку, которую прислал менеджер — она содержит данные вашего бронирования.",
-    );
+    await tgSendMessage(chatId, "Здравствуйте! Похоже, вы открыли бота без персональной ссылки.\n\nПожалуйста, используйте ссылку, которую прислал менеджер — она содержит данные вашего бронирования.");
     return;
   }
-
   let session = await findSessionBySecureId(secureId);
   if (!session) {
-    console.log(`[telegram-bot] /start: session not found for secure="${secureId}"`);
-    await tgSendMessage(
-      chatId,
-      "Ссылка не найдена или устарела. Свяжитесь, пожалуйста, с менеджером — он отправит новую ссылку.",
-    );
+    await tgSendMessage(chatId, "Ссылка не найдена или устарела. Свяжитесь, пожалуйста, с менеджером — он отправит новую ссылку.");
     return;
   }
-
-  // Привязываем Telegram-аккаунт к сессии (даже если был привязан — обновляем имя/время)
   const sb = svc();
   const updatePatch: Record<string, any> = {
     tg_chat_id: chatId,
@@ -522,208 +450,199 @@ async function handleStart(chatId: number, args: string, from: any) {
     updated_at: new Date().toISOString(),
   };
   if (!session.started_at) updatePatch.started_at = new Date().toISOString();
-
-  const { data: upd, error: updErr } = await sb
+  const { data: upd } = await sb
     .from("guest_sessions")
     .update(updatePatch)
     .eq("id", session.id)
     .select("id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,started_at,last_message_at")
     .maybeSingle();
-
-  if (updErr) {
-    console.error("[telegram-bot] /start update session:", updErr.message);
-  }
   if (upd) session = upd as Session;
 
-  // Маппинг квартиры
-  const apartmentId = await resolveApartmentId(session.user_id, session.realty_id);
-  console.log(`[telegram-bot] /start: realty_id=${session.realty_id} -> apartment_id=${apartmentId}`);
-
+  const { id: apartmentId } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
   const instr = await loadInstructions(session.user_id, apartmentId);
-  console.log(`[telegram-bot] /start: instructions ${instr ? "FOUND" : "NOT FOUND"}`);
-
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
 
   const welcome = buildWelcomeMessage(fromName, instr);
-  await tgSendMessage(chatId, welcome, {
-    reply_markup: guestKeyboard(settings?.guest_channel_url ?? null),
-  });
-
+  await tgSendMessage(chatId, welcome, { reply_markup: guestKeyboard(settings?.guest_channel_url ?? null) });
   await logMessage(session, "bot", welcome, { kind: "welcome" });
   await logEvent(session, "custom", { kind: "bot_started", chat_id: chatId, from: fromName });
-
-  // Уведомляем менеджера
-  await notifyManager(
-    session.user_id,
-    `🟢 Гость <b>${htmlEscape(fromName || "—")}</b> запустил бота.\nБронь: <code>${session.booking_id}</code>`,
-  );
+  await notifyManager(session.user_id, `🟢 Гость <b>${htmlEscape(fromName || "—")}</b> запустил бота.\nБронь: <code>${session.booking_id}</code>`);
 }
 
 async function handleCommand(chatId: number, cmd: string, _from: any) {
   const session = await findSessionByChatId(chatId);
   if (!session) {
-    await tgSendMessage(
-      chatId,
-      "Сначала откройте бота по персональной ссылке от менеджера (она содержит /start с кодом).",
-    );
+    await tgSendMessage(chatId, "Сначала откройте бота по персональной ссылке от менеджера (она содержит /start с кодом).");
     return;
   }
-
-  const apartmentId = await resolveApartmentId(session.user_id, session.realty_id);
+  const { id: apartmentId } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
   const instr = await loadInstructions(session.user_id, apartmentId);
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
-
   const fallback = "Инструкция ещё не заполнена менеджером. Напишите сюда — менеджер ответит.";
-
   let reply = "";
   switch (cmd) {
-    case "address":
-    case "info":
-      reply = blockAddress(instr) || fallback;
-      break;
-    case "wifi":
-      reply = blockWifi(instr) || fallback;
-      break;
-    case "checkin":
-    case "checkin_info":
-      reply = blockCheckin(instr) || fallback;
-      break;
-    case "checkout":
-    case "checkout_info":
-      reply = blockCheckout(instr) || fallback;
-      break;
-    case "rules":
-      reply = blockRules(instr) || "Особых правил нет. Будьте аккуратны и уважайте соседей.";
-      break;
-    case "help":
-      reply = blockHelp(instr);
-      break;
-    case "menu":
-    case "start_menu":
-      reply = "Выберите, что вас интересует:";
-      break;
-    default:
-      reply = "Команда не распознана. Используйте кнопки ниже.";
+    case "address": case "info": reply = blockAddress(instr) || fallback; break;
+    case "wifi": reply = blockWifi(instr) || fallback; break;
+    case "checkin": case "checkin_info": reply = blockCheckin(instr) || fallback; break;
+    case "checkout": case "checkout_info": reply = blockCheckout(instr) || fallback; break;
+    case "rules": reply = blockRules(instr) || "Особых правил нет. Будьте аккуратны и уважайте соседей."; break;
+    case "help": reply = blockHelp(instr); break;
+    case "menu": case "start_menu": reply = "Выберите, что вас интересует:"; break;
+    default: reply = "Команда не распознана. Используйте кнопки ниже.";
   }
-
   await tgSendMessage(chatId, reply, { reply_markup: guestKeyboard(settings?.guest_channel_url ?? null) });
   await logMessage(session, "bot", reply, { kind: "command", cmd });
 }
 
 async function handleArrival(chatId: number, from: any, kind: "arrived" | "leaving") {
   const session = await findSessionByChatId(chatId);
-  if (!session) {
-    await tgSendMessage(chatId, "Сессия не найдена. Откройте бота по ссылке от менеджера.");
-    return;
-  }
+  if (!session) { await tgSendMessage(chatId, "Сессия не найдена. Откройте бота по ссылке от менеджера."); return; }
   const fromName = [from?.first_name, from?.last_name].filter(Boolean).join(" ") || from?.username || "";
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
-
   if (kind === "arrived") {
     const reply = "Спасибо! ✅ Я передал менеджеру, что вы приехали. Хорошего отдыха!";
     await tgSendMessage(chatId, reply, { reply_markup: guestKeyboard(settings?.guest_channel_url ?? null) });
     await logMessage(session, "bot", reply, { kind: "arrival" });
     await logEvent(session, "checkin", { from: fromName });
-    await notifyManager(
-      session.user_id,
-      `✅ Гость <b>${htmlEscape(fromName || "—")}</b> сообщил о заселении.\nБронь: <code>${session.booking_id}</code>`,
-      "notify_on_checkin",
-    );
+    await notifyManager(session.user_id, `✅ Гость <b>${htmlEscape(fromName || "—")}</b> сообщил о заселении.\nБронь: <code>${session.booking_id}</code>`, "notify_on_checkin");
   } else {
     const reply = "Спасибо, что были у нас! 👋 Я передал менеджеру, что вы уезжаете.";
     await tgSendMessage(chatId, reply, { reply_markup: guestKeyboard(settings?.guest_channel_url ?? null) });
     await logMessage(session, "bot", reply, { kind: "departure" });
     await logEvent(session, "checkout", { from: fromName });
-    await notifyManager(
-      session.user_id,
-      `👋 Гость <b>${htmlEscape(fromName || "—")}</b> сообщил, что уезжает.\nБронь: <code>${session.booking_id}</code>`,
-      "notify_on_checkout",
-    );
+    await notifyManager(session.user_id, `👋 Гость <b>${htmlEscape(fromName || "—")}</b> сообщил, что уезжает.\nБронь: <code>${session.booking_id}</code>`, "notify_on_checkout");
   }
 }
 
 async function handleFreeText(chatId: number, from: any, text: string, tgMessageId: number) {
   const session = await findSessionByChatId(chatId);
   if (!session) {
-    await tgSendMessage(
-      chatId,
-      "Сессия не найдена. Откройте бота по персональной ссылке от менеджера (она содержит /start с кодом).",
-    );
+    await tgSendMessage(chatId, "Сессия не найдена. Откройте бота по персональной ссылке от менеджера (она содержит /start с кодом).");
     return;
   }
   const fromName = [from?.first_name, from?.last_name].filter(Boolean).join(" ") || from?.username || "Гость";
-
   await logMessage(session, "inbound", text, { tg_message_id: tgMessageId, from });
 
-  // Загружаем контекст квартиры и настройки менеджера.
-  const apartmentId = await resolveApartmentId(session.user_id, session.realty_id);
+  const { id: apartmentId, diag: resolveDiag } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
   const instr = await loadInstructions(session.user_id, apartmentId);
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
   const kb = { reply_markup: guestKeyboard(settings?.guest_channel_url ?? null) };
 
-  // AI-режим включается, если есть ключ OpenRouter И менеджер заполнил ai_instructions.
-  const aiEnabled = !!OR_API_KEY && !!(instr?.ai_instructions && String(instr.ai_instructions).trim());
+  const aiInstrLen = (instr?.ai_instructions ?? "").toString().trim().length;
+  const sessionAiEnabled = session.ai_enabled !== false; // менеджер мог выключить AI для этого чата
+  const aiEnabled = !!OR_API_KEY && aiInstrLen > 0 && sessionAiEnabled;
+  const diag: Record<string, any> = {
+    has_key: !!OR_API_KEY,
+    key_len: OR_API_KEY.length,
+    apartment_id: apartmentId,
+    resolve: resolveDiag,
+    instr_found: !!instr,
+    ai_instr_len: aiInstrLen,
+    ai_enabled: aiEnabled,
+    session_ai_enabled: sessionAiEnabled,
+    model: OR_MODEL,
+  };
+  console.log(`[telegram-bot] handleFreeText diag: ${JSON.stringify(diag)}`);
+  try {
+    await svc().from("guest_sessions").update({ debug_last: { kind: "ai_diag", at: new Date().toISOString(), ...diag } }).eq("id", session.id);
+  } catch (e) { console.error("[telegram-bot] debug_last diag update failed:", e); }
 
   if (aiEnabled) {
     const systemPrompt = buildAiSystemPrompt(instr);
-    const aiText = await callOpenRouter(systemPrompt, text);
+    let aiText: string | null = null;
+    let usedModel: string | null = null;
+    const modelErrors: Array<{ model: string; error: string }> = [];
+    const modelsToTry = [
+      OR_MODEL,
+      "google/gemma-4-31b-it:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+      "google/gemma-4-26b-a4b-it:free",
+      "openrouter/free",
+    ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
-    if (aiText) {
-      // Telegram не любит сырой HTML в AI-ответе — отправляем без parse_mode.
-      const outText = aiText.length > 3800 ? aiText.slice(0, 3800) + "…" : aiText;
-      await tgSendMessage(chatId, outText, { ...kb, parse_mode: undefined });
-      await logMessage(session, "bot", outText, { kind: "ai_reply", model: OR_MODEL });
-
-      // Менеджеру всё равно показываем вопрос и AI-ответ — чтобы он мог вмешаться.
-      await notifyManager(
-        session.user_id,
-        `🤖 <b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>) — вопрос:\n${htmlEscape(text)}\n\n<i>AI-ответ гостю:</i>\n${htmlEscape(outText)}`,
-        "notify_on_inbound",
-      );
-      return;
+    for (const modelId of modelsToTry) {
+      let modelErr = "";
+      try {
+        const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${OR_API_KEY}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": OR_REFERER,
+            "X-Title": OR_TITLE,
+          },
+          body: JSON.stringify({
+            model: modelId,
+            temperature: 0.2,
+            max_tokens: 500,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user",   content: text },
+            ],
+          }),
+        });
+        const bodyText = await r.text();
+        if (!r.ok) {
+          modelErr = `http_${r.status}: ${bodyText.slice(0, 200)}`;
+        } else {
+          try {
+            const data = JSON.parse(bodyText);
+            const msg = data?.choices?.[0]?.message?.content;
+            if (typeof msg === "string" && msg.trim()) {
+              aiText = msg.trim();
+              usedModel = modelId;
+              break;
+            } else {
+              modelErr = `empty_response`;
+            }
+          } catch (e) {
+            modelErr = `parse_error: ${String(e)}`;
+          }
+        }
+      } catch (e) {
+        modelErr = `fetch_exception: ${String(e)}`;
+      }
+      modelErrors.push({ model: modelId, error: modelErr });
+      console.error(`[telegram-bot] openrouter model failed ${modelId}: ${modelErr}`);
     }
 
-    // AI не ответил (квота/ошибка) — проваливаемся в обычный сценарий ниже.
+    try {
+      await svc().from("guest_sessions").update({ debug_last: { kind: "ai_result", at: new Date().toISOString(), ok: !!aiText, reply_len: aiText?.length ?? 0, used_model: usedModel, errors: modelErrors } }).eq("id", session.id);
+    } catch (e) { console.error("[telegram-bot] debug_last result update failed:", e); }
+    if (aiText) {
+      const outText = aiText.length > 3800 ? aiText.slice(0, 3800) + "…" : aiText;
+      await tgSendMessage(chatId, outText, { ...kb, parse_mode: undefined });
+      await logMessage(session, "bot", outText, { kind: "ai_reply", model: usedModel });
+      await notifyManager(session.user_id, `🤖 <b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>) — вопрос:\n${htmlEscape(text)}\n\n<i>AI-ответ гостю:</i>\n${htmlEscape(outText)}`, "notify_on_inbound");
+      return;
+    }
     console.warn("[telegram-bot] AI enabled but call failed; falling back to manager relay");
   }
 
-  // Fallback: обычное поведение — передаём менеджеру.
   const reply = "Спасибо за сообщение! ✉️ Я передал его менеджеру — он скоро ответит.";
   await tgSendMessage(chatId, reply, kb);
   await logMessage(session, "bot", reply, { kind: "ack" });
-
-  await notifyManager(
-    session.user_id,
-    `💬 <b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>):\n\n${htmlEscape(text)}`,
-    "notify_on_inbound",
-  );
+  await notifyManager(session.user_id, `💬 <b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>):\n\n${htmlEscape(text)}`, "notify_on_inbound");
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Маршрутизация апдейтов Telegram
-// ─────────────────────────────────────────────────────────────────────────────
 async function handleUpdate(update: any) {
   if (update.callback_query) {
     const cq = update.callback_query;
     const chatId = cq.message?.chat?.id;
     const data = cq.data || "";
-
     await tgAnswerCallback(cq.id);
     if (!chatId) return;
-
-    if (data === "i_arrived")      await handleArrival(chatId, cq.from, "arrived");
+    if (data === "i_arrived") await handleArrival(chatId, cq.from, "arrived");
     else if (data === "i_leaving") await handleArrival(chatId, cq.from, "leaving");
-    else                            await handleCommand(chatId, data, cq.from);
+    else await handleCommand(chatId, data, cq.from);
     return;
   }
-
   const msg = update.message || update.edited_message;
   if (!msg) return;
   const chatId: number | undefined = msg.chat?.id;
   const text: string = msg.text || "";
   const tgMessageId: number = msg.message_id;
   if (!chatId) return;
-
   if (text.startsWith("/start")) {
     const arg = text.replace(/^\/start\s*/, "").trim();
     await handleStart(chatId, arg, msg.from);
@@ -739,9 +658,6 @@ async function handleUpdate(update: any) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Эндпоинты
-// ─────────────────────────────────────────────────────────────────────────────
 async function endpointWebhook(req: Request): Promise<Response> {
   if (TG_SECRET) {
     const got = req.headers.get("x-telegram-bot-api-secret-token");
@@ -750,41 +666,31 @@ async function endpointWebhook(req: Request): Promise<Response> {
   let update: any = null;
   try { update = await req.json(); }
   catch { return json({ ok: false, error: "bad_json" }, 400); }
-
-  try {
-    await handleUpdate(update);
-  } catch (e) {
-    console.error("[telegram-bot] handleUpdate error:", e);
-  }
+  try { await handleUpdate(update); }
+  catch (e) { console.error("[telegram-bot] handleUpdate error:", e); }
   return json({ ok: true });
 }
 
 async function endpointSend(req: Request): Promise<Response> {
   const userId = await getUserIdFromJwt(req);
   if (!userId) return json({ ok: false, error: "unauthorized" }, 401);
-
   let body: any = null;
   try { body = await req.json(); }
   catch { return json({ ok: false, error: "bad_json" }, 400); }
-
   const sessionId = body?.session_id;
   const text = (body?.text || "").toString().trim();
   if (!sessionId || !text) return json({ ok: false, error: "session_id_and_text_required" }, 400);
-
   const sb = svc();
   const { data: session, error } = await sb
     .from("guest_sessions")
     .select("id,user_id,booking_id,tg_chat_id")
     .eq("id", sessionId)
     .maybeSingle();
-
   if (error || !session) return json({ ok: false, error: "session_not_found" }, 404);
   if (session.user_id !== userId) return json({ ok: false, error: "forbidden" }, 403);
   if (!session.tg_chat_id) return json({ ok: false, error: "guest_not_connected" }, 409);
-
   const tgRes = await tgSendMessage(session.tg_chat_id, text);
   if (!tgRes.ok) return json({ ok: false, error: "telegram_error", details: tgRes }, 502);
-
   const tgMessageId = tgRes?.result?.message_id ?? null;
   await sb.from("guest_messages").insert({
     user_id: session.user_id,
@@ -795,43 +701,25 @@ async function endpointSend(req: Request): Promise<Response> {
     payload: { tg_message_id: tgMessageId, via: "endpoint_send" },
     is_read_by_manager: true,
   });
-  await sb
-    .from("guest_sessions")
-    .update({ last_message_at: new Date().toISOString() })
-    .eq("id", session.id);
-
+  await sb.from("guest_sessions").update({ last_message_at: new Date().toISOString() }).eq("id", session.id);
   return json({ ok: true, tg_message_id: tgMessageId });
 }
 
 async function endpointTest(req: Request): Promise<Response> {
   const userId = await getUserIdFromJwt(req);
   if (!userId) return json({ ok: false, error: "unauthorized" }, 401);
-
   const settings = await loadManagerSettings(userId);
-  if (!settings?.manager_tg_chat_id) {
-    return json({ ok: false, error: "manager_chat_id_not_set" }, 400);
-  }
-
-  const text =
-    "✅ <b>Это тестовое сообщение от Green Yard.</b>\n\n" +
-    "Если вы видите его — уведомления настроены корректно и бот будет писать сюда о действиях гостей.";
-
+  if (!settings?.manager_tg_chat_id) return json({ ok: false, error: "manager_chat_id_not_set" }, 400);
+  const text = "✅ <b>Это тестовое сообщение от Green Yard.</b>\n\nЕсли вы видите его — уведомления настроены корректно и бот будет писать сюда о действиях гостей.";
   const r = await tgSendMessage(settings.manager_tg_chat_id, text);
   if (!r.ok) return json({ ok: false, error: "telegram_error", details: r }, 502);
   return json({ ok: true });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Роутер
-// ─────────────────────────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: CORS_HEADERS });
-  }
-
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
   const url = new URL(req.url);
   const path = url.pathname.replace(/^\/telegram-bot/, "") || "/";
-
   try {
     if (req.method === "POST" && (path === "/" || path === ""))   return await endpointWebhook(req);
     if (req.method === "POST" && path === "/send")                return await endpointSend(req);
@@ -843,3 +731,4 @@ Deno.serve(async (req) => {
     return json({ ok: false, error: "internal", message: String(e) }, 500);
   }
 });
+

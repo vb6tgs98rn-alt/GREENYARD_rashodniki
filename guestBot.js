@@ -263,33 +263,41 @@ export async function sendManagerMessage(session, text) {
   if (!session?.session_id) throw new Error('Чат не найден');
   if (!text || !text.trim()) throw new Error('Пустое сообщение');
 
-  // 1) Сохраняем сообщение от менеджера в БД
-  const { error: insErr } = await supabase.from('guest_messages').insert({
-    user_id: user.id,
-    session_id: session.session_id,
-    booking_id: session.booking_id,
-    direction: 'manager',
-    body: text.trim(),
+  // Просим Edge Function отправить в Telegram И сохранить в БД (одной операцией).
+  // Не пишем в БД сами: избегаем дублирования и ситуации «в БД есть, а в TG нет».
+  const sess = await supabase.auth.getSession();
+  const accessToken = sess?.data?.session?.access_token || '';
+  const resp = await fetch(`${BOT_FUNCTION_URL}/send`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(accessToken ? { 'authorization': `Bearer ${accessToken}` } : {}),
+    },
+    body: JSON.stringify({ session_id: session.session_id, text: text.trim() }),
   });
-  if (insErr) throw new Error(insErr.message);
-
-  // 2) Просим Edge Function переслать в Telegram
-  try {
-    const sess = await supabase.auth.getSession();
-    const accessToken = sess?.data?.session?.access_token || '';
-    await fetch(`${BOT_FUNCTION_URL}/send`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(accessToken ? { 'authorization': `Bearer ${accessToken}` } : {}),
-      },
-      body: JSON.stringify({ session_id: session.session_id, text: text.trim() }),
-    });
-  } catch (e) {
-    console.warn('[bot] sendManagerMessage relay:', e?.message || e);
-    // сообщение в БД уже есть, бот сможет отправить позже — не валим всю операцию
+  if (!resp.ok) {
+    let msg = `HTTP ${resp.status}`;
+    try { const j = await resp.json(); msg = j?.error || msg; } catch {}
+    throw new Error(msg);
   }
+  return { ok: true };
+}
 
+/**
+ * Переключатель AI-режима на конкретный чат (сессия). Когда OFF —
+ * бот не отвечает гостю сам, только пересылает менеджеру.
+ */
+export async function setChatAiEnabled(sessionId, enabled) {
+  const supabase = getSupabaseClient();
+  if (!supabase) throw new Error('Supabase не подключён');
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Войдите в аккаунт');
+  const { error } = await supabase
+    .from('guest_sessions')
+    .update({ ai_enabled: !!enabled })
+    .eq('id', sessionId)
+    .eq('user_id', user.id);
+  if (error) throw new Error(error.message);
   return { ok: true };
 }
 
@@ -766,9 +774,18 @@ async function renderActiveChat() {
     const name = meta.tg_first_name
       ? `${esc(meta.tg_first_name)}${meta.tg_last_name ? ' ' + esc(meta.tg_last_name) : ''}`
       : (meta.client_fio ? esc(meta.client_fio) : 'Гость');
+    const aiOn = meta.ai_enabled !== false;
     head.innerHTML = `
-      <div><b>${name}</b> · ${esc(meta.apartment_title || '')}</div>
-      <div class="small" style="opacity:.7;">${esc(meta.begin_date ? fmtDate(meta.begin_date) + ' → ' + fmtDate(meta.end_date) : '')}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;flex-wrap:wrap;">
+        <div>
+          <div><b>${name}</b> · ${esc(meta.apartment_title || '')}</div>
+          <div class="small" style="opacity:.7;">${esc(meta.begin_date ? fmtDate(meta.begin_date) + ' → ' + fmtDate(meta.end_date) : '')}</div>
+        </div>
+        <label class="chat-ai-toggle small" title="Когда выключено — бот не отвечает гостю сам, вы отвечаете вручную." style="display:inline-flex;align-items:center;gap:.4rem;cursor:pointer;">
+          <input type="checkbox" id="chatAiToggle" ${aiOn ? 'checked' : ''} />
+          <span>🤖 AI ${aiOn ? 'вкл' : 'выкл'}</span>
+        </label>
+      </div>
     `;
   }
   if (composer) composer.style.display = 'flex';
@@ -1142,6 +1159,21 @@ export function bindGuestBotEvents(state) {
       _chatsState.activeSessionId = chatRow.getAttribute('data-chat-session');
       renderChatsList();
       await renderActiveChat();
+      return;
+    }
+    if (e.target.closest('#chatAiToggle') && e.target.id === 'chatAiToggle') {
+      const sid = _chatsState.activeSessionId;
+      if (!sid) return;
+      const enabled = !!e.target.checked;
+      try {
+        await setChatAiEnabled(sid, enabled);
+        const meta = _chatsState.items.find(c => c.session_id === sid);
+        if (meta) meta.ai_enabled = enabled;
+        await renderActiveChat();
+      } catch (err) {
+        alert('Не удалось переключить AI: ' + (err?.message || err));
+        e.target.checked = !enabled;
+      }
       return;
     }
     if (e.target.closest('#chatSendBtn')) {
