@@ -434,15 +434,19 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
     return null;
   }
 
+  // ВАЖНО: keyword'ы должны СОВПАДАТЬ с названиями полей в шаблоне Okidoki
+  // именно так, как они там записаны (с заглавной буквы, если так в шаблоне).
+  // «Описание и адрес квартиры» — это dropdown-объект (system entity), поэтому
+  // через entities передавать её бесполезно; текстовый адрес шлём в «Адрес».
   const DEFAULT_MAPPING: Record<string, string> = {
-    begin_date:            "дата заселения",
-    end_date:              "дата выселения",
-    price_per_night:       "цена в сутки",
-    price_total:           "полная стоимость",
-    prepaid:               "оплачено",
+    begin_date:            "Дата заселения",
+    end_date:              "Дата выселения",
+    nights:                "Количество суток",
+    price_per_night:       "Цена в сутки",
+    price_total:           "Полная стоимость",
+    prepaid:               "Оплачено",
     deposit:               "Обеспечительный платеж",
-    apartment_title:       "описание и адрес квартиры",
-    apartment_address:     "адрес",
+    apartment_address:     "Адрес",
   };
   const userMapping: Record<string, string> = (ms.okidoki_field_mapping as any) || {};
   const aptMapping: Record<string, string> = apt.field_mapping || {};
@@ -532,7 +536,7 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
       const sentKeywords = entities.map(e => `• ${htmlEscape(e.keyword)}: <code>${htmlEscape(e.value)}</code>`).join("\n");
       await notifyManager(
         session.user_id,
-        `⚠️ Договор по брони <code>${session.booking_id}</code> создан, но остался в статусе «Черновик» (не все поля шаблона заполнены).\n\nГостю ссылка не отправлена. Откройте договор в Okidoki и дозаполните поля, или уберите лишние keyword’ы из шаблона.\n\n<b>Передано:</b>\n${sentKeywords}\n\n<a href="${link}">Открыть черновик</a>`
+        `⚠️ Договор по брони <code>${session.booking_id}</code> создан, но остался в статусе «Черновик».\n\nЭто значит, что keyword’ы, которые мы отправили, <b>не совпали</b> с названиями полей в шаблоне Okidoki, или в шаблоне остались незаполненные обязательные поля (например dropdown «Описание и адрес квартиры»).\n\n<b>Что делать:</b>\n1) Откройте договор, посмотрите, какие поля остались пустыми.\n2) Сверьте точные названия полей в шаблоне (какой там регистр, пробелы) — если в шаблоне название другое (например «цена в сутки», а не «Цена в сутки») — сообщите в поддержку.\n3) Сейчас мы слали keyword’ы <b>с заглавной буквы</b> — как в видимых метках полей в Okidoki.\n\n<b>Передано:</b>\n${sentKeywords}\n\n<a href="${link}">Открыть черновик</a>`
       );
       return null;
     }

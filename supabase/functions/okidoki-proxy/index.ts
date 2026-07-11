@@ -177,16 +177,16 @@ Deno.serve(async (req) => {
 
     // Keyword’ы одинаковые во всех шаблонах — зашиты как дефолт.
     // Пользовательский override через manager_settings.okidoki_field_mapping если вдруг в каком-то шаблоне keyword другой.
+    // С заглавной — как в шаблоне Okidoki. Объект «Описание и адрес квартиры» — dropdown, не передаётся через entities.
     const DEFAULT_MAPPING: Record<string, string> = {
-      begin_date:            "дата заселения",
-      end_date:              "дата выселения",
-      price_per_night:       "цена в сутки",
-      price_total:           "полная стоимость",
-      prepaid:               "оплачено",
+      begin_date:            "Дата заселения",
+      end_date:              "Дата выселения",
+      nights:                "Количество суток",
+      price_per_night:       "Цена в сутки",
+      price_total:           "Полная стоимость",
+      prepaid:               "Оплачено",
       deposit:               "Обеспечительный платеж",
-      apartment_title:       "описание и адрес квартиры",
-      apartment_address:     "адрес",
-      apartment_description: "описание и адрес квартиры",
+      apartment_address:     "Адрес",
     };
     const userMapping: Record<string, string> = (settings?.okidoki_field_mapping as any) || {};
     const aptMapping: Record<string, string> = apt?.field_mapping || {};
