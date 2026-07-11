@@ -122,7 +122,7 @@ Deno.serve(async (req) => {
   }
 
   if (action === "save_apartment_template") {
-    const { realty_id, apartment_name, okidoki_template_id, field_mapping } = payload;
+    const { realty_id, apartment_name, okidoki_template_id, field_mapping, apartment_address, deposit } = payload;
     if (!realty_id || !okidoki_template_id) return json(400, { error: "realty_id и okidoki_template_id обязательны" });
     const { error } = await supa!.from("apartment_contract_templates").upsert({
       user_id: user.id,
@@ -130,6 +130,8 @@ Deno.serve(async (req) => {
       apartment_name: apartment_name || null,
       okidoki_template_id,
       field_mapping: field_mapping || {},
+      apartment_address: apartment_address ?? null,
+      deposit: deposit ?? null,
       updated_at: new Date().toISOString(),
     }, { onConflict: "user_id,realty_id" });
     if (error) return json(500, { error: error.message });

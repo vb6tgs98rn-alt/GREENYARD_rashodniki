@@ -419,7 +419,7 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
   // 2) Ищем шаблон квартиры
   const { data: apt } = await sb
     .from("apartment_contract_templates")
-    .select("okidoki_template_id, field_mapping")
+    .select("okidoki_template_id, field_mapping, apartment_address, deposit")
     .eq("user_id", session.user_id)
     .eq("realty_id", bk.realty_id)
     .maybeSingle();
@@ -443,7 +443,6 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
     deposit:               "Обеспечительный платеж",
     apartment_title:       "описание и адрес квартиры",
     apartment_address:     "адрес",
-    apartment_description: "описание и адрес квартиры",
   };
   const userMapping: Record<string, string> = (ms.okidoki_field_mapping as any) || {};
   const aptMapping: Record<string, string> = apt.field_mapping || {};
@@ -456,6 +455,8 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
   const remaining = Math.max(0, priceTotal - prepaid);
   const pricePerNight = nights > 0 ? Math.round((priceTotal / nights) * 100) / 100 : priceTotal;
 
+  const deposit = Number(apt.deposit ?? 0);
+  const aptAddress = String(apt.apartment_address || bk.apartment_title || "");
   const logical: Record<string, string> = {
     begin_date:      ddmmyyyy(bk.begin_date),
     end_date:        ddmmyyyy(bk.end_date),
@@ -464,8 +465,9 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
     price_per_night: String(pricePerNight),
     prepaid:         String(prepaid),
     remaining:       String(remaining),
-    apartment_title: String(bk.apartment_title || ""),
-    apartment_address: String(bk.apartment_title || ""),
+    deposit:         String(deposit),
+    apartment_title:       String(bk.apartment_title || ""),
+    apartment_address:     aptAddress,
   };
   const entities: Array<{ keyword: string; value: string }> = [];
   for (const [logicalKey, keyword] of Object.entries(mapping)) {
@@ -515,13 +517,25 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
     }
     const link = data?.link || "";
     const contract_id = data?.contract_id || "";
+    const statusName = data?.status?.name || "";
+    const statusInternal = data?.status?.internal_id ?? null;
     await sb.from("rc_bookings").update({
       okidoki_contract_id: contract_id,
       okidoki_link: link,
-      contract_status: data?.status?.name || "",
-      contract_status_internal: data?.status?.internal_id ?? null,
+      contract_status: statusName,
+      contract_status_internal: statusInternal,
       contract_updated_at: new Date().toISOString(),
     }).eq("user_id", session.user_id).eq("booking_id", session.booking_id);
+
+    // Если черновик (internal_id=0) — гостю не отправляем, а уведомляем менеджера с деталями
+    if (statusInternal === 0) {
+      const sentKeywords = entities.map(e => `• ${htmlEscape(e.keyword)}: <code>${htmlEscape(e.value)}</code>`).join("\n");
+      await notifyManager(
+        session.user_id,
+        `⚠️ Договор по брони <code>${session.booking_id}</code> создан, но остался в статусе «Черновик» (не все поля шаблона заполнены).\n\nГостю ссылка не отправлена. Откройте договор в Okidoki и дозаполните поля, или уберите лишние keyword’ы из шаблона.\n\n<b>Передано:</b>\n${sentKeywords}\n\n<a href="${link}">Открыть черновик</a>`
+      );
+      return null;
+    }
 
     return link || null;
   } catch (e) {

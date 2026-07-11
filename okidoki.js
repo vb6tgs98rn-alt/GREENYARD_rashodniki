@@ -188,8 +188,18 @@ function ensureModal() {
           <select id="okidokiAptTemplate" style="margin-top:.4rem;width:100%;"></select>
         </label>
 
+        <label style="display:block;margin-bottom:.75rem;">
+          <span class="small">Адрес квартиры (для keyword «адрес»)</span>
+          <input id="okidokiAptAddress" type="text" placeholder="напр. Кремлёвская наб. 1, Москва" style="margin-top:.4rem;width:100%;" />
+        </label>
+
+        <label style="display:block;margin-bottom:.75rem;">
+          <span class="small">Обеспечительный платеж (залог), ₽</span>
+          <input id="okidokiAptDeposit" type="number" min="0" step="1" placeholder="0" style="margin-top:.4rem;width:100%;" />
+        </label>
+
         <div class="small" style="margin-top:.5rem;opacity:.7;">
-          Сопоставление keyword'ов берётся из общих настроек Okidoki. Здесь настраивается только выбор шаблона.
+          Остальные keyword’ы шаблона (даты, цена, оплачено и т.д.) подтягиваются из брони автоматически.
         </div>
 
         <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1.5rem;">
@@ -323,6 +333,12 @@ async function openApartmentTemplateModal(realtyId, apartmentName) {
     setStatus('Ошибка загрузки: ' + e.message, 'error');
   }
 
+  // Предзаполняем адрес и депозит
+  const addrInput = document.getElementById('okidokiAptAddress');
+  const depInput  = document.getElementById('okidokiAptDeposit');
+  addrInput.value = current?.apartment_address || '';
+  depInput.value  = current?.deposit != null ? String(current.deposit) : '';
+
   // Шаблоны
   tplSel.innerHTML = '<option>Загружаем…</option>';
   try {
@@ -352,12 +368,17 @@ async function openApartmentTemplateModal(realtyId, apartmentName) {
   rebind(saveBtn, async () => {
     const template_id = document.getElementById('okidokiAptTemplate').value;
     if (!template_id) { setStatus('Выберите шаблон', 'error'); return; }
+    const addr = document.getElementById('okidokiAptAddress').value.trim();
+    const depRaw = document.getElementById('okidokiAptDeposit').value.trim();
+    const dep = depRaw === '' ? null : Number(depRaw);
     try {
       await saveApartmentTemplate({
         realty_id: Number(realtyId),
         apartment_name: apartmentName,
         okidoki_template_id: template_id,
         field_mapping: {},
+        apartment_address: addr || null,
+        deposit: (dep == null || Number.isNaN(dep)) ? null : dep,
       });
       setStatus('Шаблон квартиры сохранён', 'success');
       close();
