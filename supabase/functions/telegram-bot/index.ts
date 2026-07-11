@@ -1,4 +1,4 @@
-// Edge Function: telegram-bot (v2 — fixed, + AI бот)
+// Edge Function: telegram-bot (v12 — chats realtime, per-session AI toggle)
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
@@ -6,7 +6,6 @@ const TG_TOKEN     = Deno.env.get("TELEGRAM_BOT_TOKEN")        ?? "";
 const TG_SECRET    = Deno.env.get("TELEGRAM_WEBHOOK_SECRET")   ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")              ?? "";
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-// OpenRouter (бесплатные модели). Если ключ не задан, AI-режим выключен.
 const OR_API_KEY   = Deno.env.get("OPENROUTER_API_KEY")        ?? "";
 const OR_MODEL     = Deno.env.get("OPENROUTER_MODEL")          ?? "openai/gpt-oss-120b:free";
 const OR_REFERER   = Deno.env.get("OPENROUTER_REFERER")        ?? "https://green-yard.app";
@@ -127,11 +126,13 @@ type Session = {
   ai_enabled?: boolean | null;
 };
 
+const SESSION_COLS = "id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,started_at,last_message_at,ai_enabled";
+
 async function findSessionBySecureId(secureId: string): Promise<Session | null> {
   const sb = svc();
   const { data, error } = await sb
     .from("guest_sessions")
-    .select("id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,started_at,last_message_at,ai_enabled")
+    .select(SESSION_COLS)
     .eq("secure_id", secureId)
     .maybeSingle();
   if (error) console.error("[telegram-bot] findSessionBySecureId:", error.message);
@@ -142,7 +143,7 @@ async function findSessionByChatId(chatId: number): Promise<Session | null> {
   const sb = svc();
   const { data, error } = await sb
     .from("guest_sessions")
-    .select("id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,started_at,last_message_at,ai_enabled")
+    .select(SESSION_COLS)
     .eq("tg_chat_id", chatId)
     .order("started_at", { ascending: false, nullsFirst: false })
     .limit(1)
@@ -238,6 +239,17 @@ async function logEvent(session: Session, eventType: string, details: any = {}) 
   if (error) console.error("[telegram-bot] logEvent:", error.message);
 }
 
+type ManagerSettings = {
+  manager_tg_chat_id: number | null;
+  notify_on_inbound: boolean | null;
+  notify_on_checkin: boolean | null;
+  notify_on_checkout: boolean | null;
+  notify_on_complaint: boolean | null;
+  guest_channel_url: string | null;
+  guest_channel_invite: string | null;
+  guest_invite_template: string | null;
+};
+
 async function notifyManager(userId: string, text: string, flag?: keyof ManagerSettings) {
   const settings = await loadManagerSettings(userId);
   if (!settings?.manager_tg_chat_id) {
@@ -251,17 +263,6 @@ async function notifyManager(userId: string, text: string, flag?: keyof ManagerS
   await tgSendMessage(settings.manager_tg_chat_id, text);
 }
 
-type ManagerSettings = {
-  manager_tg_chat_id: number | null;
-  notify_on_inbound: boolean | null;
-  notify_on_checkin: boolean | null;
-  notify_on_checkout: boolean | null;
-  notify_on_complaint: boolean | null;
-  guest_channel_url: string | null;
-  guest_channel_invite: string | null;
-  guest_invite_template: string | null;
-};
-
 function blockAddress(instr: any): string | null {
   if (!instr) return null;
   const parts: string[] = [];
@@ -270,7 +271,6 @@ function blockAddress(instr: any): string | null {
   if (instr.parking_info)     parts.push(`🚗 <b>Парковка</b>\n${htmlEscape(instr.parking_info)}`);
   return parts.length ? parts.join("\n\n") : null;
 }
-
 function blockCheckin(instr: any): string | null {
   if (!instr) return null;
   const parts: string[] = [];
@@ -281,7 +281,6 @@ function blockCheckin(instr: any): string | null {
   if (instr.checkin_instruction)  parts.push(`📋 <b>Инструкция</b>\n${htmlEscape(instr.checkin_instruction)}`);
   return parts.length ? parts.join("\n\n") : null;
 }
-
 function blockWifi(instr: any): string | null {
   if (!instr) return null;
   const parts: string[] = [];
@@ -289,7 +288,6 @@ function blockWifi(instr: any): string | null {
   if (instr.wifi_password) parts.push(`🔑 <b>Пароль</b> <code>${htmlEscape(instr.wifi_password)}</code>`);
   return parts.length ? parts.join("\n") : null;
 }
-
 function blockRules(instr: any): string | null {
   if (!instr) return null;
   const parts: string[] = [];
@@ -299,7 +297,6 @@ function blockRules(instr: any): string | null {
   if (instr.other_rules)    parts.push(`📋 <b>Другие правила</b>\n${htmlEscape(instr.other_rules)}`);
   return parts.length ? parts.join("\n") : null;
 }
-
 function blockCheckout(instr: any): string | null {
   if (!instr) return null;
   const parts: string[] = [];
@@ -308,20 +305,15 @@ function blockCheckout(instr: any): string | null {
   if (instr.key_return_info)    parts.push(`🔑 <b>Куда оставить ключи</b>\n${htmlEscape(instr.key_return_info)}`);
   return parts.length ? parts.join("\n\n") : null;
 }
-
 function blockHelp(instr: any): string {
   const parts: string[] = ["📞 <b>Контакты</b>"];
   if (instr?.emergency_phone)    parts.push(`Телефон: ${htmlEscape(instr.emergency_phone)}`);
   if (instr?.emergency_telegram) parts.push(`Telegram: @${htmlEscape(String(instr.emergency_telegram).replace(/^@/, ""))}`);
-  if (parts.length === 1) {
-    parts.push("Напишите любое сообщение — менеджер увидит его и ответит.");
-  } else {
-    parts.push("\nИли просто напишите сюда — менеджер ответит.");
-  }
+  if (parts.length === 1) parts.push("Напишите любое сообщение — менеджер увидит его и ответит.");
+  else                    parts.push("\nИли просто напишите сюда — менеджер ответит.");
   return parts.join("\n");
 }
 
-// ── AI-бот (OpenRouter, бесплатные модели) ────────────────────────────────
 function buildAiSystemPrompt(instr: any): string {
   const emergency = [
     instr?.emergency_phone ? `телефон ${instr.emergency_phone}` : null,
@@ -377,43 +369,6 @@ function buildAiSystemPrompt(instr: any): string {
   ].join("\n");
 }
 
-async function callOpenRouter(systemPrompt: string, userText: string): Promise<string | null> {
-  if (!OR_API_KEY) return null;
-  try {
-    const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${OR_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": OR_REFERER,
-        "X-Title": OR_TITLE,
-      },
-      body: JSON.stringify({
-        model: OR_MODEL,
-        temperature: 0.2,
-        max_tokens: 500,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user",   content: userText },
-        ],
-      }),
-    });
-    if (!r.ok) {
-      const errText = await r.text().catch(() => "");
-      console.error("[telegram-bot] openrouter http error:", r.status, errText.slice(0, 500));
-      return null;
-    }
-    const data = await r.json();
-    const msg = data?.choices?.[0]?.message?.content;
-    if (typeof msg === "string" && msg.trim()) return msg.trim();
-    console.error("[telegram-bot] openrouter empty response:", JSON.stringify(data).slice(0, 500));
-    return null;
-  } catch (e) {
-    console.error("[telegram-bot] openrouter exception:", e);
-    return null;
-  }
-}
-
 function buildWelcomeMessage(fromName: string, instr: any): string {
   const greeting = `Здравствуйте, ${htmlEscape(fromName || "гость")}! 👋\n\nВаше бронирование найдено. Вот всё, что нужно знать:`;
   const blocks: string[] = [];
@@ -422,11 +377,144 @@ function buildWelcomeMessage(fromName: string, instr: any): string {
   const wifi = blockWifi(instr);        if (wifi)     blocks.push(wifi);
   const rules = blockRules(instr);      if (rules)    blocks.push(rules);
   const cout = blockCheckout(instr);    if (cout)     blocks.push(cout);
-
-  if (!blocks.length) {
-    return `${greeting}\n\nИнструкция по заселению ещё не заполнена менеджером. Я уже сообщил ему — он скоро свяжется с вами.\n\nВы можете написать сюда любой вопрос — я передам менеджеру.`;
-  }
+  if (!blocks.length) return `${greeting}\n\nИнструкция по заселению ещё не заполнена менеджером. Я уже сообщил ему — он скоро свяжется с вами.\n\nВы можете написать сюда любой вопрос — я передам менеджеру.`;
   return `${greeting}\n\n${blocks.join("\n\n━━━━━━━━━━━━━━━\n\n")}\n\n💬 Если что-то непонятно — напишите сюда, я передам менеджеру.`;
+}
+
+function ddmmyyyy(d: string | Date | null | undefined): string {
+  if (!d) return "";
+  const dt = typeof d === "string" ? new Date(d) : d;
+  if (Number.isNaN(dt.getTime())) return "";
+  const dd = String(dt.getDate()).padStart(2, "0");
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  return `${dd}.${mm}.${dt.getFullYear()}`;
+}
+
+// Автосоздание договора Okidoki при первом /start гостя (если включён auto_send).
+// Возвращает { link } если договор создан/уже был, иначе null.
+async function maybeCreateContract(session: Session, chatId: number): Promise<string | null> {
+  const sb = svc();
+
+  // 1) Достаём бронь + настройки менеджера
+  const { data: bk } = await sb
+    .from("rc_bookings")
+    .select("*")
+    .eq("user_id", session.user_id)
+    .eq("booking_id", session.booking_id)
+    .maybeSingle();
+  if (!bk) return null;
+
+  // Если ссылка уже есть — просто вернём её
+  if (bk.okidoki_link) return String(bk.okidoki_link);
+
+  const { data: ms } = await sb
+    .from("manager_settings")
+    .select("okidoki_api_key, okidoki_signer_card_id, okidoki_auto_send")
+    .eq("user_id", session.user_id)
+    .maybeSingle();
+
+  if (!ms?.okidoki_auto_send) return null;   // авто-отправка выключена
+  if (!ms.okidoki_api_key)   return null;    // не настроен ключ
+
+  // 2) Ищем шаблон квартиры
+  const { data: apt } = await sb
+    .from("apartment_contract_templates")
+    .select("okidoki_template_id, field_mapping")
+    .eq("user_id", session.user_id)
+    .eq("realty_id", bk.realty_id)
+    .maybeSingle();
+
+  if (!apt?.okidoki_template_id) {
+    console.log(`[telegram-bot] maybeCreateContract: no template for realty ${bk.realty_id}`);
+    // Уведомим менеджера, что нужно настроить шаблон
+    await notifyManager(
+      session.user_id,
+      `⚠️ Гость запустил бота, но для квартиры <b>${htmlEscape(bk.apartment_title || String(bk.realty_id))}</b> не назначен шаблон договора Okidoki. Договор не создан. Откройте «Договоры (Okidoki)» → «Квартиры и шаблоны».`
+    );
+    return null;
+  }
+
+  const mapping: Record<string, string> = apt.field_mapping || {};
+  const nights = Math.max(1, Math.round(
+    (new Date(bk.end_date).getTime() - new Date(bk.begin_date).getTime()) / (1000 * 60 * 60 * 24),
+  ));
+  const priceTotal = Number(bk.amount || 0);
+  const prepaid = Number(bk.prepayment || 0);
+  const remaining = Math.max(0, priceTotal - prepaid);
+  const pricePerNight = nights > 0 ? Math.round((priceTotal / nights) * 100) / 100 : priceTotal;
+
+  const logical: Record<string, string> = {
+    begin_date:      ddmmyyyy(bk.begin_date),
+    end_date:        ddmmyyyy(bk.end_date),
+    nights:          String(nights),
+    price_total:     String(priceTotal),
+    price_per_night: String(pricePerNight),
+    prepaid:         String(prepaid),
+    remaining:       String(remaining),
+    apartment_title: String(bk.apartment_title || ""),
+    apartment_address: String(bk.apartment_title || ""),
+  };
+  const entities: Array<{ keyword: string; value: string }> = [];
+  for (const [logicalKey, keyword] of Object.entries(mapping)) {
+    if (!keyword) continue;
+    const v = logical[logicalKey] ?? "";
+    if (v === "") continue;
+    entities.push({ keyword: String(keyword), value: v });
+  }
+
+  const system_entities: Array<{ keyword: string; value: string }> = [];
+  if (bk.client_fio) {
+    const parts = String(bk.client_fio).trim().split(/\s+/);
+    if (parts[0]) system_entities.push({ keyword: "client_last_name",   value: parts[0] });
+    if (parts[1]) system_entities.push({ keyword: "client_first_name",  value: parts[1] });
+    if (parts[2]) system_entities.push({ keyword: "client_middle_name", value: parts[2] });
+  }
+  if (bk.client_phone) system_entities.push({ keyword: "client_phone_number", value: String(bk.client_phone) });
+
+  const callback_url = `${SUPABASE_URL}/functions/v1/okidoki-callback`;
+  const contractBody: Record<string, unknown> = {
+    external_id: String(bk.booking_id),
+    template_id: apt.okidoki_template_id,
+    source: "GreenYard",
+    entities,
+    system_entities,
+    callback_url,
+    api_key: ms.okidoki_api_key,
+  };
+  if (ms.okidoki_signer_card_id) contractBody.actual_user_card_id = ms.okidoki_signer_card_id;
+
+  try {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 20000);
+    const r = await fetch("https://api.doki.online/external/contract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(contractBody),
+      signal: ac.signal,
+    });
+    clearTimeout(t);
+    const text = await r.text();
+    let data: any; try { data = JSON.parse(text); } catch { data = text; }
+    if (!r.ok) {
+      console.error("[telegram-bot] okidoki contract error:", r.status, text);
+      await notifyManager(session.user_id, `❌ Не удалось создать договор гостю (бронь <code>${session.booking_id}</code>): ${htmlEscape(String(data?.error || data || r.status))}`);
+      return null;
+    }
+    const link = data?.link || "";
+    const contract_id = data?.contract_id || "";
+    await sb.from("rc_bookings").update({
+      okidoki_contract_id: contract_id,
+      okidoki_link: link,
+      contract_status: data?.status?.name || "",
+      contract_status_internal: data?.status?.internal_id ?? null,
+      contract_updated_at: new Date().toISOString(),
+    }).eq("user_id", session.user_id).eq("booking_id", session.booking_id);
+
+    return link || null;
+  } catch (e) {
+    console.error("[telegram-bot] okidoki contract exception:", e);
+    return null;
+  }
 }
 
 async function handleStart(chatId: number, args: string, from: any) {
@@ -454,7 +542,7 @@ async function handleStart(chatId: number, args: string, from: any) {
     .from("guest_sessions")
     .update(updatePatch)
     .eq("id", session.id)
-    .select("id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,started_at,last_message_at")
+    .select(SESSION_COLS)
     .maybeSingle();
   if (upd) session = upd as Session;
 
@@ -467,6 +555,19 @@ async function handleStart(chatId: number, args: string, from: any) {
   await logMessage(session, "bot", welcome, { kind: "welcome" });
   await logEvent(session, "custom", { kind: "bot_started", chat_id: chatId, from: fromName });
   await notifyManager(session.user_id, `🟢 Гость <b>${htmlEscape(fromName || "—")}</b> запустил бота.\nБронь: <code>${session.booking_id}</code>`);
+
+  // Автосоздание договора Okidoki (если включено)
+  try {
+    const link = await maybeCreateContract(session, chatId);
+    if (link) {
+      const msg = `📄 <b>Договор аренды</b>\n\nДля вашего заселения подготовлен договор. Пожалуйста, ознакомьтесь и подпишите по ссылке:\n${htmlEscape(link)}\n\nПосле подписания менеджер получит уведомление и подтвердит вашу бронь.`;
+      await tgSendMessage(chatId, msg, { disable_web_page_preview: false });
+      await logMessage(session, "bot", msg, { kind: "okidoki_link", link });
+      await notifyManager(session.user_id, `📄 Гостю отправлена ссылка на договор (бронь <code>${session.booking_id}</code>).`);
+    }
+  } catch (e) {
+    console.error("[telegram-bot] maybeCreateContract failed:", e);
+  }
 }
 
 async function handleCommand(chatId: number, cmd: string, _from: any) {
@@ -529,7 +630,7 @@ async function handleFreeText(chatId: number, from: any, text: string, tgMessage
   const kb = { reply_markup: guestKeyboard(settings?.guest_channel_url ?? null) };
 
   const aiInstrLen = (instr?.ai_instructions ?? "").toString().trim().length;
-  const sessionAiEnabled = session.ai_enabled !== false; // менеджер мог выключить AI для этого чата
+  const sessionAiEnabled = session.ai_enabled !== false;
   const aiEnabled = !!OR_API_KEY && aiInstrLen > 0 && sessionAiEnabled;
   const diag: Record<string, any> = {
     has_key: !!OR_API_KEY,
@@ -582,26 +683,16 @@ async function handleFreeText(chatId: number, from: any, text: string, tgMessage
           }),
         });
         const bodyText = await r.text();
-        if (!r.ok) {
-          modelErr = `http_${r.status}: ${bodyText.slice(0, 200)}`;
-        } else {
+        if (!r.ok) modelErr = `http_${r.status}: ${bodyText.slice(0, 200)}`;
+        else {
           try {
             const data = JSON.parse(bodyText);
             const msg = data?.choices?.[0]?.message?.content;
-            if (typeof msg === "string" && msg.trim()) {
-              aiText = msg.trim();
-              usedModel = modelId;
-              break;
-            } else {
-              modelErr = `empty_response`;
-            }
-          } catch (e) {
-            modelErr = `parse_error: ${String(e)}`;
-          }
+            if (typeof msg === "string" && msg.trim()) { aiText = msg.trim(); usedModel = modelId; break; }
+            else modelErr = `empty_response`;
+          } catch (e) { modelErr = `parse_error: ${String(e)}`; }
         }
-      } catch (e) {
-        modelErr = `fetch_exception: ${String(e)}`;
-      }
+      } catch (e) { modelErr = `fetch_exception: ${String(e)}`; }
       modelErrors.push({ model: modelId, error: modelErr });
       console.error(`[telegram-bot] openrouter model failed ${modelId}: ${modelErr}`);
     }
@@ -609,6 +700,7 @@ async function handleFreeText(chatId: number, from: any, text: string, tgMessage
     try {
       await svc().from("guest_sessions").update({ debug_last: { kind: "ai_result", at: new Date().toISOString(), ok: !!aiText, reply_len: aiText?.length ?? 0, used_model: usedModel, errors: modelErrors } }).eq("id", session.id);
     } catch (e) { console.error("[telegram-bot] debug_last result update failed:", e); }
+
     if (aiText) {
       const outText = aiText.length > 3800 ? aiText.slice(0, 3800) + "…" : aiText;
       await tgSendMessage(chatId, outText, { ...kb, parse_mode: undefined });
@@ -619,7 +711,9 @@ async function handleFreeText(chatId: number, from: any, text: string, tgMessage
     console.warn("[telegram-bot] AI enabled but call failed; falling back to manager relay");
   }
 
-  const reply = "Спасибо за сообщение! ✉️ Я передал его менеджеру — он скоро ответит.";
+  const reply = sessionAiEnabled
+    ? "Спасибо за сообщение! ✉️ Я передал его менеджеру — он скоро ответит."
+    : "Спасибо за сообщение! ✉️ Менеджер увидит его и ответит лично.";
   await tgSendMessage(chatId, reply, kb);
   await logMessage(session, "bot", reply, { kind: "ack" });
   await notifyManager(session.user_id, `💬 <b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>):\n\n${htmlEscape(text)}`, "notify_on_inbound");
@@ -653,9 +747,7 @@ async function handleUpdate(update: any) {
     await handleCommand(chatId, cmd, msg.from);
     return;
   }
-  if (text.trim()) {
-    await handleFreeText(chatId, msg.from, text, tgMessageId);
-  }
+  if (text.trim()) await handleFreeText(chatId, msg.from, text, tgMessageId);
 }
 
 async function endpointWebhook(req: Request): Promise<Response> {
@@ -692,7 +784,7 @@ async function endpointSend(req: Request): Promise<Response> {
   const tgRes = await tgSendMessage(session.tg_chat_id, text);
   if (!tgRes.ok) return json({ ok: false, error: "telegram_error", details: tgRes }, 502);
   const tgMessageId = tgRes?.result?.message_id ?? null;
-  await sb.from("guest_messages").insert({
+  const { error: insErr } = await sb.from("guest_messages").insert({
     user_id: session.user_id,
     session_id: session.id,
     booking_id: session.booking_id,
@@ -701,6 +793,7 @@ async function endpointSend(req: Request): Promise<Response> {
     payload: { tg_message_id: tgMessageId, via: "endpoint_send" },
     is_read_by_manager: true,
   });
+  if (insErr) console.error("[telegram-bot] endpointSend insert:", insErr.message);
   await sb.from("guest_sessions").update({ last_message_at: new Date().toISOString() }).eq("id", session.id);
   return json({ ok: true, tg_message_id: tgMessageId });
 }
@@ -731,4 +824,3 @@ Deno.serve(async (req) => {
     return json({ ok: false, error: "internal", message: String(e) }, 500);
   }
 });
-

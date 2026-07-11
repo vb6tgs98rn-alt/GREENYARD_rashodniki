@@ -4,6 +4,7 @@
 import { getSupabaseClient } from './supabase-client.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { openModal, closeModal, setStatus } from './render.js';
+import { getState } from './state.js';
 
 // Логические поля Green Yard, которые можно связать с keyword'ами в шаблоне Okidoki.
 export const LOGICAL_FIELDS = [
@@ -26,16 +27,13 @@ function readTokenFromStorage() {
     const raw = localStorage.getItem('gy-auth-session');
     if (!raw) return null;
     const s = JSON.parse(raw);
-    // supabase-js v2 хранит в виде { currentSession: {...} } или прямо {access_token}
     return s?.currentSession?.access_token || s?.access_token || null;
   } catch { return null; }
 }
 
 async function getAccessToken() {
-  // 1) прямо из localStorage (быстро, надёжно)
   const t1 = readTokenFromStorage();
   if (t1) return t1;
-  // 2) fallback — через SDK
   try {
     const supabase = getSupabaseClient();
     const { data } = await supabase.auth.getSession();
@@ -61,21 +59,15 @@ async function callProxy(action, payload = {}) {
   return data;
 }
 
-export async function validateApiKey(api_key) {
-  return callProxy('validate', { api_key });
-}
-export async function listTemplates() {
-  return callProxy('list_templates');
-}
-export async function listSignerCards() {
-  return callProxy('list_signer_cards');
-}
-export async function createContract(booking_id, extras = {}) {
-  return callProxy('create_contract', { booking_id, ...extras });
-}
-export async function listContracts(booking_id) {
-  return callProxy('list_contracts', { booking_id });
-}
+export async function validateApiKey(api_key)       { return callProxy('validate', { api_key }); }
+export async function listTemplates()                { return callProxy('list_templates'); }
+export async function listSignerCards()              { return callProxy('list_signer_cards'); }
+export async function createContract(booking_id, e={}) { return callProxy('create_contract', { booking_id, ...e }); }
+export async function listContracts(booking_id)      { return callProxy('list_contracts', { booking_id }); }
+
+export async function listApartmentTemplates()  { return callProxy('list_apartment_templates'); }
+export async function saveApartmentTemplate(p)  { return callProxy('save_apartment_template', p); }
+export async function deleteApartmentTemplate(realty_id) { return callProxy('delete_apartment_template', { realty_id }); }
 
 // Достаём user_id из JWT (decode payload) — без сетевого вызова.
 function getUidFromToken(token) {
@@ -99,7 +91,7 @@ export async function loadSettings() {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('manager_settings')
-    .select('okidoki_api_key, okidoki_template_id, okidoki_signer_card_id, okidoki_field_mapping, okidoki_auto_send, okidoki_verified_at')
+    .select('okidoki_api_key, okidoki_signer_card_id, okidoki_auto_send, okidoki_verified_at')
     .eq('user_id', uid)
     .maybeSingle();
   if (error) throw error;
@@ -127,11 +119,11 @@ function ensureModal() {
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <div class="modal-backdrop" id="okidokiModal" aria-hidden="true">
-      <div class="modal" style="width:min(720px,100%);max-height:92dvh;overflow-y:auto;padding:1rem;">
+      <div class="modal" style="width:min(760px,100%);max-height:92dvh;overflow-y:auto;padding:1rem;">
         <div class="section-head">
           <div>
             <h2 class="modal-title">Договоры (Okidoki)</h2>
-            <p class="muted" style="margin:0;">Автоматическое создание договоров при новых бронях. Данные из RealtyCalendar.</p>
+            <p class="muted" style="margin:0;">Автоматическое создание договоров при первом заходе гостя в бота. Шаблон задаётся отдельно для каждой квартиры.</p>
           </div>
           <button class="menu-toggle" id="okidokiClose" aria-label="Закрыть">✕</button>
         </div>
@@ -150,41 +142,60 @@ function ensureModal() {
 
         <div id="okidokiConfig" style="margin-top:1rem;display:none;">
           <label style="display:block;margin-bottom:.75rem;">
-            <span class="small">Шаблон договора</span>
-            <select id="okidokiTemplate" style="margin-top:.4rem;width:100%;"></select>
-          </label>
-
-          <label style="display:block;margin-bottom:.75rem;">
             <span class="small">Карточка подписанта (от чьего имени)</span>
             <select id="okidokiSigner" style="margin-top:.4rem;width:100%;"></select>
           </label>
 
-          <div style="margin-top:1rem;">
-            <div class="subsection-title" style="margin-bottom:.5rem;">
-              <h3 style="margin:0;">Сопоставление полей</h3>
-              <span class="small">Введите keyword из вашего шаблона Okidoki</span>
-            </div>
-            <div class="small" style="margin-bottom:.5rem;opacity:.7;">
-              Слева — данные из брони RealtyCalendar. Справа впишите точное название поля (keyword),
-              как оно называется в вашем шаблоне договора. Оставьте пустым, если поле не используется.
-            </div>
-            <div id="okidokiMapping" style="display:grid;gap:.5rem;"></div>
-          </div>
-
-          <label style="display:flex;align-items:center;gap:.5rem;margin-top:1rem;cursor:pointer;">
+          <label style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem;cursor:pointer;">
             <input id="okidokiAutoSend" type="checkbox" />
-            <span>Автоматически создавать договор при новой брони и слать ссылку гостю в Telegram</span>
+            <span>Автоматически отправлять ссылку на договор гостю при первом заходе в бот</span>
           </label>
+
+          <div class="subsection-title" style="margin-top:1.5rem;margin-bottom:.5rem;">
+            <h3 style="margin:0;">Квартиры и шаблоны договоров</h3>
+            <span class="small">Для каждой квартиры укажите свой шаблон Okidoki и сопоставление полей</span>
+          </div>
+          <div id="okidokiApartmentsList" style="display:grid;gap:.75rem;"></div>
 
           <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1.5rem;">
             <button class="btn btn-secondary" id="okidokiDisconnect" type="button">Отключить</button>
-            <button class="btn btn-primary" id="okidokiSave" type="button">Сохранить</button>
+            <button class="btn btn-primary" id="okidokiSave" type="button">Сохранить общие настройки</button>
           </div>
         </div>
       </div>
     </div>
+
+    <!-- Дочерняя модалка привязки шаблона к квартире -->
+    <div class="modal-backdrop" id="okidokiAptModal" aria-hidden="true">
+      <div class="modal" style="width:min(640px,100%);max-height:92dvh;overflow-y:auto;padding:1rem;">
+        <div class="section-head">
+          <div>
+            <h2 class="modal-title" id="okidokiAptTitle">Шаблон для квартиры</h2>
+            <p class="muted" id="okidokiAptSubtitle" style="margin:0;"></p>
+          </div>
+          <button class="menu-toggle" id="okidokiAptClose" aria-label="Закрыть">✕</button>
+        </div>
+
+        <label style="display:block;margin-top:1rem;margin-bottom:.75rem;">
+          <span class="small">Шаблон договора для этой квартиры</span>
+          <select id="okidokiAptTemplate" style="margin-top:.4rem;width:100%;"></select>
+        </label>
+
+        <div class="subsection-title" style="margin-top:1rem;margin-bottom:.5rem;">
+          <h3 style="margin:0;">Сопоставление полей брони с keyword'ами шаблона</h3>
+          <span class="small">Впишите точное название keyword как оно называется в шаблоне Okidoki. Оставьте пусто, если поле не используется.</span>
+        </div>
+        <div id="okidokiAptMapping" style="display:grid;gap:.5rem;"></div>
+
+        <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1.5rem;">
+          <button class="btn btn-secondary" id="okidokiAptDelete" type="button">Удалить привязку</button>
+          <button class="btn btn-primary" id="okidokiAptSave" type="button">Сохранить</button>
+        </div>
+      </div>
+    </div>
   `;
-  document.body.appendChild(wrap.firstElementChild);
+  document.body.appendChild(wrap.children[0]);
+  document.body.appendChild(wrap.children[0]);
 }
 
 function renderMappingRows(container, mapping = {}) {
@@ -196,28 +207,182 @@ function renderMappingRows(container, mapping = {}) {
   `).join('');
 }
 
-async function refreshTemplateAndSigner(currentTemplateId, currentSignerId) {
-  const tplSel = document.getElementById('okidokiTemplate');
+let cachedTemplates = null;
+let cachedCards = null;
+
+async function loadTemplatesAndCards(force = false) {
+  if (!force && cachedTemplates && cachedCards) return { templates: cachedTemplates, cards: cachedCards };
+  const [tplData, cardData] = await Promise.all([listTemplates(), listSignerCards()]);
+  cachedTemplates = tplData?.templates || [];
+  cachedCards = cardData?.additional_user_cards || [];
+  return { templates: cachedTemplates, cards: cachedCards };
+}
+
+async function refreshSignerSelect(currentSignerId) {
   const signSel = document.getElementById('okidokiSigner');
-  tplSel.innerHTML = '<option>Загружаем шаблоны…</option>';
   signSel.innerHTML = '<option>Загружаем карточки…</option>';
   try {
-    const [tplData, cardData] = await Promise.all([listTemplates(), listSignerCards()]);
-    const tpls = tplData?.templates || [];
-    tplSel.innerHTML = tpls.map(t =>
-      `<option value="${esc(t.template_id)}" ${t.template_id === currentTemplateId ? 'selected' : ''}>${esc(t.template_full_name || t.template_name)}</option>`
-    ).join('') || '<option value="">— шаблонов нет —</option>';
-
-    const cards = cardData?.additional_user_cards || [];
+    const { cards } = await loadTemplatesAndCards();
     signSel.innerHTML = `<option value="">Основная карточка профиля</option>` + cards.map(c => {
       const id = c?._id?.$oid || c?._id || '';
       const name = [c.last_name, c.first_name, c.middle_name].filter(Boolean).join(' ') || c.law_name || id;
       return `<option value="${esc(id)}" ${id === currentSignerId ? 'selected' : ''}>${esc(name)}</option>`;
     }).join('');
   } catch (err) {
-    tplSel.innerHTML = `<option>Ошибка: ${esc(err.message)}</option>`;
-    signSel.innerHTML = '';
+    signSel.innerHTML = `<option>Ошибка: ${esc(err.message)}</option>`;
   }
+}
+
+// ─── Список квартир с их привязками ─────────────────────────────────────
+async function renderApartmentsList() {
+  const cont = document.getElementById('okidokiApartmentsList');
+  if (!cont) return;
+  cont.innerHTML = '<div class="small" style="opacity:.7;">Загружаем…</div>';
+
+  const st = getState();
+  const apartments = (st?.apartments || []).filter(a => {
+    // Только те квартиры, что связаны с RealtyCalendar (у остальных бронь не может прийти автоматически)
+    return a?.externalIds?.realtyCalendarUnitId;
+  });
+
+  let items = [];
+  try {
+    const r = await listApartmentTemplates();
+    items = r?.items || [];
+  } catch (e) {
+    cont.innerHTML = `<div class="small" style="color:#c66;">Ошибка загрузки привязок: ${esc(e.message)}</div>`;
+    return;
+  }
+
+  const byRealty = new Map();
+  for (const it of items) byRealty.set(String(it.realty_id), it);
+
+  const templates = cachedTemplates || [];
+  const tplNameById = new Map(templates.map(t => [t.template_id, t.template_full_name || t.template_name]));
+
+  if (!apartments.length) {
+    cont.innerHTML = `<div class="small" style="opacity:.75;">
+      Не найдено квартир, связанных с RealtyCalendar. Синхронизируйте квартиру с RC через
+      «Управление» → «Синхронизация квартир».
+    </div>`;
+    return;
+  }
+
+  cont.innerHTML = apartments.map(a => {
+    const realtyId = String(a.externalIds.realtyCalendarUnitId);
+    const bind = byRealty.get(realtyId);
+    const templateName = bind ? (tplNameById.get(bind.okidoki_template_id) || bind.okidoki_template_id) : '';
+    const status = bind
+      ? `<span style="color:#7fbf7f;">✓ Шаблон: <b>${esc(templateName)}</b></span>`
+      : `<span style="color:#c88;">⚠ Шаблон не выбран</span>`;
+    return `
+      <div style="border:1px solid var(--border,#3a3a3a);border-radius:.6rem;padding:.6rem .75rem;display:flex;justify-content:space-between;align-items:center;gap:.5rem;flex-wrap:wrap;">
+        <div style="flex:1;min-width:200px;">
+          <div><b>${esc(a.title)}</b></div>
+          <div class="small" style="opacity:.8;margin-top:.15rem;">${status}</div>
+        </div>
+        <button class="btn btn-secondary" type="button"
+                data-apt-realty="${esc(realtyId)}"
+                data-apt-name="${esc(a.title)}">
+          ${bind ? 'Изменить' : 'Настроить'}
+        </button>
+      </div>
+    `;
+  }).join('');
+
+  // Bind buttons
+  cont.querySelectorAll('button[data-apt-realty]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      openApartmentTemplateModal(btn.dataset.aptRealty, btn.dataset.aptName);
+    });
+  });
+}
+
+async function openApartmentTemplateModal(realtyId, apartmentName) {
+  const modal = document.getElementById('okidokiAptModal');
+  const titleEl = document.getElementById('okidokiAptTitle');
+  const subEl   = document.getElementById('okidokiAptSubtitle');
+  const tplSel  = document.getElementById('okidokiAptTemplate');
+  const mapCont = document.getElementById('okidokiAptMapping');
+  const saveBtn = document.getElementById('okidokiAptSave');
+  const delBtn  = document.getElementById('okidokiAptDelete');
+  const closeBtn = document.getElementById('okidokiAptClose');
+
+  titleEl.textContent = `Шаблон: ${apartmentName}`;
+  subEl.textContent = `realty_id = ${realtyId}`;
+
+  // Достаём текущую привязку
+  let current = null;
+  try {
+    const r = await listApartmentTemplates();
+    current = (r?.items || []).find(x => String(x.realty_id) === String(realtyId)) || null;
+  } catch (e) {
+    setStatus('Ошибка загрузки: ' + e.message, 'error');
+  }
+
+  // Шаблоны
+  tplSel.innerHTML = '<option>Загружаем…</option>';
+  try {
+    const { templates } = await loadTemplatesAndCards();
+    tplSel.innerHTML = '<option value="">— не выбрано —</option>' + templates.map(t =>
+      `<option value="${esc(t.template_id)}" ${t.template_id === current?.okidoki_template_id ? 'selected' : ''}>${esc(t.template_full_name || t.template_name)}</option>`
+    ).join('');
+  } catch (e) {
+    tplSel.innerHTML = `<option>Ошибка: ${esc(e.message)}</option>`;
+  }
+
+  renderMappingRows(mapCont, current?.field_mapping || {});
+  delBtn.style.display = current ? 'inline-flex' : 'none';
+
+  // Modal open (простой показ)
+  modal.setAttribute('aria-hidden', 'false');
+  modal.style.display = 'flex';
+
+  const close = () => { modal.setAttribute('aria-hidden', 'true'); modal.style.display = 'none'; };
+
+  // Reset handlers (навешиваем каждый раз, но снимаем через cloneNode)
+  const rebind = (el, fn) => {
+    const c = el.cloneNode(true);
+    el.parentNode.replaceChild(c, el);
+    c.addEventListener('click', fn);
+    return c;
+  };
+
+  rebind(closeBtn, close);
+  rebind(saveBtn, async () => {
+    const template_id = document.getElementById('okidokiAptTemplate').value;
+    if (!template_id) { setStatus('Выберите шаблон', 'error'); return; }
+    const mapping = {};
+    document.getElementById('okidokiAptMapping').querySelectorAll('input[data-mapping-key]').forEach(inp => {
+      const k = inp.dataset.mappingKey;
+      const v = inp.value.trim();
+      if (v) mapping[k] = v;
+    });
+    try {
+      await saveApartmentTemplate({
+        realty_id: Number(realtyId),
+        apartment_name: apartmentName,
+        okidoki_template_id: template_id,
+        field_mapping: mapping,
+      });
+      setStatus('Шаблон квартиры сохранён', 'success');
+      close();
+      await renderApartmentsList();
+    } catch (e) {
+      setStatus('Ошибка сохранения: ' + e.message, 'error');
+    }
+  });
+  rebind(delBtn, async () => {
+    if (!confirm(`Удалить привязку шаблона для квартиры «${apartmentName}»?`)) return;
+    try {
+      await deleteApartmentTemplate(Number(realtyId));
+      setStatus('Привязка удалена', 'success');
+      close();
+      await renderApartmentsList();
+    } catch (e) {
+      setStatus('Ошибка: ' + e.message, 'error');
+    }
+  });
 }
 
 export async function openOkidokiSettings() {
@@ -229,7 +394,6 @@ export async function openOkidokiSettings() {
   const validateBtn = document.getElementById('okidokiValidate');
   const closeBtn   = document.getElementById('okidokiClose');
   const config     = document.getElementById('okidokiConfig');
-  const mapCont    = document.getElementById('okidokiMapping');
   const autoSend   = document.getElementById('okidokiAutoSend');
   const saveBtn    = document.getElementById('okidokiSave');
   const disconnectBtn = document.getElementById('okidokiDisconnect');
@@ -240,7 +404,8 @@ export async function openOkidokiSettings() {
 
   keyInput.value = settings.okidoki_api_key || '';
   autoSend.checked = !!settings.okidoki_auto_send;
-  renderMappingRows(mapCont, settings.okidoki_field_mapping || {});
+
+  cachedTemplates = null; cachedCards = null;   // сбрасываем кэш при открытии
 
   if (settings.okidoki_api_key) {
     config.style.display = 'block';
@@ -248,7 +413,8 @@ export async function openOkidokiSettings() {
       ? `✓ Ключ сохранён (проверен ${new Date(settings.okidoki_verified_at).toLocaleString('ru-RU')})`
       : '✓ Ключ сохранён';
     keyStatus.style.color = '#7fbf7f';
-    await refreshTemplateAndSigner(settings.okidoki_template_id, settings.okidoki_signer_card_id);
+    await refreshSignerSelect(settings.okidoki_signer_card_id);
+    await renderApartmentsList();
   }
 
   openModal('okidokiModal');
@@ -272,10 +438,11 @@ export async function openOkidokiSettings() {
         if (r?.valid) {
           keyStatus.textContent = `✓ Ключ работает (oki user_id: ${r.oki_user_id})`;
           keyStatus.style.color = '#7fbf7f';
-          // Сохраняем ключ сразу — чтобы дальше можно было тянуть шаблоны
           await saveSettings({ okidoki_api_key: k, okidoki_verified_at: new Date().toISOString() });
           config.style.display = 'block';
-          await refreshTemplateAndSigner(settings.okidoki_template_id, settings.okidoki_signer_card_id);
+          cachedTemplates = null; cachedCards = null;
+          await refreshSignerSelect(settings.okidoki_signer_card_id);
+          await renderApartmentsList();
         } else {
           keyStatus.textContent = `⚠ Ключ не работает (${r?.status || 'error'}): ${JSON.stringify(r?.data || '')}`;
           keyStatus.style.color = '#c66';
@@ -287,23 +454,13 @@ export async function openOkidokiSettings() {
     });
 
     saveBtn.addEventListener('click', async () => {
-      const tplSel = document.getElementById('okidokiTemplate');
       const signSel = document.getElementById('okidokiSigner');
-      const mapping = {};
-      mapCont.querySelectorAll('input[data-mapping-key]').forEach(inp => {
-        const k = inp.dataset.mappingKey;
-        const v = inp.value.trim();
-        if (v) mapping[k] = v;
-      });
       try {
         await saveSettings({
-          okidoki_template_id: tplSel.value || null,
           okidoki_signer_card_id: signSel.value || null,
-          okidoki_field_mapping: mapping,
           okidoki_auto_send: autoSend.checked,
         });
-        setStatus('Настройки Okidoki сохранены', 'success');
-        closeModal('okidokiModal');
+        setStatus('Общие настройки Okidoki сохранены', 'success');
       } catch (err) {
         setStatus('Ошибка сохранения: ' + err.message, 'error');
       }
@@ -313,8 +470,8 @@ export async function openOkidokiSettings() {
       if (!confirm('Отключить интеграцию с Okidoki? API-ключ будет удалён.')) return;
       try {
         await saveSettings({
-          okidoki_api_key: null, okidoki_template_id: null, okidoki_signer_card_id: null,
-          okidoki_field_mapping: {}, okidoki_auto_send: false, okidoki_verified_at: null,
+          okidoki_api_key: null, okidoki_signer_card_id: null,
+          okidoki_auto_send: false, okidoki_verified_at: null,
         });
         setStatus('Интеграция отключена', 'success');
         closeModal('okidokiModal');

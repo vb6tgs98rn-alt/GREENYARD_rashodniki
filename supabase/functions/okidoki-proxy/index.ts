@@ -28,13 +28,12 @@ async function getUserAndSettings(auth: string | null) {
   if (!user) return { user: null, key: null, settings: null };
   const { data: settings } = await supa
     .from("manager_settings")
-    .select("okidoki_api_key, okidoki_template_id, okidoki_signer_card_id, okidoki_field_mapping, okidoki_auto_send")
+    .select("okidoki_api_key, okidoki_signer_card_id, okidoki_auto_send")
     .eq("user_id", user.id)
     .maybeSingle();
   return { user, key: settings?.okidoki_api_key ?? null, settings, supa };
 }
 
-// Универсальный fetch с таймаутом
 async function oki(path: string, method: "GET" | "POST", api_key: string, body?: unknown, timeoutMs = 15000) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
@@ -95,7 +94,6 @@ Deno.serve(async (req) => {
     return json(200, { valid: true, oki_user_id: r.data?.user_id });
   }
 
-  // Все остальные действия требуют сохранённый ключ
   if (!key) return json(400, { error: "api_key not configured" });
 
   if (action === "list_templates") {
@@ -114,7 +112,40 @@ Deno.serve(async (req) => {
     return json(r.ok ? 200 : 502, r.data);
   }
 
-  // Создать договор для конкретной брони
+  // ─── Привязка квартир к шаблонам ─────────────────────────────────────
+  if (action === "list_apartment_templates") {
+    const { data } = await supa!
+      .from("apartment_contract_templates")
+      .select("realty_id, apartment_name, okidoki_template_id, field_mapping, updated_at")
+      .eq("user_id", user.id);
+    return json(200, { items: data || [] });
+  }
+
+  if (action === "save_apartment_template") {
+    const { realty_id, apartment_name, okidoki_template_id, field_mapping } = payload;
+    if (!realty_id || !okidoki_template_id) return json(400, { error: "realty_id и okidoki_template_id обязательны" });
+    const { error } = await supa!.from("apartment_contract_templates").upsert({
+      user_id: user.id,
+      realty_id,
+      apartment_name: apartment_name || null,
+      okidoki_template_id,
+      field_mapping: field_mapping || {},
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "user_id,realty_id" });
+    if (error) return json(500, { error: error.message });
+    return json(200, { ok: true });
+  }
+
+  if (action === "delete_apartment_template") {
+    const { realty_id } = payload;
+    if (!realty_id) return json(400, { error: "realty_id required" });
+    const { error } = await supa!.from("apartment_contract_templates")
+      .delete().eq("user_id", user.id).eq("realty_id", realty_id);
+    if (error) return json(500, { error: error.message });
+    return json(200, { ok: true });
+  }
+
+  // ─── Создание договора ───────────────────────────────────────────────
   if (action === "create_contract") {
     const booking_id = payload.booking_id;
     if (!booking_id) return json(400, { error: "booking_id required" });
@@ -127,10 +158,22 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (bkErr || !bk) return json(404, { error: "booking not found" });
 
-    const template_id = payload.template_id || settings?.okidoki_template_id;
-    if (!template_id) return json(400, { error: "template_id not set (choose one in settings)" });
+    // Ищем шаблон для этой квартиры (по realty_id)
+    const { data: apt } = await supa!
+      .from("apartment_contract_templates")
+      .select("okidoki_template_id, field_mapping")
+      .eq("user_id", user.id)
+      .eq("realty_id", bk.realty_id)
+      .maybeSingle();
 
-    const mapping: Record<string, string> = settings?.okidoki_field_mapping || {};
+    const template_id = payload.template_id || apt?.okidoki_template_id;
+    if (!template_id) {
+      return json(400, {
+        error: `Для квартиры «${bk.apartment_title || bk.realty_id}» не назначен шаблон договора. Откройте «Договоры (Okidoki)» → «Квартиры и шаблоны».`,
+      });
+    }
+
+    const mapping: Record<string, string> = apt?.field_mapping || {};
 
     const nights = Math.max(1, Math.round(
       (new Date(bk.end_date).getTime() - new Date(bk.begin_date).getTime()) / (1000 * 60 * 60 * 24)
@@ -140,7 +183,6 @@ Deno.serve(async (req) => {
     const remaining = Math.max(0, priceTotal - prepaid);
     const pricePerNight = nights > 0 ? Math.round((priceTotal / nights) * 100) / 100 : priceTotal;
 
-    // Стандартные логические поля → значения. Пользователь через mapping связывает их с keyword'ами шаблона.
     const logical: Record<string, string> = {
       begin_date:      ddmmyyyy(bk.begin_date),
       end_date:        ddmmyyyy(bk.end_date),
@@ -155,7 +197,6 @@ Deno.serve(async (req) => {
       apartment_description: String(payload.apartment_description ?? ""),
     };
 
-    // Собираем entities: только те, для которых пользователь настроил keyword в шаблоне
     const entities: Array<{ keyword: string; value: string }> = [];
     for (const [logicalKey, keyword] of Object.entries(mapping)) {
       if (!keyword) continue;
@@ -164,7 +205,6 @@ Deno.serve(async (req) => {
       entities.push({ keyword: String(keyword), value: v });
     }
 
-    // system_entities — данные гостя (если известны)
     const system_entities: Array<{ keyword: string; value: string }> = [];
     if (bk.client_fio) {
       const parts = String(bk.client_fio).trim().split(/\s+/);
@@ -208,7 +248,6 @@ Deno.serve(async (req) => {
     return json(200, { link, contract_id, status: r.data?.status });
   }
 
-  // Получить список договоров по booking_id
   if (action === "list_contracts") {
     const external_id = String(payload.external_id || payload.booking_id || "");
     if (!external_id) return json(400, { error: "external_id required" });
