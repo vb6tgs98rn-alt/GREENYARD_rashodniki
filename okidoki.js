@@ -2,7 +2,7 @@
 // Все запросы идут через Edge Function okidoki-proxy — api_key на клиенте не хранится.
 
 import { getSupabaseClient } from './supabase-client.js';
-import { SUPABASE_URL } from './config.js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { openModal, closeModal, setStatus } from './render.js';
 
 // Логические поля Green Yard, которые можно связать с keyword'ами в шаблоне Okidoki.
@@ -20,16 +20,38 @@ export const LOGICAL_FIELDS = [
   { key: 'apartment_description', label: 'Описание квартиры' },
 ];
 
+// Читаем access_token напрямую из localStorage — так же, как в чатах (из-за iOS Safari).
+function readTokenFromStorage() {
+  try {
+    const raw = localStorage.getItem('gy-auth-session');
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    // supabase-js v2 хранит в виде { currentSession: {...} } или прямо {access_token}
+    return s?.currentSession?.access_token || s?.access_token || null;
+  } catch { return null; }
+}
+
+async function getAccessToken() {
+  // 1) прямо из localStorage (быстро, надёжно)
+  const t1 = readTokenFromStorage();
+  if (t1) return t1;
+  // 2) fallback — через SDK
+  try {
+    const supabase = getSupabaseClient();
+    const { data } = await supabase.auth.getSession();
+    return data?.session?.access_token || null;
+  } catch { return null; }
+}
+
 // Вызов okidoki-proxy с JWT
 async function callProxy(action, payload = {}) {
-  const supabase = getSupabaseClient();
-  const { data: sess } = await supabase.auth.getSession();
-  const token = sess?.session?.access_token;
-  if (!token) throw new Error('не авторизованы');
+  const token = await getAccessToken();
+  if (!token) throw new Error('не авторизованы (войдите в аккаунт через email)');
   const res = await fetch(`${SUPABASE_URL}/functions/v1/okidoki-proxy`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
+      apikey: SUPABASE_ANON_KEY,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ action, ...payload }),
@@ -55,25 +77,39 @@ export async function listContracts(booking_id) {
   return callProxy('list_contracts', { booking_id });
 }
 
+// Достаём user_id из JWT (decode payload) — без сетевого вызова.
+function getUidFromToken(token) {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+    return payload?.sub || null;
+  } catch { return null; }
+}
+
+async function requireAuth() {
+  const token = await getAccessToken();
+  if (!token) throw new Error('не авторизованы (войдите в аккаунт через email)');
+  const uid = getUidFromToken(token);
+  if (!uid) throw new Error('не удалось прочитать user_id из сессии');
+  return { token, uid };
+}
+
 // Прямой доступ к настройкам пользователя (для UI формы)
 export async function loadSettings() {
+  const { uid } = await requireAuth();
   const supabase = getSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('не авторизованы');
   const { data, error } = await supabase
     .from('manager_settings')
     .select('okidoki_api_key, okidoki_template_id, okidoki_signer_card_id, okidoki_field_mapping, okidoki_auto_send, okidoki_verified_at')
-    .eq('user_id', user.id)
+    .eq('user_id', uid)
     .maybeSingle();
   if (error) throw error;
   return data || {};
 }
 export async function saveSettings(patch) {
+  const { uid } = await requireAuth();
   const supabase = getSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('не авторизованы');
   const { error } = await supabase.from('manager_settings').upsert({
-    user_id: user.id,
+    user_id: uid,
     ...patch,
     updated_at: new Date().toISOString(),
   }, { onConflict: 'user_id' });
