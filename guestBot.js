@@ -776,15 +776,15 @@ async function renderActiveChat() {
       : (meta.client_fio ? esc(meta.client_fio) : 'Гость');
     const aiOn = meta.ai_enabled !== false;
     head.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;flex-wrap:wrap;">
-        <div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:.75rem;flex-wrap:wrap;">
+        <div style="min-width:0;">
           <div><b>${name}</b> · ${esc(meta.apartment_title || '')}</div>
           <div class="small" style="opacity:.7;">${esc(meta.begin_date ? fmtDate(meta.begin_date) + ' → ' + fmtDate(meta.end_date) : '')}</div>
         </div>
-        <label class="chat-ai-toggle small" title="Когда выключено — бот не отвечает гостю сам, вы отвечаете вручную." style="display:inline-flex;align-items:center;gap:.4rem;cursor:pointer;">
-          <input type="checkbox" id="chatAiToggle" ${aiOn ? 'checked' : ''} />
-          <span>🤖 AI ${aiOn ? 'вкл' : 'выкл'}</span>
-        </label>
+        <button type="button" id="chatAiToggle" data-ai-on="${aiOn ? '1' : '0'}" title="Когда выкл — бот не отвечает гостю сам, вы отвечаете вручную." style="display:inline-flex;align-items:center;gap:.5rem;padding:.4rem .8rem;border-radius:999px;border:1px solid ${aiOn ? '#4ea881' : '#666'};background:${aiOn ? 'rgba(78,168,129,.15)' : 'rgba(120,120,120,.15)'};color:${aiOn ? '#4ea881' : '#aaa'};font-weight:600;font-size:.85rem;cursor:pointer;white-space:nowrap;">
+          <span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${aiOn ? '#4ea881' : '#888'};"></span>
+          🤖 AI-бот ${aiOn ? 'ВКЛ' : 'ВЫКЛ'}
+        </button>
       </div>
     `;
   }
@@ -1161,18 +1161,19 @@ export function bindGuestBotEvents(state) {
       await renderActiveChat();
       return;
     }
-    if (e.target.closest('#chatAiToggle') && e.target.id === 'chatAiToggle') {
+    const aiBtn = e.target.closest('#chatAiToggle');
+    if (aiBtn) {
       const sid = _chatsState.activeSessionId;
       if (!sid) return;
-      const enabled = !!e.target.checked;
+      const wasOn = aiBtn.getAttribute('data-ai-on') === '1';
+      const nextOn = !wasOn;
       try {
-        await setChatAiEnabled(sid, enabled);
+        await setChatAiEnabled(sid, nextOn);
         const meta = _chatsState.items.find(c => c.session_id === sid);
-        if (meta) meta.ai_enabled = enabled;
+        if (meta) meta.ai_enabled = nextOn;
         await renderActiveChat();
       } catch (err) {
         alert('Не удалось переключить AI: ' + (err?.message || err));
-        e.target.checked = !enabled;
       }
       return;
     }
