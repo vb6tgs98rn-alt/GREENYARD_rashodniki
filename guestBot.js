@@ -708,13 +708,46 @@ function ensureInstructionsModal() {
 // 8) Раздел «Чаты с гостями»
 // ─────────────────────────────────────────────────────────────────────────────
 
-let _chatsState = { items: [], activeSessionId: null, realtimeChannel: null };
+let _chatsState = { items: [], activeSessionId: null, realtimeChannel: null, pollTimer: null };
 
 export async function openChatsModal() {
   ensureChatsModal();
   openModal('guestChatsModal');
   await reloadChats();
   await attachRealtimeForChats();
+  startChatsPolling();
+}
+
+// Polling как fallback на случай если realtime не работает — каждые 5 секунд.
+function startChatsPolling() {
+  if (_chatsState.pollTimer) return;
+  _chatsState.pollTimer = setInterval(async () => {
+    // Не полим если модалка закрыта
+    const modal = document.getElementById('guestChatsModal');
+    if (!modal || modal.getAttribute('aria-hidden') === 'true') return;
+    try {
+      const chats = await fetchGuestChats();
+      // Проверяем, есть ли изменения (по last_message_at)
+      const sig = chats.map(c => `${c.session_id}:${c.last_message_at || ''}`).join('|');
+      const prevSig = _chatsState.items.map(c => `${c.session_id}:${c.last_message_at || ''}`).join('|');
+      if (sig !== prevSig) {
+        _chatsState.items = chats;
+        renderChatsList();
+        if (_chatsState.activeSessionId) {
+          await renderActiveChat();
+        }
+      }
+    } catch (err) {
+      console.warn('[bot] polling:', err?.message || err);
+    }
+  }, 5000);
+}
+
+function stopChatsPolling() {
+  if (_chatsState.pollTimer) {
+    clearInterval(_chatsState.pollTimer);
+    _chatsState.pollTimer = null;
+  }
 }
 
 async function reloadChats() {
@@ -777,9 +810,12 @@ async function renderActiveChat() {
     const aiOn = meta.ai_enabled !== false;
     head.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;gap:.75rem;flex-wrap:wrap;">
-        <div style="min-width:0;">
-          <div><b>${name}</b> · ${esc(meta.apartment_title || '')}</div>
-          <div class="small" style="opacity:.7;">${esc(meta.begin_date ? fmtDate(meta.begin_date) + ' → ' + fmtDate(meta.end_date) : '')}</div>
+        <div style="display:flex;align-items:center;gap:.5rem;min-width:0;">
+          <button type="button" id="chatBackBtn" title="К списку чатов" style="padding:.35rem .6rem;border-radius:8px;border:1px solid #555;background:transparent;color:#ddd;cursor:pointer;font-size:.9rem;">← К списку</button>
+          <div style="min-width:0;">
+            <div><b>${name}</b> · ${esc(meta.apartment_title || '')}</div>
+            <div class="small" style="opacity:.7;">${esc(meta.begin_date ? fmtDate(meta.begin_date) + ' → ' + fmtDate(meta.end_date) : '')}</div>
+          </div>
         </div>
         <button type="button" id="chatAiToggle" data-ai-on="${aiOn ? '1' : '0'}" title="Когда выкл — бот не отвечает гостю сам, вы отвечаете вручную." style="display:inline-flex;align-items:center;gap:.5rem;padding:.4rem .8rem;border-radius:999px;border:1px solid ${aiOn ? '#4ea881' : '#666'};background:${aiOn ? 'rgba(78,168,129,.15)' : 'rgba(120,120,120,.15)'};color:${aiOn ? '#4ea881' : '#aaa'};font-weight:600;font-size:.85rem;cursor:pointer;white-space:nowrap;">
           <span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${aiOn ? '#4ea881' : '#888'};"></span>
@@ -787,6 +823,8 @@ async function renderActiveChat() {
         </button>
       </div>
     `;
+    // Мобильный: прокрутим к активному чату
+    try { head.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch {}
   }
   if (composer) composer.style.display = 'flex';
 
@@ -883,6 +921,7 @@ export function detachRealtimeForChats() {
     try { supabase.removeChannel(_chatsState.realtimeChannel); } catch {}
     _chatsState.realtimeChannel = null;
   }
+  stopChatsPolling();
 }
 
 function ensureChatsModal() {
@@ -1185,6 +1224,19 @@ export function bindGuestBotEvents(state) {
     if (e.target.closest('#closeChatsModal')) {
       closeModal('guestChatsModal');
       detachRealtimeForChats();
+      return;
+    }
+    if (e.target.closest('#chatBackBtn')) {
+      _chatsState.activeSessionId = null;
+      const head = document.getElementById('chatThreadHead');
+      const box = document.getElementById('chatThreadBox');
+      const composer = document.getElementById('chatComposer');
+      if (head) head.innerHTML = '';
+      if (box) box.innerHTML = '';
+      if (composer) composer.style.display = 'none';
+      renderChatsList();
+      // Прокрутим к списку (мобильный)
+      try { document.getElementById('chatsListBox')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch {}
       return;
     }
     const chatRow = e.target.closest('[data-chat-session]');
