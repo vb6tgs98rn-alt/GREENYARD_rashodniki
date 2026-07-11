@@ -91,7 +91,7 @@ export async function loadSettings() {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('manager_settings')
-    .select('okidoki_api_key, okidoki_signer_card_id, okidoki_auto_send, okidoki_verified_at')
+    .select('okidoki_api_key, okidoki_signer_card_id, okidoki_auto_send, okidoki_verified_at, okidoki_field_mapping')
     .eq('user_id', uid)
     .maybeSingle();
   if (error) throw error;
@@ -152,8 +152,17 @@ function ensureModal() {
           </label>
 
           <div class="subsection-title" style="margin-top:1.5rem;margin-bottom:.5rem;">
+            <h3 style="margin:0;">Сопоставление полей (общее)</h3>
+            <span class="small">Keyword'ы одинаковые во всех шаблонах — введите один раз.</span>
+          </div>
+          <div class="small" style="margin-bottom:.5rem;opacity:.7;">
+            Слева — данные брони. Справа впишите точное название keyword в вашем шаблоне Okidoki. Пустое — поле не используется.
+          </div>
+          <div id="okidokiMapping" style="display:grid;gap:.5rem;"></div>
+
+          <div class="subsection-title" style="margin-top:1.5rem;margin-bottom:.5rem;">
             <h3 style="margin:0;">Квартиры и шаблоны договоров</h3>
-            <span class="small">Для каждой квартиры укажите свой шаблон Okidoki и сопоставление полей</span>
+            <span class="small">Для каждой квартиры — свой шаблон Okidoki. Keyword'ы берутся из общего сопоставления выше.</span>
           </div>
           <div id="okidokiApartmentsList" style="display:grid;gap:.75rem;"></div>
 
@@ -181,11 +190,9 @@ function ensureModal() {
           <select id="okidokiAptTemplate" style="margin-top:.4rem;width:100%;"></select>
         </label>
 
-        <div class="subsection-title" style="margin-top:1rem;margin-bottom:.5rem;">
-          <h3 style="margin:0;">Сопоставление полей брони с keyword'ами шаблона</h3>
-          <span class="small">Впишите точное название keyword как оно называется в шаблоне Okidoki. Оставьте пусто, если поле не используется.</span>
+        <div class="small" style="margin-top:.5rem;opacity:.7;">
+          Сопоставление keyword'ов берётся из общих настроек Okidoki. Здесь настраивается только выбор шаблона.
         </div>
-        <div id="okidokiAptMapping" style="display:grid;gap:.5rem;"></div>
 
         <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1.5rem;">
           <button class="btn btn-secondary" id="okidokiAptDelete" type="button">Удалить привязку</button>
@@ -303,7 +310,6 @@ async function openApartmentTemplateModal(realtyId, apartmentName) {
   const titleEl = document.getElementById('okidokiAptTitle');
   const subEl   = document.getElementById('okidokiAptSubtitle');
   const tplSel  = document.getElementById('okidokiAptTemplate');
-  const mapCont = document.getElementById('okidokiAptMapping');
   const saveBtn = document.getElementById('okidokiAptSave');
   const delBtn  = document.getElementById('okidokiAptDelete');
   const closeBtn = document.getElementById('okidokiAptClose');
@@ -331,7 +337,6 @@ async function openApartmentTemplateModal(realtyId, apartmentName) {
     tplSel.innerHTML = `<option>Ошибка: ${esc(e.message)}</option>`;
   }
 
-  renderMappingRows(mapCont, current?.field_mapping || {});
   delBtn.style.display = current ? 'inline-flex' : 'none';
 
   // Modal open (простой показ)
@@ -352,18 +357,12 @@ async function openApartmentTemplateModal(realtyId, apartmentName) {
   rebind(saveBtn, async () => {
     const template_id = document.getElementById('okidokiAptTemplate').value;
     if (!template_id) { setStatus('Выберите шаблон', 'error'); return; }
-    const mapping = {};
-    document.getElementById('okidokiAptMapping').querySelectorAll('input[data-mapping-key]').forEach(inp => {
-      const k = inp.dataset.mappingKey;
-      const v = inp.value.trim();
-      if (v) mapping[k] = v;
-    });
     try {
       await saveApartmentTemplate({
         realty_id: Number(realtyId),
         apartment_name: apartmentName,
         okidoki_template_id: template_id,
-        field_mapping: mapping,
+        field_mapping: {},
       });
       setStatus('Шаблон квартиры сохранён', 'success');
       close();
@@ -404,6 +403,8 @@ export async function openOkidokiSettings() {
 
   keyInput.value = settings.okidoki_api_key || '';
   autoSend.checked = !!settings.okidoki_auto_send;
+  const mapCont = document.getElementById('okidokiMapping');
+  renderMappingRows(mapCont, settings.okidoki_field_mapping || {});
 
   cachedTemplates = null; cachedCards = null;   // сбрасываем кэш при открытии
 
@@ -455,10 +456,17 @@ export async function openOkidokiSettings() {
 
     saveBtn.addEventListener('click', async () => {
       const signSel = document.getElementById('okidokiSigner');
+      const mapping = {};
+      document.getElementById('okidokiMapping').querySelectorAll('input[data-mapping-key]').forEach(inp => {
+        const k = inp.dataset.mappingKey;
+        const v = inp.value.trim();
+        if (v) mapping[k] = v;
+      });
       try {
         await saveSettings({
           okidoki_signer_card_id: signSel.value || null,
           okidoki_auto_send: autoSend.checked,
+          okidoki_field_mapping: mapping,
         });
         setStatus('Общие настройки Okidoki сохранены', 'success');
       } catch (err) {
@@ -472,6 +480,7 @@ export async function openOkidokiSettings() {
         await saveSettings({
           okidoki_api_key: null, okidoki_signer_card_id: null,
           okidoki_auto_send: false, okidoki_verified_at: null,
+          okidoki_field_mapping: {},
         });
         setStatus('Интеграция отключена', 'success');
         closeModal('okidokiModal');

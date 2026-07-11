@@ -28,7 +28,7 @@ async function getUserAndSettings(auth: string | null) {
   if (!user) return { user: null, key: null, settings: null };
   const { data: settings } = await supa
     .from("manager_settings")
-    .select("okidoki_api_key, okidoki_signer_card_id, okidoki_auto_send")
+    .select("okidoki_api_key, okidoki_signer_card_id, okidoki_auto_send, okidoki_field_mapping")
     .eq("user_id", user.id)
     .maybeSingle();
   return { user, key: settings?.okidoki_api_key ?? null, settings, supa };
@@ -173,7 +173,11 @@ Deno.serve(async (req) => {
       });
     }
 
-    const mapping: Record<string, string> = apt?.field_mapping || {};
+    // Глобальный mapping из manager_settings (keyword'ы одинаковые у всех шаблонов).
+    // Per-apartment field_mapping (если задан) переопределяет глобальный.
+    const globalMapping: Record<string, string> = (settings?.okidoki_field_mapping as any) || {};
+    const aptMapping: Record<string, string> = apt?.field_mapping || {};
+    const mapping: Record<string, string> = { ...globalMapping, ...aptMapping };
 
     const nights = Math.max(1, Math.round(
       (new Date(bk.end_date).getTime() - new Date(bk.begin_date).getTime()) / (1000 * 60 * 60 * 24)

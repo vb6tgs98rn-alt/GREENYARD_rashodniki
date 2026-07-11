@@ -409,7 +409,7 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
 
   const { data: ms } = await sb
     .from("manager_settings")
-    .select("okidoki_api_key, okidoki_signer_card_id, okidoki_auto_send")
+    .select("okidoki_api_key, okidoki_signer_card_id, okidoki_auto_send, okidoki_field_mapping")
     .eq("user_id", session.user_id)
     .maybeSingle();
 
@@ -434,7 +434,9 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
     return null;
   }
 
-  const mapping: Record<string, string> = apt.field_mapping || {};
+  const globalMapping: Record<string, string> = (ms.okidoki_field_mapping as any) || {};
+  const aptMapping: Record<string, string> = apt.field_mapping || {};
+  const mapping: Record<string, string> = { ...globalMapping, ...aptMapping };
   const nights = Math.max(1, Math.round(
     (new Date(bk.end_date).getTime() - new Date(bk.begin_date).getTime()) / (1000 * 60 * 60 * 24),
   ));
