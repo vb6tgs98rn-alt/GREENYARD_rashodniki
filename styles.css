@@ -588,6 +588,7 @@ body:has(.drawer.open) .auth-corner-btn{ display:none !important; }
   flex-direction:column;
   min-height:0;
   overflow:hidden;
+  height:100%;
 }
 /* Когда есть активный чат — скрываем сторону на мобильных */
 .chats-grid.has-active .chats-side{ display:none; }
@@ -600,12 +601,13 @@ body:has(.drawer.open) .auth-corner-btn{ display:none !important; }
   margin-bottom:.5rem;
 }
 .chats-thread{
-  flex:1;
-  overflow:auto;
+  flex:1 1 auto;
+  overflow-y:auto;
   padding:.5rem;
   display:flex;
   flex-direction:column;
   gap:.5rem;
+  min-height:200px;
 }
 .chat-msg{
   max-width:75%;

@@ -719,7 +719,37 @@ export async function openChatsModal() {
   await reloadChats();
   // После успешной загрузки — запускаем polling и realtime
   startChatsPolling();
+  attachVisibilityRefresh();
   try { await attachRealtimeForChats(); } catch (e) { console.warn('[bot] realtime attach failed:', e); }
+}
+
+// Когда пользователь возвращается во вкладку (напр. переключившись из телеграма) — сразу перечитываем
+function attachVisibilityRefresh() {
+  if (window._botVisibilityAttached) return;
+  window._botVisibilityAttached = true;
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState !== 'visible') return;
+    const modal = document.getElementById('guestChatsModal');
+    if (!modal || !modal.classList.contains('open')) return;
+    console.log('[bot] visibilitychange → visible — refetch');
+    try {
+      const chats = await fetchGuestChats();
+      _chatsState.items = chats;
+      renderChatsList();
+      if (_chatsState.activeSessionId) await renderActiveChat();
+    } catch (err) { console.warn('[bot] visibility refetch:', err?.message || err); }
+  });
+  window.addEventListener('focus', async () => {
+    const modal = document.getElementById('guestChatsModal');
+    if (!modal || !modal.classList.contains('open')) return;
+    console.log('[bot] window focus — refetch');
+    try {
+      const chats = await fetchGuestChats();
+      _chatsState.items = chats;
+      renderChatsList();
+      if (_chatsState.activeSessionId) await renderActiveChat();
+    } catch (err) { console.warn('[bot] focus refetch:', err?.message || err); }
+  });
 }
 
 // Polling как fallback: каждые 2 секунды.
@@ -851,6 +881,7 @@ async function renderActiveChat() {
       <div style="display:flex;justify-content:space-between;align-items:center;gap:.75rem;flex-wrap:wrap;">
         <div style="display:flex;align-items:center;gap:.5rem;min-width:0;">
           <button type="button" id="chatBackBtn" title="К списку чатов" style="padding:.35rem .6rem;border-radius:8px;border:1px solid #555;background:transparent;color:#ddd;cursor:pointer;font-size:.9rem;">← К списку</button>
+          <button type="button" id="chatRefreshBtn" title="Обновить" style="padding:.35rem .5rem;border-radius:8px;border:1px solid #555;background:transparent;color:#ddd;cursor:pointer;font-size:.9rem;">↻</button>
           <div style="min-width:0;">
             <div><b>${name}</b> · ${esc(meta.apartment_title || '')}</div>
             <div class="small" style="opacity:.7;">${esc(meta.begin_date ? fmtDate(meta.begin_date) + ' → ' + fmtDate(meta.end_date) : '')}</div>
@@ -866,6 +897,7 @@ async function renderActiveChat() {
   }
   if (composer) composer.style.display = 'flex';
 
+  box.innerHTML = `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;">Загружаем сообщения…</div>`;
   let msgs = [];
   try {
     msgs = await fetchMessages(sessionId);
@@ -887,7 +919,7 @@ async function renderActiveChat() {
     const time = fmtTime(m.created_at);
     return `<div class="chat-msg ${cls}"><div class="chat-msg-meta small">${esc(label)} · ${esc(time)}</div><div class="chat-msg-body">${esc(m.body || '')}</div></div>`;
   }).join('');
-  box.innerHTML = html || `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;">Сообщений пока нет</div>`;
+  box.innerHTML = html || `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;">Сообщений пока нет (получено 0 строк).<br/>session_id: <code>${esc(sessionId)}</code></div>`;
 
   // прокручиваем вниз (в двух микротасках, чтобы дождаться layout)
   requestAnimationFrame(() => {
@@ -1274,6 +1306,15 @@ export function bindGuestBotEvents(state) {
     if (e.target.closest('#closeChatsModal')) {
       closeModal('guestChatsModal');
       detachRealtimeForChats();
+      return;
+    }
+    if (e.target.closest('#chatRefreshBtn')) {
+      try {
+        const chats = await fetchGuestChats();
+        _chatsState.items = chats;
+        renderChatsList();
+        if (_chatsState.activeSessionId) await renderActiveChat();
+      } catch (err) { console.warn('[bot] refresh:', err?.message || err); }
       return;
     }
     if (e.target.closest('#chatBackBtn')) {
