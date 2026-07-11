@@ -7,6 +7,7 @@ import { persistState, exportJson, importJson } from './storage.js';
 import { signInWithEmail, signUpWithEmail, signOutUser } from './supabase-client.js';
 import { addApartment, addCustomItem, applyWriteoff, createPurchaseRequest, deleteApartment, deleteItem, newCheckin, renameCurrentApartment, resetAll, restockDefaults, toggleAutoRequest, toggleRequestDone, updateItemField, updateRequestItemCost } from './actions.js';
 import { bindGuestBotEvents } from './guestBot.js';
+import { openOkidokiSettings } from './okidoki.js';
 
 async function rerender(statusText = 'Сохранено') {
   ensureFinanceGeneratedForCurrentMonth();
@@ -79,6 +80,12 @@ function bindDrawerModals() {
   byId('kbClose')?.addEventListener('click', () => closeModal('kbModal'));
 
   // Старый openGuestBotChats заменяется в bindGuestBotEvents() — там полноценный чат.
+
+  // Okidoki — электронные договоры
+  byId('openOkidokiSettings')?.addEventListener('click', () => {
+    closeDrawer();
+    openOkidokiSettings().catch((err) => setStatus('Ошибка Okidoki: ' + (err?.message || err)));
+  });
 }
 
 // ─── История ───────────────────────────────────────────────────────────────
@@ -700,6 +707,41 @@ function bindFinanceModals() {
       if (!id) return;
       toggleRecurringRule(id);
       await rerender('Правило обновлено');
+    }
+
+    if (action === 'create-contract') {
+      const bookingId = btn.dataset.bookingId;
+      if (!bookingId) return;
+      const orig = btn.textContent;
+      btn.disabled = true; btn.textContent = 'Создаём…';
+      try {
+        const mod = await import('./okidoki.js');
+        const r = await mod.createContract(Number(bookingId));
+        setStatus('Договор создан');
+        // Перетянем брони чтобы в UI обновилась ссылка
+        const bookings = await fetchRealtyCalendarBookings();
+        applyRealtyCalendarBookings(bookings);
+        await rerender('Договор отправлен');
+        if (r?.link) {
+          try { await navigator.clipboard.writeText(r.link); } catch {}
+        }
+      } catch (err) {
+        setStatus('Ошибка создания договора: ' + (err?.message || err));
+        alert('Не удалось создать договор: ' + (err?.message || err) + '\n\nПроверьте: ☐ API-ключ введён, ☐ шаблон выбран, ☐ сопоставлены ключевые поля. Откройте «Договоры (Okidoki)» в меню.');
+      } finally {
+        btn.disabled = false; btn.textContent = orig;
+      }
+    }
+
+    if (action === 'copy-contract-link') {
+      const link = btn.dataset.link;
+      if (!link) return;
+      try {
+        await navigator.clipboard.writeText(link);
+        setStatus('Ссылка скопирована');
+      } catch (err) {
+        prompt('Скопируйте ссылку:', link);
+      }
     }
   });
 }

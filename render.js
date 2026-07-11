@@ -101,6 +101,37 @@ function financeEntryCard(entry) {
   const gross = Number(entry.amount || 0);
   const net = Number(entry.netAmount != null ? entry.netAmount : gross);
   const showTwoSums = isIncome && net !== gross;
+
+  // Блок «Договор»: только для доходных броней RC (не уборка)
+  let contractBlock = '';
+  const bookingIdRaw = String(entry.externalBookingId || '');
+  const isBooking = isIncome && entry.source === 'realtycalendar' && bookingIdRaw && !bookingIdRaw.endsWith(':cleaning');
+  if (isBooking) {
+    const m = entry.meta || {};
+    const status = m.contract_status || '';
+    const link = m.contract_link || '';
+    const si = m.contract_status_internal;
+    let icon = '📄';
+    if (si === 2) icon = '✅'; else if (si === 3 || si === 5) icon = '⚠️'; else if (si === 1) icon = '📨';
+    const statusHtml = status
+      ? `<span class="small" style="color:var(--color-text-muted)">${icon} Договор: ${status}</span>`
+      : `<span class="small" style="color:var(--color-text-muted)">Договор не создан</span>`;
+    const btnCreate = !link
+      ? `<button class="btn-chip" data-action="create-contract" data-booking-id="${bookingIdRaw}">Отправить договор</button>`
+      : '';
+    const btnOpen = link
+      ? `<a class="btn-chip" href="${link}" target="_blank" rel="noopener" style="text-decoration:none;">Открыть</a>`
+      : '';
+    const btnCopy = link
+      ? `<button class="btn-chip" data-action="copy-contract-link" data-link="${link}">Копировать ссылку</button>`
+      : '';
+    contractBlock = `
+      <div class="finance-card-contract" style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;padding:.4rem .6rem;margin-top:.5rem;border-radius:var(--radius-md);background:var(--color-surface-2);">
+        ${statusHtml}
+        <div style="display:flex;gap:.35rem;margin-left:auto;flex-wrap:wrap;">${btnCreate}${btnOpen}${btnCopy}</div>
+      </div>`;
+  }
+
   return `<article class="finance-card ${entry.type}" data-entry-id="${entry.id}">
     <div class="finance-card-top">
       <div class="finance-card-left">
@@ -121,6 +152,7 @@ function financeEntryCard(entry) {
         <span class="finance-status ${st.cls}">${st.label}</span>
       </div>
     </div>
+    ${contractBlock}
     <div class="finance-card-actions">
       ${canConfirm ? `<button class="btn-chip btn-confirm" data-action="confirm-entry" data-id="${entry.id}" title="Подтвердить">✓ Подтвердить</button>` : ''}
       <button class="btn-chip btn-del" data-action="delete-entry" data-id="${entry.id}" title="Удалить">✕</button>

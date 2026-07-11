@@ -261,6 +261,11 @@ export function applyRealtyCalendarBookings(bookings = []) {
           booking_url: b.booking_url,
           rc_status: b.status,
           platform_tax: platformTax,
+          // Okidoki — текущее состояние договора для этой брони
+          contract_id: b.okidoki_contract_id || '',
+          contract_link: b.okidoki_link || '',
+          contract_status: b.contract_status || '',
+          contract_status_internal: b.contract_status_internal ?? null,
         },
       };
 
