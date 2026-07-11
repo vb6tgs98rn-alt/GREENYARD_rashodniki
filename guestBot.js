@@ -714,7 +714,7 @@ export async function openChatsModal() {
   ensureChatsModal();
   openModal('guestChatsModal');
   await reloadChats();
-  attachRealtimeForChats();
+  await attachRealtimeForChats();
 }
 
 async function reloadChats() {
@@ -815,16 +815,34 @@ async function renderActiveChat() {
   renderChatsList();
 }
 
-function attachRealtimeForChats() {
+async function attachRealtimeForChats() {
   const supabase = getSupabaseClient();
-  if (!supabase || _chatsState.realtimeChannel) return;
+  if (!supabase) return;
+
+  // Убираем старый канал если есть (при повторном открытии модалки).
+  if (_chatsState.realtimeChannel) {
+    try { await supabase.removeChannel(_chatsState.realtimeChannel); } catch {}
+    _chatsState.realtimeChannel = null;
+  }
+
+  // Прокидываем текущий JWT в realtime — иначе RLS-таблицы не видны.
   try {
-    _chatsState.realtimeChannel = supabase
-      .channel('guest_messages_changes')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'guest_messages' },
+    const { data } = await supabase.auth.getSession();
+    const token = data?.session?.access_token;
+    if (token && supabase.realtime?.setAuth) {
+      supabase.realtime.setAuth(token);
+    }
+  } catch (e) {
+    console.warn('[bot] realtime setAuth:', e?.message || e);
+  }
+
+  try {
+    const channel = supabase.channel('guest_msgs_' + Date.now());
+    channel
+      .on('postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'guest_messages' },
         async (payload) => {
-          // Обновляем список (бейджи), но активный чат перерисовываем только
-          // если новое сообщение пришло в открытый диалог — меньше дёрганий.
+          console.log('[bot] realtime INSERT guest_messages:', payload?.new);
           try {
             const newSessionId = payload?.new?.session_id;
             const chats = await fetchGuestChats();
@@ -838,7 +856,22 @@ function attachRealtimeForChats() {
           }
         }
       )
-      .subscribe();
+      .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'guest_sessions' },
+        async () => {
+          try {
+            const chats = await fetchGuestChats();
+            _chatsState.items = chats;
+            renderChatsList();
+          } catch (err) {
+            console.warn('[bot] realtime session handler:', err?.message || err);
+          }
+        }
+      )
+      .subscribe((status, err) => {
+        console.log('[bot] realtime subscribe status:', status, err?.message || '');
+      });
+    _chatsState.realtimeChannel = channel;
   } catch (e) {
     console.warn('[bot] realtime:', e?.message || e);
   }
