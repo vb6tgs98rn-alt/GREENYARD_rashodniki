@@ -219,15 +219,15 @@ export async function ensureSessionForBooking(booking) {
 
 export async function fetchGuestChats() {
   const supabase = getSupabaseClient();
-  if (!supabase) return [];
+  if (!supabase) throw new Error('no supabase client');
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return [];
+  if (!user) throw new Error('not authenticated');
   const { data, error } = await supabase
     .from('v_guest_chats')
     .select('*')
     .eq('user_id', user.id)
     .order('last_message_at', { ascending: false, nullsFirst: false });
-  if (error) { console.warn('[bot] fetchGuestChats:', error.message); return []; }
+  if (error) { console.warn('[bot] fetchGuestChats:', error.message); throw error; }
   return data || [];
 }
 
@@ -237,15 +237,15 @@ export async function fetchGuestChats() {
 
 export async function fetchMessages(sessionId, limit = 200) {
   const supabase = getSupabaseClient();
-  if (!supabase) return [];
+  if (!supabase) throw new Error('no supabase client');
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return [];
+  if (!user) throw new Error('not authenticated');
   const { data, error } = await supabase
     .from('guest_messages').select('*')
     .eq('user_id', user.id).eq('session_id', sessionId)
     .order('created_at', { ascending: true })
     .limit(limit);
-  if (error) { console.warn('[bot] fetchMessages:', error.message); return []; }
+  if (error) { console.warn('[bot] fetchMessages:', error.message); throw error; }
   return data || [];
 }
 
@@ -714,31 +714,31 @@ export async function openChatsModal() {
   ensureChatsModal();
   // Сбрасываем активный чат при каждом открытии — начинаем со списка
   _chatsState.activeSessionId = null;
+  _chatsState.items = [];
   openModal('guestChatsModal');
-  // Запускаем polling СРАЗУ (надёжный fallback)
-  startChatsPolling();
   await reloadChats();
-  // Realtime в трай-кетч — если он упадёт, polling всё равно работает
+  // После успешной загрузки — запускаем polling и realtime
+  startChatsPolling();
   try { await attachRealtimeForChats(); } catch (e) { console.warn('[bot] realtime attach failed:', e); }
 }
 
-// Polling как fallback на случай если realtime не работает — каждые 3 секунды.
+// Polling как fallback: каждые 2 секунды.
 function startChatsPolling() {
   if (_chatsState.pollTimer) return;
-  console.log('[bot] chats polling started (every 3s)');
+  console.log('[bot] chats polling started (every 2s)');
   _chatsState.pollTimer = setInterval(async () => {
-    // Не полим если модалка закрыта (класс .open)
+    // Не полим если модалка закрыта
     const modal = document.getElementById('guestChatsModal');
     if (!modal || !modal.classList.contains('open')) return;
+    let chats;
     try {
-      // 1) перечитываем список чатов
+      chats = await fetchGuestChats();
+    } catch (err) {
+      console.warn('[bot] polling fetchGuestChats:', err?.message || err);
+      return; // при ошибке не трогаем UI
+    }
+    try {
       const prevItems = _chatsState.items;
-      const chats = await fetchGuestChats();
-      // Защита от временных ошибок: если сейчас пусто, а было непусто — пропустим тик
-      if (chats.length === 0 && prevItems.length > 0) {
-        console.warn('[bot] polling: skipping empty response (network hiccup?)');
-        return;
-      }
       const sig = chats.map(c => `${c.session_id}:${c.last_message_at || ''}:${c.ai_enabled}`).join('|');
       const prevSig = prevItems.map(c => `${c.session_id}:${c.last_message_at || ''}:${c.ai_enabled}`).join('|');
       const listChanged = sig !== prevSig;
@@ -746,19 +746,20 @@ function startChatsPolling() {
         _chatsState.items = chats;
         renderChatsList();
       }
-      // 2) если открыт конкретный чат — перечитываем сообщения, если были изменения
+      // Если открыт конкретный чат и в нём появились новые сообщения — перечитываем
       if (_chatsState.activeSessionId) {
         const activeMeta = chats.find(c => c.session_id === _chatsState.activeSessionId);
         const prevActive = prevItems.find(c => c.session_id === _chatsState.activeSessionId);
         const activeChanged = !prevActive || (activeMeta?.last_message_at !== prevActive?.last_message_at);
         if (activeChanged) {
+          console.log('[bot] polling: active chat changed — refetch');
           await renderActiveChat();
         }
       }
     } catch (err) {
-      console.warn('[bot] polling:', err?.message || err);
+      console.warn('[bot] polling render:', err?.message || err);
     }
-  }, 3000);
+  }, 2000);
 }
 
 function stopChatsPolling() {
@@ -771,8 +772,14 @@ function stopChatsPolling() {
 async function reloadChats() {
   const list = document.getElementById('chatsListBox');
   if (list) list.innerHTML = '<div class="small" style="padding:1rem;opacity:.6;">Загрузка...</div>';
-  const chats = await fetchGuestChats();
-  _chatsState.items = chats;
+  try {
+    const chats = await fetchGuestChats();
+    _chatsState.items = chats;
+  } catch (err) {
+    console.warn('[bot] reloadChats failed:', err?.message || err);
+    if (list) list.innerHTML = `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;color:#c66;">Не удалось загрузить чаты: ${esc(err?.message || 'ошибка сети')}</div>`;
+    return;
+  }
   renderChatsList();
   updateChatsGridMode();
   if (_chatsState.activeSessionId) await renderActiveChat();
@@ -859,7 +866,14 @@ async function renderActiveChat() {
   }
   if (composer) composer.style.display = 'flex';
 
-  const msgs = await fetchMessages(sessionId);
+  let msgs = [];
+  try {
+    msgs = await fetchMessages(sessionId);
+  } catch (err) {
+    console.warn('[bot] renderActiveChat fetch failed:', err?.message || err);
+    box.innerHTML = `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;color:#c66;">Ошибка загрузки: ${esc(err?.message || 'сеть')}</div>`;
+    return;
+  }
   console.log('[bot] renderActiveChat: session', sessionId, 'msgs:', msgs.length);
   const html = msgs.map(m => {
     const cls = m.direction === 'inbound' ? 'msg-inbound'
@@ -920,10 +934,8 @@ async function attachRealtimeForChats() {
           try {
             const newSessionId = payload?.new?.session_id;
             const chats = await fetchGuestChats();
-            if (chats.length > 0 || _chatsState.items.length === 0) {
-              _chatsState.items = chats;
-              renderChatsList();
-            }
+            _chatsState.items = chats;
+            renderChatsList();
             if (newSessionId && newSessionId === _chatsState.activeSessionId) {
               await renderActiveChat();
             }
@@ -937,10 +949,8 @@ async function attachRealtimeForChats() {
         async () => {
           try {
             const chats = await fetchGuestChats();
-            if (chats.length > 0 || _chatsState.items.length === 0) {
-              _chatsState.items = chats;
-              renderChatsList();
-            }
+            _chatsState.items = chats;
+            renderChatsList();
           } catch (err) {
             console.warn('[bot] realtime session handler:', err?.message || err);
           }
