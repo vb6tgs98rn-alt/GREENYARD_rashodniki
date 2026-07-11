@@ -751,10 +751,18 @@ export async function openChatsModal() {
 }
 
 // Когда пользователь возвращается во вкладку (напр. переключившись из телеграма) — сразу перечитываем
-async function refetchAllOnResume(source) {
+let _lastRefetchAt = 0;
+async function refetchAllOnResume(source, { force = false } = {}) {
   const modal = document.getElementById('guestChatsModal');
   if (!modal || !modal.classList.contains('open')) return;
+  // Дебаунс: не чаще раза в секунду
+  const now = Date.now();
+  if (!force && now - _lastRefetchAt < 1000) return;
+  _lastRefetchAt = now;
   console.log(`[bot] resume from ${source} — hard refetch`);
+  // Показываем в UI что обновляемся
+  const badge = document.getElementById('chatsRefreshBadge');
+  if (badge) { badge.textContent = `♻ (${source})`; badge.style.opacity = '1'; }
   // Пересоздаём realtime (WebSocket мог закрыться в фоне)
   try { detachRealtimeForChats(); } catch {}
   try { await attachRealtimeForChats(); } catch (e) { console.warn('[bot] realtime re-attach:', e); }
@@ -764,17 +772,24 @@ async function refetchAllOnResume(source) {
     _chatsState.items = chats;
     renderChatsList();
     if (_chatsState.activeSessionId) await renderActiveChat();
-  } catch (err) { console.warn(`[bot] ${source} refetch:`, err?.message || err); }
+    if (badge) { badge.textContent = '✓'; setTimeout(() => { badge.style.opacity = '0'; }, 800); }
+  } catch (err) {
+    console.warn(`[bot] ${source} refetch:`, err?.message || err);
+    if (badge) { badge.textContent = `⚠ ${err?.message || 'err'}`; }
+  }
 }
 
 function attachVisibilityRefresh() {
   if (window._botVisibilityAttached) return;
   window._botVisibilityAttached = true;
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') refetchAllOnResume('visibilitychange');
+    if (document.visibilityState === 'visible') refetchAllOnResume('vis');
   });
   window.addEventListener('focus', () => refetchAllOnResume('focus'));
   window.addEventListener('pageshow', () => refetchAllOnResume('pageshow'));
+  // На iOS любое касание после возврата — ещё один refetch (дебаунсится)
+  document.addEventListener('touchstart', () => refetchAllOnResume('touch'), { passive: true });
+  document.addEventListener('pointerdown', () => refetchAllOnResume('pointer'), { passive: true });
 }
 
 // Polling как fallback: каждые 2 секунды.
@@ -1038,7 +1053,7 @@ function ensureChatsModal() {
       <div class="modal chat-modal" style="width:min(1000px,100%);display:flex;flex-direction:column;padding:1rem;">
         <div class="section-head" style="margin-bottom:.5rem;">
           <div>
-            <h2 class="modal-title">Чаты с гостями</h2>
+            <h2 class="modal-title">Чаты с гостями <span id="chatsRefreshBadge" style="font-size:.7rem;font-weight:400;opacity:0;transition:opacity .3s;margin-left:.5rem;color:#7fbf7f;"></span></h2>
             <p class="muted" style="margin:0;">Сообщения от гостей через Telegram-бота. Вы пишете — гость видит сообщение от имени бота.</p>
           </div>
           <button class="menu-toggle" id="closeChatsModal" type="button" aria-label="Закрыть">✕</button>
