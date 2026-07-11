@@ -727,13 +727,18 @@ function startChatsPolling() {
   if (_chatsState.pollTimer) return;
   console.log('[bot] chats polling started (every 3s)');
   _chatsState.pollTimer = setInterval(async () => {
-    // Не полим если модалка закрыта
+    // Не полим если модалка закрыта (класс .open)
     const modal = document.getElementById('guestChatsModal');
-    if (!modal || modal.getAttribute('aria-hidden') === 'true') return;
+    if (!modal || !modal.classList.contains('open')) return;
     try {
       // 1) перечитываем список чатов
       const prevItems = _chatsState.items;
       const chats = await fetchGuestChats();
+      // Защита от временных ошибок: если сейчас пусто, а было непусто — пропустим тик
+      if (chats.length === 0 && prevItems.length > 0) {
+        console.warn('[bot] polling: skipping empty response (network hiccup?)');
+        return;
+      }
       const sig = chats.map(c => `${c.session_id}:${c.last_message_at || ''}:${c.ai_enabled}`).join('|');
       const prevSig = prevItems.map(c => `${c.session_id}:${c.last_message_at || ''}:${c.ai_enabled}`).join('|');
       const listChanged = sig !== prevSig;
@@ -855,7 +860,8 @@ async function renderActiveChat() {
   if (composer) composer.style.display = 'flex';
 
   const msgs = await fetchMessages(sessionId);
-  box.innerHTML = msgs.map(m => {
+  console.log('[bot] renderActiveChat: session', sessionId, 'msgs:', msgs.length);
+  const html = msgs.map(m => {
     const cls = m.direction === 'inbound' ? 'msg-inbound'
               : m.direction === 'manager' ? 'msg-manager'
               : m.direction === 'system'  ? 'msg-system'
@@ -866,17 +872,21 @@ async function renderActiveChat() {
                 : '🤖 Бот';
     const time = fmtTime(m.created_at);
     return `<div class="chat-msg ${cls}"><div class="chat-msg-meta small">${esc(label)} · ${esc(time)}</div><div class="chat-msg-body">${esc(m.body || '')}</div></div>`;
-  }).join('') || `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;">Сообщений пока нет</div>`;
+  }).join('');
+  box.innerHTML = html || `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;">Сообщений пока нет</div>`;
 
-  // прокручиваем вниз
-  box.scrollTop = box.scrollHeight;
+  // прокручиваем вниз (в двух микротасках, чтобы дождаться layout)
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      box.scrollTop = box.scrollHeight;
+    });
+  });
 
   // отмечаем прочитанным
   await markChatAsRead(sessionId);
-  // обновляем список (бейджи)
-  const chats = await fetchGuestChats();
-  _chatsState.items = chats;
-  renderChatsList();
+  // Обновляем только бейдж unread в виде-item списка (без перерендера всего списка)
+  const rowUnread = document.querySelector(`[data-chat-session="${sessionId}"] .chat-unread`);
+  if (rowUnread) rowUnread.remove();
 }
 
 async function attachRealtimeForChats() {
@@ -910,8 +920,10 @@ async function attachRealtimeForChats() {
           try {
             const newSessionId = payload?.new?.session_id;
             const chats = await fetchGuestChats();
-            _chatsState.items = chats;
-            renderChatsList();
+            if (chats.length > 0 || _chatsState.items.length === 0) {
+              _chatsState.items = chats;
+              renderChatsList();
+            }
             if (newSessionId && newSessionId === _chatsState.activeSessionId) {
               await renderActiveChat();
             }
@@ -925,8 +937,10 @@ async function attachRealtimeForChats() {
         async () => {
           try {
             const chats = await fetchGuestChats();
-            _chatsState.items = chats;
-            renderChatsList();
+            if (chats.length > 0 || _chatsState.items.length === 0) {
+              _chatsState.items = chats;
+              renderChatsList();
+            }
           } catch (err) {
             console.warn('[bot] realtime session handler:', err?.message || err);
           }
