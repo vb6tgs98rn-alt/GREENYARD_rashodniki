@@ -434,9 +434,20 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
     return null;
   }
 
-  const globalMapping: Record<string, string> = (ms.okidoki_field_mapping as any) || {};
+  const DEFAULT_MAPPING: Record<string, string> = {
+    begin_date:            "дата заселения",
+    end_date:              "дата выселения",
+    price_per_night:       "цена в сутки",
+    price_total:           "полная стоимость",
+    prepaid:               "оплачено",
+    deposit:               "Обеспечительный платеж",
+    apartment_title:       "описание и адрес квартиры",
+    apartment_address:     "адрес",
+    apartment_description: "описание и адрес квартиры",
+  };
+  const userMapping: Record<string, string> = (ms.okidoki_field_mapping as any) || {};
   const aptMapping: Record<string, string> = apt.field_mapping || {};
-  const mapping: Record<string, string> = { ...globalMapping, ...aptMapping };
+  const mapping: Record<string, string> = { ...DEFAULT_MAPPING, ...userMapping, ...aptMapping };
   const nights = Math.max(1, Math.round(
     (new Date(bk.end_date).getTime() - new Date(bk.begin_date).getTime()) / (1000 * 60 * 60 * 24),
   ));

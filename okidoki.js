@@ -152,19 +152,16 @@ function ensureModal() {
           </label>
 
           <div class="subsection-title" style="margin-top:1.5rem;margin-bottom:.5rem;">
-            <h3 style="margin:0;">Сопоставление полей (общее)</h3>
-            <span class="small">Keyword'ы одинаковые во всех шаблонах — введите один раз.</span>
+            <h3 style="margin:0;">Шаблоны по квартирам</h3>
+            <span class="small">Выберите квартиру и привяжите к ней шаблон Okidoki.</span>
           </div>
-          <div class="small" style="margin-bottom:.5rem;opacity:.7;">
-            Слева — данные брони. Справа впишите точное название keyword в вашем шаблоне Okidoki. Пустое — поле не используется.
+          <div style="display:flex;gap:.5rem;align-items:center;">
+            <select id="okidokiAptPicker" style="flex:1;">
+              <option value="">— выберите квартиру —</option>
+            </select>
+            <button class="btn btn-primary" id="okidokiAptConfigure" type="button" disabled>Настроить</button>
           </div>
-          <div id="okidokiMapping" style="display:grid;gap:.5rem;"></div>
-
-          <div class="subsection-title" style="margin-top:1.5rem;margin-bottom:.5rem;">
-            <h3 style="margin:0;">Квартиры и шаблоны договоров</h3>
-            <span class="small">Для каждой квартиры — свой шаблон Okidoki. Keyword'ы берутся из общего сопоставления выше.</span>
-          </div>
-          <div id="okidokiApartmentsList" style="display:grid;gap:.75rem;"></div>
+          <div id="okidokiAptCurrent" class="small" style="margin-top:.5rem;opacity:.85;"></div>
 
           <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1.5rem;">
             <button class="btn btn-secondary" id="okidokiDisconnect" type="button">Отключить</button>
@@ -205,15 +202,6 @@ function ensureModal() {
   document.body.appendChild(wrap.children[0]);
 }
 
-function renderMappingRows(container, mapping = {}) {
-  container.innerHTML = LOGICAL_FIELDS.map(f => `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;align-items:center;">
-      <div class="small" style="opacity:.85;">${esc(f.label)}</div>
-      <input type="text" data-mapping-key="${esc(f.key)}" placeholder="keyword в шаблоне" value="${esc(mapping[f.key] || '')}" />
-    </div>
-  `).join('');
-}
-
 let cachedTemplates = null;
 let cachedCards = null;
 
@@ -241,67 +229,73 @@ async function refreshSignerSelect(currentSignerId) {
 }
 
 // ─── Список квартир с их привязками ─────────────────────────────────────
-async function renderApartmentsList() {
-  const cont = document.getElementById('okidokiApartmentsList');
-  if (!cont) return;
-  cont.innerHTML = '<div class="small" style="opacity:.7;">Загружаем…</div>';
-
+// Собирает список квартир (с любыми externalIds или без них), возвращает только те, что связаны с RC.
+function getRcApartments() {
   const st = getState();
-  const apartments = (st?.apartments || []).filter(a => {
-    // Только те квартиры, что связаны с RealtyCalendar (у остальных бронь не может прийти автоматически)
-    return a?.externalIds?.realtyCalendarUnitId;
-  });
+  return (st?.apartments || [])
+    .map(a => ({
+      realty_id: String(a?.externalIds?.realtyCalendarUnitId || '').trim(),
+      name: (a?.name || a?.title || '').trim(),
+    }))
+    .filter(a => a.realty_id);
+}
 
-  let items = [];
-  try {
-    const r = await listApartmentTemplates();
-    items = r?.items || [];
-  } catch (e) {
-    cont.innerHTML = `<div class="small" style="color:#c66;">Ошибка загрузки привязок: ${esc(e.message)}</div>`;
+async function renderApartmentPicker() {
+  const sel = document.getElementById('okidokiAptPicker');
+  const btn = document.getElementById('okidokiAptConfigure');
+  const cur = document.getElementById('okidokiAptCurrent');
+  if (!sel) return;
+
+  const apartments = getRcApartments();
+  if (!apartments.length) {
+    sel.innerHTML = '<option value="">— нет квартир, связанных с RealtyCalendar —</option>';
+    btn.disabled = true;
+    cur.innerHTML = '<span style="opacity:.75;">Сначала синхронизируйте квартиры с RC через «Управление» → «Синхронизация квартир».</span>';
     return;
   }
 
-  const byRealty = new Map();
-  for (const it of items) byRealty.set(String(it.realty_id), it);
-
+  // Подгружаем привязки и шаблоны (для индикатора в опциях)
+  let bindings = [];
+  try { bindings = (await listApartmentTemplates())?.items || []; } catch {}
+  const byRealty = new Map(bindings.map(b => [String(b.realty_id), b]));
   const templates = cachedTemplates || [];
   const tplNameById = new Map(templates.map(t => [t.template_id, t.template_full_name || t.template_name]));
 
-  if (!apartments.length) {
-    cont.innerHTML = `<div class="small" style="opacity:.75;">
-      Не найдено квартир, связанных с RealtyCalendar. Синхронизируйте квартиру с RC через
-      «Управление» → «Синхронизация квартир».
-    </div>`;
-    return;
-  }
+  sel.innerHTML = '<option value="">— выберите квартиру —</option>' +
+    apartments.map((a, i) => {
+      const bound = byRealty.has(a.realty_id);
+      const nameLabel = a.name || `Квартира ${i + 1}`;
+      const marker = bound ? '✓ ' : '⚠ ';
+      return `<option value="${esc(a.realty_id)}" data-name="${esc(nameLabel)}">${marker}${esc(nameLabel)}</option>`;
+    }).join('');
 
-  cont.innerHTML = apartments.map(a => {
-    const realtyId = String(a.externalIds.realtyCalendarUnitId);
-    const bind = byRealty.get(realtyId);
-    const templateName = bind ? (tplNameById.get(bind.okidoki_template_id) || bind.okidoki_template_id) : '';
-    const status = bind
-      ? `<span style="color:#7fbf7f;">✓ Шаблон: <b>${esc(templateName)}</b></span>`
-      : `<span style="color:#c88;">⚠ Шаблон не выбран</span>`;
-    return `
-      <div style="border:1px solid var(--border,#3a3a3a);border-radius:.6rem;padding:.6rem .75rem;display:flex;justify-content:space-between;align-items:center;gap:.5rem;flex-wrap:wrap;">
-        <div style="flex:1;min-width:200px;">
-          <div><b>${esc(a.title)}</b></div>
-          <div class="small" style="opacity:.8;margin-top:.15rem;">${status}</div>
-        </div>
-        <button class="btn btn-secondary" type="button"
-                data-apt-realty="${esc(realtyId)}"
-                data-apt-name="${esc(a.title)}">
-          ${bind ? 'Изменить' : 'Настроить'}
-        </button>
-      </div>
-    `;
-  }).join('');
+  const updateCur = () => {
+    const rid = sel.value;
+    btn.disabled = !rid;
+    if (!rid) { cur.innerHTML = ''; return; }
+    const b = byRealty.get(rid);
+    if (!b) {
+      cur.innerHTML = `<span style="color:#c88;">⚠ Шаблон не выбран.</span>`;
+    } else {
+      const nm = tplNameById.get(b.okidoki_template_id) || b.okidoki_template_id;
+      cur.innerHTML = `<span style="color:#7fbf7f;">✓ Шаблон: <b>${esc(nm)}</b></span>`;
+    }
+  };
+  updateCur();
 
-  // Bind buttons
-  cont.querySelectorAll('button[data-apt-realty]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      openApartmentTemplateModal(btn.dataset.aptRealty, btn.dataset.aptName);
-    });
+  // Снимаем старые хэндлеры через cloneNode
+  const newSel = sel.cloneNode(true);
+  sel.parentNode.replaceChild(newSel, sel);
+  const newBtn = btn.cloneNode(true);
+  btn.parentNode.replaceChild(newBtn, btn);
+
+  newSel.addEventListener('change', updateCur);
+  newBtn.addEventListener('click', () => {
+    const rid = newSel.value;
+    if (!rid) return;
+    const opt = newSel.options[newSel.selectedIndex];
+    const name = opt?.dataset?.name || '';
+    openApartmentTemplateModal(rid, name);
   });
 }
 
@@ -366,7 +360,7 @@ async function openApartmentTemplateModal(realtyId, apartmentName) {
       });
       setStatus('Шаблон квартиры сохранён', 'success');
       close();
-      await renderApartmentsList();
+      await renderApartmentPicker();
     } catch (e) {
       setStatus('Ошибка сохранения: ' + e.message, 'error');
     }
@@ -377,7 +371,7 @@ async function openApartmentTemplateModal(realtyId, apartmentName) {
       await deleteApartmentTemplate(Number(realtyId));
       setStatus('Привязка удалена', 'success');
       close();
-      await renderApartmentsList();
+      await renderApartmentPicker();
     } catch (e) {
       setStatus('Ошибка: ' + e.message, 'error');
     }
@@ -403,8 +397,6 @@ export async function openOkidokiSettings() {
 
   keyInput.value = settings.okidoki_api_key || '';
   autoSend.checked = !!settings.okidoki_auto_send;
-  const mapCont = document.getElementById('okidokiMapping');
-  renderMappingRows(mapCont, settings.okidoki_field_mapping || {});
 
   cachedTemplates = null; cachedCards = null;   // сбрасываем кэш при открытии
 
@@ -415,7 +407,7 @@ export async function openOkidokiSettings() {
       : '✓ Ключ сохранён';
     keyStatus.style.color = '#7fbf7f';
     await refreshSignerSelect(settings.okidoki_signer_card_id);
-    await renderApartmentsList();
+    await renderApartmentPicker();
   }
 
   openModal('okidokiModal');
@@ -443,7 +435,7 @@ export async function openOkidokiSettings() {
           config.style.display = 'block';
           cachedTemplates = null; cachedCards = null;
           await refreshSignerSelect(settings.okidoki_signer_card_id);
-          await renderApartmentsList();
+          await renderApartmentPicker();
         } else {
           keyStatus.textContent = `⚠ Ключ не работает (${r?.status || 'error'}): ${JSON.stringify(r?.data || '')}`;
           keyStatus.style.color = '#c66';
@@ -456,17 +448,10 @@ export async function openOkidokiSettings() {
 
     saveBtn.addEventListener('click', async () => {
       const signSel = document.getElementById('okidokiSigner');
-      const mapping = {};
-      document.getElementById('okidokiMapping').querySelectorAll('input[data-mapping-key]').forEach(inp => {
-        const k = inp.dataset.mappingKey;
-        const v = inp.value.trim();
-        if (v) mapping[k] = v;
-      });
       try {
         await saveSettings({
           okidoki_signer_card_id: signSel.value || null,
           okidoki_auto_send: autoSend.checked,
-          okidoki_field_mapping: mapping,
         });
         setStatus('Общие настройки Okidoki сохранены', 'success');
       } catch (err) {

@@ -173,11 +173,22 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Глобальный mapping из manager_settings (keyword'ы одинаковые у всех шаблонов).
-    // Per-apartment field_mapping (если задан) переопределяет глобальный.
-    const globalMapping: Record<string, string> = (settings?.okidoki_field_mapping as any) || {};
+    // Keyword’ы одинаковые во всех шаблонах — зашиты как дефолт.
+    // Пользовательский override через manager_settings.okidoki_field_mapping если вдруг в каком-то шаблоне keyword другой.
+    const DEFAULT_MAPPING: Record<string, string> = {
+      begin_date:            "дата заселения",
+      end_date:              "дата выселения",
+      price_per_night:       "цена в сутки",
+      price_total:           "полная стоимость",
+      prepaid:               "оплачено",
+      deposit:               "Обеспечительный платеж",
+      apartment_title:       "описание и адрес квартиры",
+      apartment_address:     "адрес",
+      apartment_description: "описание и адрес квартиры",
+    };
+    const userMapping: Record<string, string> = (settings?.okidoki_field_mapping as any) || {};
     const aptMapping: Record<string, string> = apt?.field_mapping || {};
-    const mapping: Record<string, string> = { ...globalMapping, ...aptMapping };
+    const mapping: Record<string, string> = { ...DEFAULT_MAPPING, ...userMapping, ...aptMapping };
 
     const nights = Math.max(1, Math.round(
       (new Date(bk.end_date).getTime() - new Date(bk.begin_date).getTime()) / (1000 * 60 * 60 * 24)
