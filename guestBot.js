@@ -712,35 +712,48 @@ let _chatsState = { items: [], activeSessionId: null, realtimeChannel: null, pol
 
 export async function openChatsModal() {
   ensureChatsModal();
+  // Сбрасываем активный чат при каждом открытии — начинаем со списка
+  _chatsState.activeSessionId = null;
   openModal('guestChatsModal');
-  await reloadChats();
-  await attachRealtimeForChats();
+  // Запускаем polling СРАЗУ (надёжный fallback)
   startChatsPolling();
+  await reloadChats();
+  // Realtime в трай-кетч — если он упадёт, polling всё равно работает
+  try { await attachRealtimeForChats(); } catch (e) { console.warn('[bot] realtime attach failed:', e); }
 }
 
-// Polling как fallback на случай если realtime не работает — каждые 5 секунд.
+// Polling как fallback на случай если realtime не работает — каждые 3 секунды.
 function startChatsPolling() {
   if (_chatsState.pollTimer) return;
+  console.log('[bot] chats polling started (every 3s)');
   _chatsState.pollTimer = setInterval(async () => {
     // Не полим если модалка закрыта
     const modal = document.getElementById('guestChatsModal');
     if (!modal || modal.getAttribute('aria-hidden') === 'true') return;
     try {
+      // 1) перечитываем список чатов
+      const prevItems = _chatsState.items;
       const chats = await fetchGuestChats();
-      // Проверяем, есть ли изменения (по last_message_at)
-      const sig = chats.map(c => `${c.session_id}:${c.last_message_at || ''}`).join('|');
-      const prevSig = _chatsState.items.map(c => `${c.session_id}:${c.last_message_at || ''}`).join('|');
-      if (sig !== prevSig) {
+      const sig = chats.map(c => `${c.session_id}:${c.last_message_at || ''}:${c.ai_enabled}`).join('|');
+      const prevSig = prevItems.map(c => `${c.session_id}:${c.last_message_at || ''}:${c.ai_enabled}`).join('|');
+      const listChanged = sig !== prevSig;
+      if (listChanged) {
         _chatsState.items = chats;
         renderChatsList();
-        if (_chatsState.activeSessionId) {
+      }
+      // 2) если открыт конкретный чат — перечитываем сообщения, если были изменения
+      if (_chatsState.activeSessionId) {
+        const activeMeta = chats.find(c => c.session_id === _chatsState.activeSessionId);
+        const prevActive = prevItems.find(c => c.session_id === _chatsState.activeSessionId);
+        const activeChanged = !prevActive || (activeMeta?.last_message_at !== prevActive?.last_message_at);
+        if (activeChanged) {
           await renderActiveChat();
         }
       }
     } catch (err) {
       console.warn('[bot] polling:', err?.message || err);
     }
-  }, 5000);
+  }, 3000);
 }
 
 function stopChatsPolling() {
@@ -756,7 +769,21 @@ async function reloadChats() {
   const chats = await fetchGuestChats();
   _chatsState.items = chats;
   renderChatsList();
-  if (_chatsState.activeSessionId) renderActiveChat();
+  updateChatsGridMode();
+  if (_chatsState.activeSessionId) await renderActiveChat();
+}
+
+// Переключаем CSS-классы: виден список или чат
+function updateChatsGridMode() {
+  const grid = document.querySelector('#guestChatsModal .chats-grid');
+  if (!grid) return;
+  if (_chatsState.activeSessionId) {
+    grid.classList.add('has-active');
+    grid.classList.remove('no-active');
+  } else {
+    grid.classList.add('no-active');
+    grid.classList.remove('has-active');
+  }
 }
 
 function renderChatsList() {
@@ -823,8 +850,7 @@ async function renderActiveChat() {
         </button>
       </div>
     `;
-    // Мобильный: прокрутим к активному чату
-    try { head.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch {}
+
   }
   if (composer) composer.style.display = 'flex';
 
@@ -928,7 +954,7 @@ function ensureChatsModal() {
   if (document.getElementById('guestChatsModal')) return;
   const html = `
     <div class="modal-backdrop" id="guestChatsModal" aria-hidden="true">
-      <div class="modal chat-modal" style="width:min(1000px,100%);max-height:92dvh;display:flex;flex-direction:column;padding:1rem;">
+      <div class="modal chat-modal" style="width:min(1000px,100%);display:flex;flex-direction:column;padding:1rem;">
         <div class="section-head" style="margin-bottom:.5rem;">
           <div>
             <h2 class="modal-title">Чаты с гостями</h2>
@@ -1235,14 +1261,14 @@ export function bindGuestBotEvents(state) {
       if (box) box.innerHTML = '';
       if (composer) composer.style.display = 'none';
       renderChatsList();
-      // Прокрутим к списку (мобильный)
-      try { document.getElementById('chatsListBox')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch {}
+      updateChatsGridMode();
       return;
     }
     const chatRow = e.target.closest('[data-chat-session]');
     if (chatRow) {
       _chatsState.activeSessionId = chatRow.getAttribute('data-chat-session');
       renderChatsList();
+      updateChatsGridMode();
       await renderActiveChat();
       return;
     }

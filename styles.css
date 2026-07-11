@@ -530,19 +530,20 @@ body:has(.drawer.open) .auth-corner-btn{ display:none !important; }
 }
 
 /* ── Чаты ────────────────────────────────────────────────────────── */
-.chat-modal{ padding:1rem; }
+.chat-modal{ padding:1rem; max-height:92dvh; height:92dvh; }
 .chats-grid{
   display:grid;
   grid-template-columns:300px 1fr;
   gap:.75rem;
   flex:1;
   min-height:0;
-  height:calc(92dvh - 100px);
+  height:calc(92dvh - 110px);
 }
 .chats-side{
   border-right:1px solid var(--color-border, rgba(0,0,0,.08));
   overflow:auto;
   padding-right:.5rem;
+  min-height:0;
 }
 .chat-row{
   display:block;
@@ -588,6 +589,11 @@ body:has(.drawer.open) .auth-corner-btn{ display:none !important; }
   min-height:0;
   overflow:hidden;
 }
+/* Когда есть активный чат — скрываем сторону на мобильных */
+.chats-grid.has-active .chats-side{ display:none; }
+.chats-grid.has-active .chats-main{ display:flex; }
+/* Когда активного чата нет — скрываем основную панель на мобильных */
+.chats-grid.no-active .chats-main{ display:none; }
 .chats-head{
   padding:.5rem .25rem .75rem;
   border-bottom:1px solid var(--color-border, rgba(0,0,0,.08));
@@ -646,8 +652,18 @@ body:has(.drawer.open) .auth-corner-btn{ display:none !important; }
   font-size:.9rem;
 }
 @media (max-width:720px){
-  .chats-grid{ grid-template-columns:1fr; height:auto; }
-  .chats-side{ max-height:30vh; }
+  .chats-grid{
+    grid-template-columns:1fr;
+    height:calc(92dvh - 110px);
+  }
+  .chats-side{ max-height:none; border-right:none; }
+  .chat-modal{ max-height:96dvh !important; height:96dvh; }
+}
+@media (min-width:721px){
+  /* На десктопе всегда показываем обе колонки */
+  .chats-grid.has-active .chats-side,
+  .chats-grid.no-active .chats-main{ display:block; }
+  .chats-grid.no-active .chats-main{ display:flex; }
 }
 
 /* ─── Юнит экономика (таблица) ────────────────────────────────────────── */
