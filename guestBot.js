@@ -15,6 +15,7 @@
 // =============================================================================
 
 import { getSupabaseClient } from './supabase-client.js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { openModal, closeModal, setStatus } from './render.js';
 import { fetchRealtyCalendarBookings } from './api.js';
 
@@ -217,29 +218,51 @@ export async function ensureSessionForBooking(booking) {
   return data || row;
 }
 
-// Получить user_id быстро (без network) через кэш сессии; с fallback на getUser() с таймаутом 5с.
-async function getUserIdFast(supabase) {
-  const { data: sess } = await supabase.auth.getSession();
-  const uid = sess?.session?.user?.id;
-  if (uid) return uid;
-  // Фолбэк — с таймаутом
-  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('auth timeout')), 5000));
-  const { data: { user } } = await Promise.race([supabase.auth.getUser(), timeout]);
-  if (!user) throw new Error('not authenticated');
-  return user.id;
+// Получить сессию быстро (без network) — читаем напрямую из localStorage.
+function getSessionFromStorage() {
+  try {
+    const raw = localStorage.getItem('gy-auth-session');
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
+// Прямой REST-запрос к Supabase с AbortController+timeout — обходит зависания supabase-js после возврата из фона.
+async function restQuery(path, timeoutMs = 8000) {
+  const sess = getSessionFromStorage();
+  const token = sess?.access_token;
+  if (!token) throw new Error('not authenticated');
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+      signal: ac.signal,
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`REST ${res.status}: ${text.slice(0, 200)}`);
+    }
+    return await res.json();
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function getUidFromStorage() {
+  const sess = getSessionFromStorage();
+  return sess?.user?.id || null;
 }
 
 export async function fetchGuestChats() {
-  const supabase = getSupabaseClient();
-  if (!supabase) throw new Error('no supabase client');
-  const uid = await getUserIdFast(supabase);
-  const { data, error } = await supabase
-    .from('v_guest_chats')
-    .select('*')
-    .eq('user_id', uid)
-    .order('last_message_at', { ascending: false, nullsFirst: false });
-  if (error) { console.warn('[bot] fetchGuestChats:', error.message); throw error; }
-  return data || [];
+  const uid = getUidFromStorage();
+  if (!uid) throw new Error('not authenticated');
+  return await restQuery(`v_guest_chats?select=*&user_id=eq.${uid}&order=last_message_at.desc.nullslast`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -247,18 +270,10 @@ export async function fetchGuestChats() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function fetchMessages(sessionId, limit = 200) {
-  const supabase = getSupabaseClient();
-  if (!supabase) throw new Error('no supabase client');
-  const uid = await getUserIdFast(supabase);
-  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('query timeout')), 8000));
-  const query = supabase
-    .from('guest_messages').select('*')
-    .eq('user_id', uid).eq('session_id', sessionId)
-    .order('created_at', { ascending: true })
-    .limit(limit);
-  const { data, error } = await Promise.race([query, timeout]);
-  if (error) { console.warn('[bot] fetchMessages:', error.message); throw error; }
-  return data || [];
+  const uid = getUidFromStorage();
+  if (!uid) throw new Error('not authenticated');
+  const path = `guest_messages?select=*&user_id=eq.${uid}&session_id=eq.${sessionId}&order=created_at.asc&limit=${limit}`;
+  return await restQuery(path);
 }
 
 /**
@@ -736,32 +751,30 @@ export async function openChatsModal() {
 }
 
 // Когда пользователь возвращается во вкладку (напр. переключившись из телеграма) — сразу перечитываем
+async function refetchAllOnResume(source) {
+  const modal = document.getElementById('guestChatsModal');
+  if (!modal || !modal.classList.contains('open')) return;
+  console.log(`[bot] resume from ${source} — hard refetch`);
+  // Пересоздаём realtime (WebSocket мог закрыться в фоне)
+  try { detachRealtimeForChats(); } catch {}
+  try { await attachRealtimeForChats(); } catch (e) { console.warn('[bot] realtime re-attach:', e); }
+  // Перечитываем данные
+  try {
+    const chats = await fetchGuestChats();
+    _chatsState.items = chats;
+    renderChatsList();
+    if (_chatsState.activeSessionId) await renderActiveChat();
+  } catch (err) { console.warn(`[bot] ${source} refetch:`, err?.message || err); }
+}
+
 function attachVisibilityRefresh() {
   if (window._botVisibilityAttached) return;
   window._botVisibilityAttached = true;
-  document.addEventListener('visibilitychange', async () => {
-    if (document.visibilityState !== 'visible') return;
-    const modal = document.getElementById('guestChatsModal');
-    if (!modal || !modal.classList.contains('open')) return;
-    console.log('[bot] visibilitychange → visible — refetch');
-    try {
-      const chats = await fetchGuestChats();
-      _chatsState.items = chats;
-      renderChatsList();
-      if (_chatsState.activeSessionId) await renderActiveChat();
-    } catch (err) { console.warn('[bot] visibility refetch:', err?.message || err); }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refetchAllOnResume('visibilitychange');
   });
-  window.addEventListener('focus', async () => {
-    const modal = document.getElementById('guestChatsModal');
-    if (!modal || !modal.classList.contains('open')) return;
-    console.log('[bot] window focus — refetch');
-    try {
-      const chats = await fetchGuestChats();
-      _chatsState.items = chats;
-      renderChatsList();
-      if (_chatsState.activeSessionId) await renderActiveChat();
-    } catch (err) { console.warn('[bot] focus refetch:', err?.message || err); }
-  });
+  window.addEventListener('focus', () => refetchAllOnResume('focus'));
+  window.addEventListener('pageshow', () => refetchAllOnResume('pageshow'));
 }
 
 // Polling как fallback: каждые 2 секунды.
