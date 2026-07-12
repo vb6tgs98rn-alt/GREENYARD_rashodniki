@@ -116,7 +116,7 @@ Deno.serve(async (req) => {
   if (action === "list_apartment_templates") {
     const { data } = await supa!
       .from("apartment_contract_templates")
-      .select("realty_id, apartment_name, okidoki_template_id, field_mapping, updated_at")
+      .select("realty_id, apartment_name, okidoki_template_id, field_mapping, apartment_address, deposit, updated_at")
       .eq("user_id", user.id);
     return json(200, { items: data || [] });
   }
