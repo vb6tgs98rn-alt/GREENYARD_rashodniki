@@ -263,6 +263,265 @@ async function notifyManager(userId: string, text: string, flag?: keyof ManagerS
   await tgSendMessage(settings.manager_tg_chat_id, text);
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// ГОРНИЧНЫЕ
+// ═══════════════════════════════════════════════════════════════════
+
+interface Maid {
+  id: string;
+  user_id: string;
+  tg_chat_id: number | null;
+  name: string;
+  phone: string | null;
+  active: boolean;
+}
+
+async function findMaidByChatId(chatId: number): Promise<Maid | null> {
+  const sb = svc();
+  const { data } = await sb
+    .from("maids")
+    .select("id, user_id, tg_chat_id, name, phone, active")
+    .eq("tg_chat_id", chatId)
+    .eq("active", true)
+    .maybeSingle();
+  return (data as Maid) || null;
+}
+
+async function findMaidByInviteToken(token: string): Promise<Maid | null> {
+  const sb = svc();
+  const { data } = await sb
+    .from("maids")
+    .select("id, user_id, tg_chat_id, name, phone, active")
+    .eq("invite_token", token)
+    .maybeSingle();
+  return (data as Maid) || null;
+}
+
+function fmtDateShort(iso: string | null): string {
+  if (!iso) return "?";
+  const d = new Date(iso);
+  if (isNaN(+d)) return String(iso);
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  return `${dd}.${mm}`;
+}
+
+async function logMaidMessage(maid: Maid, direction: "inbound"|"outbound"|"system", sender: "maid"|"bot"|"manager", text: string, tgMessageId?: number, photoUrl?: string) {
+  if (!maid.tg_chat_id) return;
+  const sb = svc();
+  await sb.from("maid_messages").insert({
+    user_id: maid.user_id,
+    maid_id: maid.id,
+    tg_chat_id: maid.tg_chat_id,
+    tg_message_id: tgMessageId ?? null,
+    direction,
+    sender,
+    text: text || null,
+    photo_url: photoUrl || null,
+  });
+}
+
+// Обработка callback’ов от горничной
+async function handleMaidCallback(maid: Maid, data: string, cq: any): Promise<boolean> {
+  const chatId = cq.message?.chat?.id;
+  const messageId = cq.message?.message_id;
+  if (!chatId) return false;
+  const sb = svc();
+
+  const [action, cleaningId] = data.split(":");
+  if (!cleaningId) return false;
+
+  const { data: cleaning } = await sb
+    .from("cleanings")
+    .select("id, user_id, booking_id, realty_id, apartment_title, maid_id, scheduled_date, scheduled_time, status, offered_to")
+    .eq("id", cleaningId)
+    .maybeSingle();
+
+  if (!cleaning || cleaning.user_id !== maid.user_id) {
+    await tgSendMessage(chatId, "Уборка не найдена или уже неактуальна.");
+    return true;
+  }
+
+  if (action === "maid_accept") {
+    if (cleaning.status !== "pending_response") {
+      // Кто-то уже принял
+      if (cleaning.maid_id && cleaning.maid_id !== maid.id) {
+        await tgSendMessage(chatId, `Эта уборка уже принята другой горничной. Спасибо.`);
+      } else {
+        await tgSendMessage(chatId, `Статус уборки: ${cleaning.status}.`);
+      }
+      return true;
+    }
+    await sb.from("cleanings").update({
+      status: "accepted",
+      maid_id: maid.id,
+      accepted_at: new Date().toISOString(),
+      tg_message_id: messageId ?? null,
+    }).eq("id", cleaning.id);
+
+    // Убираем кнопки у остальных, кому предложили
+    const offered: string[] = Array.isArray(cleaning.offered_to) ? cleaning.offered_to : [];
+    for (const otherId of offered) {
+      if (otherId === maid.id) continue;
+      const { data: other } = await sb.from("maids").select("tg_chat_id").eq("id", otherId).maybeSingle();
+      if (other?.tg_chat_id) {
+        await tgSendMessage(other.tg_chat_id, `ℹ️ Уборка (${htmlEscape(cleaning.apartment_title || "")}, ${fmtDateShort(cleaning.scheduled_date)}) уже принята другой горничной.`);
+      }
+    }
+
+    await tgSendMessage(chatId, `✅ Уборка принята.\n📍 ${htmlEscape(cleaning.apartment_title || "")}\n📅 ${fmtDateShort(cleaning.scheduled_date)} в ${String(cleaning.scheduled_time || "12:00").slice(0,5)}\n\nВ день уборки я пришлю напоминание.`);
+    await notifyManager(maid.user_id, `✅ Горничная <b>${htmlEscape(maid.name)}</b> приняла уборку по брони <code>${cleaning.booking_id || "—"}</code> (${htmlEscape(cleaning.apartment_title || "")}, ${fmtDateShort(cleaning.scheduled_date)}).`, "notify_on_cleaning_response");
+    return true;
+  }
+
+  if (action === "maid_decline") {
+    if (cleaning.status !== "pending_response") {
+      await tgSendMessage(chatId, `Уборка уже в статусе: ${cleaning.status}.`);
+      return true;
+    }
+    // Если уборку предлагали ещё кому-то — не отменяем; иначе ставим pending без исполнителя
+    const offered: string[] = Array.isArray(cleaning.offered_to) ? cleaning.offered_to : [];
+    const others = offered.filter(id => id !== maid.id);
+    const updatePatch: any = { declined_at: new Date().toISOString(), offered_to: others };
+    if (others.length === 0) updatePatch.status = "declined";
+    await sb.from("cleanings").update(updatePatch).eq("id", cleaning.id);
+
+    await tgSendMessage(chatId, `❌ Вы отказались от уборки.\n📍 ${htmlEscape(cleaning.apartment_title || "")}\n📅 ${fmtDateShort(cleaning.scheduled_date)}`);
+    await notifyManager(maid.user_id, `❌ Горничная <b>${htmlEscape(maid.name)}</b> отказалась от уборки по брони <code>${cleaning.booking_id || "—"}</code> (${htmlEscape(cleaning.apartment_title || "")}, ${fmtDateShort(cleaning.scheduled_date)}).${others.length === 0 ? "\n⚠️ Больше никому не предложено — назначьте вручную." : ""}`, "notify_on_cleaning_response");
+    return true;
+  }
+
+  if (action === "maid_on_site") {
+    if (cleaning.maid_id !== maid.id) {
+      await tgSendMessage(chatId, "Эта уборка не назначена вам.");
+      return true;
+    }
+    if (cleaning.status === "completed") {
+      await tgSendMessage(chatId, "Уборка уже завершена.");
+      return true;
+    }
+    await sb.from("cleanings").update({
+      status: "on_site",
+      on_site_at: new Date().toISOString(),
+    }).eq("id", cleaning.id);
+
+    const kb = {
+      inline_keyboard: [[{ text: "✅ Уборка завершена", callback_data: `maid_completed:${cleaning.id}` }]],
+    };
+    await tgSendMessage(chatId, `🏠 Отмечено: вы на месте.\n📍 ${htmlEscape(cleaning.apartment_title || "")}\n\nКогда закончите — нажмите кнопку ниже.`, { reply_markup: kb });
+    await notifyManager(maid.user_id, `🏠 Горничная <b>${htmlEscape(maid.name)}</b> на месте: ${htmlEscape(cleaning.apartment_title || "")}.`, "notify_on_cleaning_response");
+    return true;
+  }
+
+  if (action === "maid_completed") {
+    if (cleaning.maid_id !== maid.id) {
+      await tgSendMessage(chatId, "Эта уборка не назначена вам.");
+      return true;
+    }
+    if (cleaning.status === "completed") {
+      await tgSendMessage(chatId, "Уборка уже отмечена как завершённая.");
+      return true;
+    }
+    await sb.from("cleanings").update({
+      status: "completed",
+      completed_at: new Date().toISOString(),
+    }).eq("id", cleaning.id);
+
+    await tgSendMessage(chatId, `✅ Спасибо! Уборка отмечена как завершённая.\n📍 ${htmlEscape(cleaning.apartment_title || "")}`);
+    await notifyManager(maid.user_id, `✅ Горничная <b>${htmlEscape(maid.name)}</b> завершила уборку: ${htmlEscape(cleaning.apartment_title || "")} (${fmtDateShort(cleaning.scheduled_date)}).`, "notify_on_cleaning_response");
+    return true;
+  }
+
+  if (action === "maid_supply") {
+    // Помечаем «ожидает описание расходника» через maid_messages system-запись
+    await sb.from("maid_messages").insert({
+      user_id: maid.user_id,
+      maid_id: maid.id,
+      tg_chat_id: chatId,
+      direction: "system",
+      sender: "bot",
+      text: `awaiting_supply:${cleaning.id}`,
+    });
+    await tgSendMessage(chatId, `📦 Напишите, что нужно докупить — можно текстом и/или фото.\nВаше следующее сообщение будет отправлено менеджеру как заявка.`);
+    return true;
+  }
+
+  return false;
+}
+
+async function handleMaidStart(chatId: number, token: string, from: any) {
+  const maid = await findMaidByInviteToken(token);
+  if (!maid) {
+    await tgSendMessage(chatId, "Ссылка-приглашение недействительна или уже использована. Попросите менеджера прислать новую.");
+    return;
+  }
+  const sb = svc();
+  await sb.from("maids").update({
+    tg_chat_id: chatId,
+    invite_token: null,
+    updated_at: new Date().toISOString(),
+  }).eq("id", maid.id);
+
+  const displayName = maid.name || [from?.first_name, from?.last_name].filter(Boolean).join(" ") || "";
+  const welcome = `Здравствуйте, <b>${htmlEscape(displayName)}</b>.\n\nВы зарегистрированы как горничная в системе Green Yard. Ожидайте уведомлений о новых уборках — они будут приходить сюда с кнопками «Принять» и «Отказаться».\n\nЧтобы заказать расходники — используйте кнопку в уведомлении об уборке или напишите менеджеру напрямую в этот чат.`;
+  await tgSendMessage(chatId, welcome);
+  await logMaidMessage({ ...maid, tg_chat_id: chatId }, "outbound", "bot", welcome);
+
+  await notifyManager(maid.user_id, `👋 Горничная <b>${htmlEscape(displayName)}</b> подключилась к боту.`);
+}
+
+async function handleMaidFreeText(maid: Maid, chatId: number, text: string, tgMessageId: number, photoUrl?: string) {
+  const sb = svc();
+
+  // Проверяем, ждём ли мы описание расходника (последняя system-запись с awaiting_supply:<id>)
+  const { data: sysMsg } = await sb
+    .from("maid_messages")
+    .select("id, text")
+    .eq("maid_id", maid.id)
+    .eq("direction", "system")
+    .like("text", "awaiting_supply:%")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (sysMsg?.text) {
+    const cleaningId = String(sysMsg.text).replace("awaiting_supply:", "");
+    // Создаём заявку
+    const { data: cleaning } = await sb
+      .from("cleanings")
+      .select("realty_id, apartment_title")
+      .eq("id", cleaningId)
+      .maybeSingle();
+    await sb.from("supply_requests").insert({
+      user_id: maid.user_id,
+      maid_id: maid.id,
+      realty_id: cleaning?.realty_id ?? null,
+      text: text || null,
+      photo_url: photoUrl || null,
+    });
+    // Убираем маркер ожидания
+    await sb.from("maid_messages").delete().eq("id", sysMsg.id);
+
+    await logMaidMessage(maid, "inbound", "maid", text, tgMessageId, photoUrl);
+    await tgSendMessage(chatId, `📦 Заявка на расходники принята. Менеджер уведомлён.`);
+    await notifyManager(
+      maid.user_id,
+      `📦 <b>Заявка на расходники</b>\nОт: <b>${htmlEscape(maid.name)}</b>\nКвартира: ${htmlEscape(cleaning?.apartment_title || "?")}\n\n${htmlEscape(text || "(без описания)")}${photoUrl ? `\n<a href="${photoUrl}">фото</a>` : ""}`,
+      "notify_on_supply_request"
+    );
+    return;
+  }
+
+  // Обычное сообщение горничной → чат с менеджером
+  await logMaidMessage(maid, "inbound", "maid", text, tgMessageId, photoUrl);
+  await notifyManager(
+    maid.user_id,
+    `💬 <b>${htmlEscape(maid.name)}</b> (горничная):\n\n${htmlEscape(text)}`,
+    "notify_on_inbound"
+  );
+}
+
+
 function blockAddress(instr: any): string | null {
   if (!instr) return null;
   const parts: string[] = [];
@@ -750,6 +1009,22 @@ async function handleFreeText(chatId: number, from: any, text: string, tgMessage
   await notifyManager(session.user_id, `💬 <b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>):\n\n${htmlEscape(text)}`, "notify_on_inbound");
 }
 
+// Extract photo URL if attached (returns first photo's file_id transformed to URL)
+async function extractPhotoUrl(msg: any): Promise<string | undefined> {
+  const photos = msg?.photo;
+  if (!Array.isArray(photos) || photos.length === 0) return undefined;
+  const largest = photos[photos.length - 1];
+  const fileId = largest?.file_id;
+  if (!fileId) return undefined;
+  try {
+    const r = await fetch(`${TG_API}/getFile?file_id=${encodeURIComponent(fileId)}`);
+    const j = await r.json();
+    const path = j?.result?.file_path;
+    if (!path) return undefined;
+    return `https://api.telegram.org/file/bot${TG_TOKEN}/${path}`;
+  } catch { return undefined; }
+}
+
 async function handleUpdate(update: any) {
   if (update.callback_query) {
     const cq = update.callback_query;
@@ -757,6 +1032,16 @@ async function handleUpdate(update: any) {
     const data = cq.data || "";
     await tgAnswerCallback(cq.id);
     if (!chatId) return;
+
+    // Сначала — горничная (её callback’ы начинаются с maid_)
+    if (data.startsWith("maid_")) {
+      const maid = await findMaidByChatId(chatId);
+      if (maid) {
+        const handled = await handleMaidCallback(maid, data, cq);
+        if (handled) return;
+      }
+    }
+
     if (data === "i_arrived") await handleArrival(chatId, cq.from, "arrived");
     else if (data === "i_leaving") await handleArrival(chatId, cq.from, "leaving");
     else await handleCommand(chatId, data, cq.from);
@@ -765,14 +1050,32 @@ async function handleUpdate(update: any) {
   const msg = update.message || update.edited_message;
   if (!msg) return;
   const chatId: number | undefined = msg.chat?.id;
-  const text: string = msg.text || "";
+  const text: string = msg.text || msg.caption || "";
   const tgMessageId: number = msg.message_id;
   if (!chatId) return;
+
   if (text.startsWith("/start")) {
     const arg = text.replace(/^\/start\s*/, "").trim();
+    // Горничная перешла по инвайт-ссылке
+    if (arg.startsWith("maid_")) {
+      const token = arg.slice(5);
+      await handleMaidStart(chatId, token, msg.from);
+      return;
+    }
     await handleStart(chatId, arg, msg.from);
     return;
   }
+
+  // Если чат уже привязан к горничной — весь трафик её
+  const maid = await findMaidByChatId(chatId);
+  if (maid) {
+    const photoUrl = await extractPhotoUrl(msg);
+    if (text.trim() || photoUrl) {
+      await handleMaidFreeText(maid, chatId, text, tgMessageId, photoUrl);
+    }
+    return;
+  }
+
   if (text.startsWith("/")) {
     const cmd = text.split(/\s+/)[0].replace(/^\//, "").split("@")[0];
     await handleCommand(chatId, cmd, msg.from);
@@ -840,15 +1143,89 @@ async function endpointTest(req: Request): Promise<Response> {
   return json({ ok: true });
 }
 
+// Отправка сообщения от менеджера горничной
+async function endpointSendMaid(req: Request): Promise<Response> {
+  const userId = await getUserIdFromJwt(req);
+  if (!userId) return json({ ok: false, error: "unauthorized" }, 401);
+  let body: any = null;
+  try { body = await req.json(); }
+  catch { return json({ ok: false, error: "bad_json" }, 400); }
+  const maidId = body?.maid_id;
+  const text = (body?.text || "").toString().trim();
+  if (!maidId || !text) return json({ ok: false, error: "maid_id_and_text_required" }, 400);
+  const sb = svc();
+  const { data: maid, error } = await sb
+    .from("maids")
+    .select("id, user_id, tg_chat_id, name")
+    .eq("id", maidId)
+    .maybeSingle();
+  if (error || !maid) return json({ ok: false, error: "maid_not_found" }, 404);
+  if (maid.user_id !== userId) return json({ ok: false, error: "forbidden" }, 403);
+  if (!maid.tg_chat_id) return json({ ok: false, error: "maid_not_connected" }, 409);
+  const tgRes = await tgSendMessage(maid.tg_chat_id, text);
+  if (!tgRes.ok) return json({ ok: false, error: "telegram_error", details: tgRes }, 502);
+  const tgMessageId = tgRes?.result?.message_id ?? null;
+  await sb.from("maid_messages").insert({
+    user_id: maid.user_id,
+    maid_id: maid.id,
+    tg_chat_id: maid.tg_chat_id,
+    tg_message_id: tgMessageId,
+    direction: "outbound",
+    sender: "manager",
+    text,
+  });
+  return json({ ok: true, tg_message_id: tgMessageId });
+}
+
+// Cron endpoint: шлёт утренние напоминания горничным на день уборки
+// Защита: заголовок x-cron-secret
+async function endpointCleaningReminders(req: Request): Promise<Response> {
+  const got = req.headers.get("x-cron-secret") || "";
+  const sb = svc();
+  const { data: cfg } = await sb.from("cron_config").select("secret").eq("key", "cleaning_reminders").maybeSingle();
+  const secret = cfg?.secret || Deno.env.get("CRON_SECRET") || "";
+  if (!secret || got !== secret) return json({ ok: false, error: "forbidden" }, 403);
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Все принятые уборки на сегодня, которым ещё не слали reminder
+  const { data: cleanings } = await sb
+    .from("cleanings")
+    .select("id, user_id, maid_id, apartment_title, scheduled_date, scheduled_time, status, reminded_at")
+    .eq("scheduled_date", today)
+    .in("status", ["accepted", "pending_response"])
+    .is("reminded_at", null);
+
+  let sent = 0;
+  for (const c of cleanings || []) {
+    if (!c.maid_id) continue;
+    const { data: maid } = await sb.from("maids").select("tg_chat_id, name").eq("id", c.maid_id).maybeSingle();
+    if (!maid?.tg_chat_id) continue;
+    const kb = {
+      inline_keyboard: [[{ text: "🏠 Я на месте", callback_data: `maid_on_site:${c.id}` }]],
+    };
+    const text = `⏰ <b>Напоминание об уборке</b>\n📍 ${htmlEscape(c.apartment_title || "")}\n📅 Сегодня в ${String(c.scheduled_time || "12:00").slice(0,5)}\n\nКогда прибудете — нажмите кнопку ниже.`;
+    const r = await tgSendMessage(maid.tg_chat_id, text, { reply_markup: kb });
+    if (r?.ok) {
+      await sb.from("cleanings").update({ reminded_at: new Date().toISOString() }).eq("id", c.id);
+      sent++;
+    }
+  }
+
+  return json({ ok: true, sent, total: (cleanings || []).length });
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
   const url = new URL(req.url);
   const path = url.pathname.replace(/^\/telegram-bot/, "") || "/";
   try {
-    if (req.method === "POST" && (path === "/" || path === ""))   return await endpointWebhook(req);
-    if (req.method === "POST" && path === "/send")                return await endpointSend(req);
-    if (req.method === "POST" && path === "/test")                return await endpointTest(req);
-    if (req.method === "GET"  && (path === "/" || path === ""))   return json({ ok: true, service: "telegram-bot", endpoints: ["POST /", "POST /send", "POST /test"] });
+    if (req.method === "POST" && (path === "/" || path === ""))    return await endpointWebhook(req);
+    if (req.method === "POST" && path === "/send")                 return await endpointSend(req);
+    if (req.method === "POST" && path === "/send_maid")            return await endpointSendMaid(req);
+    if (req.method === "POST" && path === "/test")                 return await endpointTest(req);
+    if (req.method === "POST" && path === "/cleaning_reminders")   return await endpointCleaningReminders(req);
+    if (req.method === "GET"  && (path === "/" || path === ""))    return json({ ok: true, service: "telegram-bot", endpoints: ["POST /", "POST /send", "POST /send_maid", "POST /test", "POST /cleaning_reminders"] });
     return json({ ok: false, error: "not_found", path }, 404);
   } catch (e) {
     console.error("[telegram-bot] router error:", e);

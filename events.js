@@ -7,6 +7,7 @@ import { persistState, exportJson, importJson } from './storage.js';
 import { signInWithEmail, signUpWithEmail, signOutUser } from './supabase-client.js';
 import { addApartment, addCustomItem, applyWriteoff, createPurchaseRequest, deleteApartment, deleteItem, newCheckin, renameCurrentApartment, resetAll, restockDefaults, toggleAutoRequest, toggleRequestDone, updateItemField, updateRequestItemCost } from './actions.js';
 import { bindGuestBotEvents } from './guestBot.js';
+import { bindMaidsEvents } from './maidsUI.js';
 import { openOkidokiSettings } from './okidoki.js';
 
 async function rerender(statusText = 'Сохранено') {
@@ -1166,6 +1167,12 @@ export function bindEvents() {
   try {
     bindGuestBotEvents({ get apartments() { return getState().apartments || []; } });
   } catch (e) { console.warn('[events] bindGuestBotEvents:', e?.message || e); }
+  try {
+    bindMaidsEvents({
+      get apartments() { return getState().apartments || []; },
+      get managerSettings() { return getState().managerSettings || {}; },
+    });
+  } catch (e) { console.warn('[events] bindMaidsEvents:', e?.message || e); }
 }
 
 // ─── Auth UI ──────────────────────────────────────────────────────────────
