@@ -788,23 +788,34 @@ body:has(.drawer.open) .auth-corner-btn{ display:none !important; }
 .maid-apt-cb{
   width:20px !important;
   height:20px !important;
-  min-width:20px;
+  min-width:20px !important;
+  max-width:20px !important;
   padding:0 !important;
-  margin:0;
-  flex:0 0 auto;
+  margin:0 !important;
+  flex:0 0 20px !important;
+  box-sizing:border-box !important;
   accent-color:var(--color-primary);
+  border:1px solid rgba(60,60,60,.3) !important;
+  background:var(--color-surface-2) !important;
+  appearance:auto !important;
+  -webkit-appearance:checkbox !important;
 }
 .maid-apt-name{
-  flex:1;
+  display:block;
+  flex:1 1 auto;
   min-width:0;
   overflow:hidden;
   text-overflow:ellipsis;
   white-space:nowrap;
+  color:var(--color-text);
+  font-size:.95rem;
 }
 .maid-apt-rid{
+  display:block;
   color:var(--color-text-muted);
   flex:0 0 auto;
   font-variant-numeric:tabular-nums;
+  font-size:.8rem;
 }
 
 /* Чат-инпут горничной */
