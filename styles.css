@@ -769,3 +769,60 @@ body:has(.drawer.open) .auth-corner-btn{ display:none !important; }
   line-height:1.35;
   font-size:.95rem;
 }
+
+/* ── Раздел «Горничные» ─────────────────────────────────────────── */
+.maid-apt-row{
+  display:flex;
+  align-items:center;
+  gap:.6rem;
+  padding:.5rem .6rem;
+  border-radius:.5rem;
+  cursor:pointer;
+  border:1px solid transparent;
+  transition:background .15s, border-color .15s;
+}
+.maid-apt-row:hover{
+  background:var(--color-surface-2);
+  border-color:rgba(60,60,60,.12);
+}
+.maid-apt-cb{
+  width:20px !important;
+  height:20px !important;
+  min-width:20px;
+  padding:0 !important;
+  margin:0;
+  flex:0 0 auto;
+  accent-color:var(--color-primary);
+}
+.maid-apt-name{
+  flex:1;
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.maid-apt-rid{
+  color:var(--color-text-muted);
+  flex:0 0 auto;
+  font-variant-numeric:tabular-nums;
+}
+
+/* Чат-инпут горничной */
+#maidChatInput{
+  padding:.65rem .85rem;
+}
+#maidChatBox img{
+  max-width:100%;
+  height:auto;
+}
+
+/* Мобильная адаптация модалок горничных */
+@media (max-width:640px){
+  #maidsModal .modal,
+  #maidEditModal .modal,
+  #maidChatModal .modal{
+    padding:1rem;
+    border-radius:1rem;
+  }
+  .maid-apt-row{ padding:.55rem .5rem; }
+}

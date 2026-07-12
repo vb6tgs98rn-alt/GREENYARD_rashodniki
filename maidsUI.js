@@ -234,7 +234,7 @@ function ensureMaidsModal() {
           <label><span class="small">Телефон (необязательно)</span><input type="text" id="maidEditPhone" placeholder="+7…" /></label>
           <div>
             <div class="small" style="margin-bottom:.35rem;">Квартиры, за которыми закреплена горничная</div>
-            <div id="maidEditApartments" style="display:grid;gap:.4rem;max-height:260px;overflow:auto;padding:.5rem;border:1px solid rgba(60,60,60,.15);border-radius:.75rem;"></div>
+            <div id="maidEditApartments" style="display:grid;gap:.4rem;max-height:260px;overflow-y:auto;overflow-x:hidden;padding:.5rem;border:1px solid rgba(60,60,60,.15);border-radius:.75rem;"></div>
           </div>
           <div id="maidEditInviteBox" hidden style="padding:.75rem;background:var(--color-surface-2);border-radius:.75rem;">
             <div class="small" style="margin-bottom:.35rem;">Ссылка для входа горничной в Telegram-бот:</div>
@@ -325,10 +325,10 @@ function renderMaidEditForm(maid = null) {
     box.innerHTML = '<div class="small" style="color:var(--color-text-muted);padding:.4rem;">Нет квартир с realty_id. Добавьте realty_id в настройках квартиры.</div>';
   } else {
     box.innerHTML = apts.map(a => `
-      <label style="display:flex;gap:.5rem;align-items:center;cursor:pointer;padding:.35rem;border-radius:.4rem;">
-        <input type="checkbox" data-maid-apt="${htmlEscape(a._rid)}" ${selected.has(a._rid) ? 'checked' : ''} />
-        <span>${htmlEscape(a.name || `Квартира #${a._rid}`)}</span>
-        <span class="small" style="color:var(--color-text-muted);margin-left:auto;">#${htmlEscape(a._rid)}</span>
+      <label class="maid-apt-row">
+        <input type="checkbox" class="maid-apt-cb" data-maid-apt="${htmlEscape(a._rid)}" ${selected.has(a._rid) ? 'checked' : ''} />
+        <span class="maid-apt-name">${htmlEscape(a.name || `Квартира #${a._rid}`)}</span>
+        <span class="maid-apt-rid small">#${htmlEscape(a._rid)}</span>
       </label>
     `).join('');
   }
