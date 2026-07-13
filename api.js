@@ -33,7 +33,8 @@ export async function fetchRealtyCalendarBookings(limit = 2000) {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) return [];
   const { data, error } = await supabase
     .from('rc_bookings')
@@ -56,7 +57,8 @@ export async function fetchRealtyCalendarLog(limit = 20) {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) return [];
   const { data, error } = await supabase
     .from('rc_webhook_log')
@@ -79,7 +81,8 @@ export async function fetchRealtyCalendarIntegration() {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) return null;
   const { data, error } = await supabase
     .from('rc_integrations')
@@ -102,7 +105,8 @@ export async function saveRealtyCalendarIntegration(agencyId) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) throw new Error('Войдите в аккаунт');
   const num = Number(agencyId);
   if (!Number.isInteger(num) || num <= 0) {
@@ -136,7 +140,8 @@ export async function disconnectRealtyCalendar() {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) throw new Error('Войдите в аккаунт');
   const { error } = await supabase
     .from('rc_integrations')

@@ -93,7 +93,8 @@ export async function fetchManagerSettings() {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) return null;
   const { data, error } = await supabase
     .from('manager_settings').select('*').eq('user_id', user.id).maybeSingle();
@@ -105,7 +106,8 @@ export async function saveManagerSettings(patch) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) throw new Error('Войдите в аккаунт');
   const row = { user_id: user.id, updated_at: new Date().toISOString(), ...patch };
   const { error } = await supabase.from('manager_settings').upsert(row, { onConflict: 'user_id' });
@@ -121,7 +123,8 @@ export async function fetchAllInstructions() {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) return [];
   const { data, error } = await supabase
     .from('guest_instructions').select('*').eq('user_id', user.id);
@@ -133,7 +136,8 @@ export async function fetchInstructionFor(apartmentId) {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) return null;
   const { data, error } = await supabase
     .from('guest_instructions').select('*')
@@ -146,7 +150,8 @@ export async function saveInstruction(apartmentId, apartmentTitle, patch) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) throw new Error('Войдите в аккаунт');
   // Без apartment_id upsert упадёт в БД (NOT NULL),
   // поэтому отлавливаем раньше и с понятным сообщением.
@@ -190,7 +195,8 @@ export async function ensureSessionForBooking(booking) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) throw new Error('Войдите в аккаунт');
   if (!booking?.booking_id) throw new Error('Бронь без booking_id');
   // secure_id берём из raw_payload
@@ -292,7 +298,8 @@ export async function sendManagerMessage(session, text) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) throw new Error('Войдите в аккаунт');
   if (!session?.session_id) throw new Error('Чат не найден');
   if (!text || !text.trim()) throw new Error('Пустое сообщение');
@@ -325,7 +332,8 @@ export async function setChatAiEnabled(sessionId, enabled) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) throw new Error('Войдите в аккаунт');
   const { error } = await supabase
     .from('guest_sessions')
@@ -340,7 +348,8 @@ export async function markChatAsRead(sessionId) {
   const supabase = getSupabaseClient();
   if (!supabase) return;
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) return;
   await supabase
     .from('guest_messages')
@@ -355,7 +364,8 @@ export async function fetchUnreadCount() {
   const supabase = getSupabaseClient();
   if (!supabase) return 0;
   await waitForAuthReady();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) return 0;
   const { count, error } = await supabase
     .from('guest_messages')

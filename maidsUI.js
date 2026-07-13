@@ -43,7 +43,8 @@ function randomToken(len = 24) {
 export async function fetchMaids() {
   const sb = supabase();
   await waitForAuthReady();
-  const { data: { user } } = await sb.auth.getUser();
+  const { data: { session: _sess } } = await sb.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) return [];
   const { data: maids, error } = await sb
     .from('maids')
@@ -68,7 +69,8 @@ export async function fetchMaids() {
 async function createMaid({ name, phone, realtyIds }) {
   const sb = supabase();
   await waitForAuthReady();
-  const { data: { user } } = await sb.auth.getUser();
+  const { data: { session: _sess } } = await sb.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) throw new Error('unauthorized');
   const token = randomToken(20);
   const { data: maid, error } = await sb
@@ -101,7 +103,8 @@ async function createMaid({ name, phone, realtyIds }) {
 async function updateMaidApartments(maidId, realtyIds) {
   const sb = supabase();
   await waitForAuthReady();
-  const { data: { user } } = await sb.auth.getUser();
+  const { data: { session: _sess } } = await sb.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) throw new Error('unauthorized');
   const { error: eDel } = await sb.from('maid_apartments').delete().eq('maid_id', maidId);
   if (eDel) {
@@ -137,7 +140,8 @@ async function deleteMaid(maidId) {
 export async function fetchMaidChats() {
   const sb = supabase();
   await waitForAuthReady();
-  const { data: { user } } = await sb.auth.getUser();
+  const { data: { session: _sess } } = await sb.auth.getSession();
+  const user = _sess?.user ?? null;
   if (!user) return [];
   const { data: maids } = await sb
     .from('maids')

@@ -23,9 +23,13 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 let _authReadyResolve;
 const _authReadyPromise = new Promise((r) => { _authReadyResolve = r; });
 let _authReady = false;
+let _currentSession = null;
+let _currentUser = null;
 
 supabase.auth.onAuthStateChange((event, session) => {
-  if (!_authReady && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
+  _currentSession = session ?? null;
+  _currentUser = session?.user ?? null;
+  if (!_authReady) {
     _authReady = true;
     _authReadyResolve(session ?? null);
   }
@@ -47,8 +51,14 @@ export function waitForAuthReady() {
 /** Возвращает текущего пользователя, дождавшись готовности сессии. */
 export async function requireUser() {
   await _authReadyPromise;
-  const { data } = await supabase.auth.getUser();
-  return data?.user ?? null;
+  if (_currentUser) return _currentUser;
+  const { data } = await supabase.auth.getSession();
+  return data?.session?.user ?? null;
+}
+
+/** Синхронный геттер кэшированного user — после waitForAuthReady() гарантированно актуален. */
+export function currentUser() {
+  return _currentUser;
 }
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
@@ -90,12 +100,12 @@ export async function signOutUser() {
   }
 }
 
-/** Текущий пользователь или null. Не бросает. Дожидается hydrate сессии. */
+/** Текущий пользователь или null. Не бросает. Читает из локальной сессии (без HTTP). */
 export async function getCurrentUser() {
   try {
     await _authReadyPromise;
-    const { data } = await supabase.auth.getUser();
-    return data?.user ?? null;
+    const { data } = await supabase.auth.getSession();
+    return data?.session?.user ?? null;
   } catch (e) {
     console.warn('[auth] getCurrentUser error:', e);
     return null;
