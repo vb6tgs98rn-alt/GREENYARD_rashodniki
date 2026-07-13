@@ -88,7 +88,10 @@ async function createMaid({ name, phone, realtyIds }) {
       realty_id: Number(rid),
     }));
     const { error: e2 } = await sb.from('maid_apartments').insert(rows);
-    if (e2) console.warn('[maids] link error:', e2.message);
+    if (e2) {
+      console.error('[maids] link error:', e2);
+      throw new Error('Не удалось закрепить квартиры: ' + (e2.message || e2.code || 'unknown'));
+    }
   }
   return maid;
 }
@@ -97,14 +100,22 @@ async function updateMaidApartments(maidId, realtyIds) {
   const sb = supabase();
   const { data: { user } } = await sb.auth.getUser();
   if (!user) throw new Error('unauthorized');
-  await sb.from('maid_apartments').delete().eq('maid_id', maidId);
+  const { error: eDel } = await sb.from('maid_apartments').delete().eq('maid_id', maidId);
+  if (eDel) {
+    console.error('[maids] delete links error:', eDel);
+    throw new Error('Не удалось очистить закрепления: ' + (eDel.message || 'unknown'));
+  }
   if (realtyIds?.length) {
     const rows = realtyIds.map(rid => ({
       maid_id: maidId,
       user_id: user.id,
       realty_id: Number(rid),
     }));
-    await sb.from('maid_apartments').insert(rows);
+    const { error: eIns } = await sb.from('maid_apartments').insert(rows);
+    if (eIns) {
+      console.error('[maids] insert links error:', eIns);
+      throw new Error('Не удалось сохранить квартиры: ' + (eIns.message || 'unknown'));
+    }
   }
 }
 

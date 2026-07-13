@@ -20,7 +20,7 @@ import { openModal, closeModal, setStatus } from './render.js';
 import { fetchRealtyCalendarBookings } from './api.js';
 
 // URL Edge Function бота (один webhook для всех пользователей).
-export const TELEGRAM_BOT_USERNAME_DEFAULT = 'greenyard_guests_bot';
+export const TELEGRAM_BOT_USERNAME_DEFAULT = 'GreenYardRashodnikiBot';
 export const BOT_FUNCTION_URL = 'https://wpwuxcxmtvdxftqrrxuu.supabase.co/functions/v1/telegram-bot';
 
 // ─────────────────────────────────────────────────────────────────────────────
