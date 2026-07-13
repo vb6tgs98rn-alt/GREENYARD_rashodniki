@@ -11,7 +11,7 @@
 // Требует: supabase-client.js, render.js, config (BOT_FUNCTION_URL)
 // ==================================================
 
-import { getSupabaseClient } from './supabase-client.js';
+import { getSupabaseClient, waitForAuthReady} from './supabase-client.js';
 import { openModal, closeModal, setStatus } from './render.js';
 import { BOT_FUNCTION_URL, TELEGRAM_BOT_USERNAME_DEFAULT } from './guestBot.js';
 
@@ -42,6 +42,7 @@ function randomToken(len = 24) {
 
 export async function fetchMaids() {
   const sb = supabase();
+  await waitForAuthReady();
   const { data: { user } } = await sb.auth.getUser();
   if (!user) return [];
   const { data: maids, error } = await sb
@@ -66,6 +67,7 @@ export async function fetchMaids() {
 
 async function createMaid({ name, phone, realtyIds }) {
   const sb = supabase();
+  await waitForAuthReady();
   const { data: { user } } = await sb.auth.getUser();
   if (!user) throw new Error('unauthorized');
   const token = randomToken(20);
@@ -98,6 +100,7 @@ async function createMaid({ name, phone, realtyIds }) {
 
 async function updateMaidApartments(maidId, realtyIds) {
   const sb = supabase();
+  await waitForAuthReady();
   const { data: { user } } = await sb.auth.getUser();
   if (!user) throw new Error('unauthorized');
   const { error: eDel } = await sb.from('maid_apartments').delete().eq('maid_id', maidId);
@@ -133,6 +136,7 @@ async function deleteMaid(maidId) {
 
 export async function fetchMaidChats() {
   const sb = supabase();
+  await waitForAuthReady();
   const { data: { user } } = await sb.auth.getUser();
   if (!user) return [];
   const { data: maids } = await sb

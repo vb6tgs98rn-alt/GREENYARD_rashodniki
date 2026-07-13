@@ -14,7 +14,7 @@
 //     api.js (fetchRealtyCalendarBookings), state.js (apartments).
 // =============================================================================
 
-import { getSupabaseClient } from './supabase-client.js';
+import { getSupabaseClient, waitForAuthReady} from './supabase-client.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { openModal, closeModal, setStatus } from './render.js';
 import { fetchRealtyCalendarBookings } from './api.js';
@@ -92,6 +92,7 @@ const DEFAULT_INVITE_TEMPLATE = `Здравствуйте, {name}! 👋
 export async function fetchManagerSettings() {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
+  await waitForAuthReady();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null;
   const { data, error } = await supabase
@@ -103,6 +104,7 @@ export async function fetchManagerSettings() {
 export async function saveManagerSettings(patch) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
+  await waitForAuthReady();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Войдите в аккаунт');
   const row = { user_id: user.id, updated_at: new Date().toISOString(), ...patch };
@@ -118,6 +120,7 @@ export async function saveManagerSettings(patch) {
 export async function fetchAllInstructions() {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
+  await waitForAuthReady();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return [];
   const { data, error } = await supabase
@@ -129,6 +132,7 @@ export async function fetchAllInstructions() {
 export async function fetchInstructionFor(apartmentId) {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
+  await waitForAuthReady();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null;
   const { data, error } = await supabase
@@ -141,6 +145,7 @@ export async function fetchInstructionFor(apartmentId) {
 export async function saveInstruction(apartmentId, apartmentTitle, patch) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
+  await waitForAuthReady();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Войдите в аккаунт');
   // Без apartment_id upsert упадёт в БД (NOT NULL),
@@ -184,6 +189,7 @@ export async function saveInstruction(apartmentId, apartmentTitle, patch) {
 export async function ensureSessionForBooking(booking) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
+  await waitForAuthReady();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Войдите в аккаунт');
   if (!booking?.booking_id) throw new Error('Бронь без booking_id');
@@ -285,6 +291,7 @@ export async function fetchMessages(sessionId, limit = 200) {
 export async function sendManagerMessage(session, text) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
+  await waitForAuthReady();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Войдите в аккаунт');
   if (!session?.session_id) throw new Error('Чат не найден');
@@ -317,6 +324,7 @@ export async function sendManagerMessage(session, text) {
 export async function setChatAiEnabled(sessionId, enabled) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
+  await waitForAuthReady();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Войдите в аккаунт');
   const { error } = await supabase
@@ -331,6 +339,7 @@ export async function setChatAiEnabled(sessionId, enabled) {
 export async function markChatAsRead(sessionId) {
   const supabase = getSupabaseClient();
   if (!supabase) return;
+  await waitForAuthReady();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return;
   await supabase
@@ -345,6 +354,7 @@ export async function markChatAsRead(sessionId) {
 export async function fetchUnreadCount() {
   const supabase = getSupabaseClient();
   if (!supabase) return 0;
+  await waitForAuthReady();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return 0;
   const { count, error } = await supabase

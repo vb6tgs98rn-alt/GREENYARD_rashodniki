@@ -15,6 +15,42 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   },
 });
 
+// ─── Auth readiness ────────────────────────────────────────────────────────────
+// Supabase SDK поднимает сессию из localStorage асинхронно. Если UI успевает
+// вызвать getUser() до того, как SDK закончил hydrate, вернётся null и запросы
+// уйдут с anon-ключом. Ждём первый INITIAL_SESSION событие (или его отсутствие),
+// после чего getUser() отдаёт валидное значение.
+let _authReadyResolve;
+const _authReadyPromise = new Promise((r) => { _authReadyResolve = r; });
+let _authReady = false;
+
+supabase.auth.onAuthStateChange((event, session) => {
+  if (!_authReady && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
+    _authReady = true;
+    _authReadyResolve(session ?? null);
+  }
+});
+
+// Fallback: если SDK по какой-то причине не эмитит INITIAL_SESSION, разблокируем через 1500мс
+setTimeout(() => {
+  if (!_authReady) {
+    _authReady = true;
+    _authReadyResolve(null);
+  }
+}, 1500);
+
+/** Дожидается инициализации сессии Supabase из localStorage. Разрешается ровно один раз. */
+export function waitForAuthReady() {
+  return _authReadyPromise;
+}
+
+/** Возвращает текущего пользователя, дождавшись готовности сессии. */
+export async function requireUser() {
+  await _authReadyPromise;
+  const { data } = await supabase.auth.getUser();
+  return data?.user ?? null;
+}
+
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
 
 /** Регистрация по email + password. Возвращает { user, session, error }. */
@@ -54,9 +90,10 @@ export async function signOutUser() {
   }
 }
 
-/** Текущий пользователь или null. Не бросает. */
+/** Текущий пользователь или null. Не бросает. Дожидается hydrate сессии. */
 export async function getCurrentUser() {
   try {
+    await _authReadyPromise;
     const { data } = await supabase.auth.getUser();
     return data?.user ?? null;
   } catch (e) {
@@ -65,9 +102,10 @@ export async function getCurrentUser() {
   }
 }
 
-/** Текущая сессия или null. Не бросает. */
+/** Текущая сессия или null. Не бросает. Дожидается hydrate сессии. */
 export async function getSession() {
   try {
+    await _authReadyPromise;
     const { data } = await supabase.auth.getSession();
     return data?.session ?? null;
   } catch (e) {

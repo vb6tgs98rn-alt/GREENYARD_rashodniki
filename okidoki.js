@@ -1,7 +1,7 @@
 // okidoki.js — интеграция с сервисом OkiDoki (электронные договоры аренды).
 // Все запросы идут через Edge Function okidoki-proxy — api_key на клиенте не хранится.
 
-import { getSupabaseClient } from './supabase-client.js';
+import { getSupabaseClient, waitForAuthReady} from './supabase-client.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { openModal, closeModal, setStatus } from './render.js';
 import { getState } from './state.js';
