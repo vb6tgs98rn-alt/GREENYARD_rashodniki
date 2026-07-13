@@ -1,6 +1,6 @@
 import dom, { byId } from './dom.js';
 import { fetchRealtyCalendarBookings, fetchRealtyCalendarLog, fetchRealtyCalendarIntegration, saveRealtyCalendarIntegration, disconnectRealtyCalendar, buildFinanceWebhookExample, getWebhookUrl } from './api.js';
-import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport } from './finance.js';
+import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport } from './finance.js';
 import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus, setAuthMsg } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, updateState } from './state.js';
 import { persistState, exportJson, importJson } from './storage.js';
@@ -602,15 +602,23 @@ function bindUnitEconomicsTab() {
 
 function bindFinanceModals() {
   // Открытие модалки добавления записи
-  dom.financeAddEntryBtn?.addEventListener('click', () => {
+  const financeEntryModalEl = document.getElementById('financeEntryModal');
+  const financeEntryTitleEl = financeEntryModalEl?.querySelector('.modal-title');
+
+  function resetFinanceEntryForm() {
     if (dom.financeEntryApartment) dom.financeEntryApartment.value = currentApartment()?.id || '';
     if (dom.financeEntryType) dom.financeEntryType.value = 'expense';
     if (dom.financeEntryDate) dom.financeEntryDate.value = new Date().toISOString().slice(0,10);
-    // Очищаем поля
     if (dom.financeEntryTitle) dom.financeEntryTitle.value = '';
     if (dom.financeEntryCategory) dom.financeEntryCategory.value = '';
     if (dom.financeEntryAmount) dom.financeEntryAmount.value = '';
     if (dom.financeEntryNotes) dom.financeEntryNotes.value = '';
+  }
+
+  dom.financeAddEntryBtn?.addEventListener('click', () => {
+    resetFinanceEntryForm();
+    if (financeEntryModalEl) financeEntryModalEl.dataset.editId = '';
+    if (financeEntryTitleEl) financeEntryTitleEl.textContent = 'Новая запись';
     openModal('financeEntryModal');
   });
   dom.cancelFinanceEntry?.addEventListener('click', () => closeModal('financeEntryModal'));
@@ -618,6 +626,21 @@ function bindFinanceModals() {
   dom.saveFinanceEntry?.addEventListener('click', async () => {
     const amount = Number(dom.financeEntryAmount?.value || 0);
     if (!amount) { setStatus('Укажите сумму'); return; }
+    const editId = financeEntryModalEl?.dataset.editId || '';
+    if (editId) {
+      updateFinanceEntry(editId, {
+        apartmentId: dom.financeEntryApartment?.value,
+        type: dom.financeEntryType?.value,
+        title: dom.financeEntryTitle?.value,
+        amount,
+        date: dom.financeEntryDate?.value,
+        notes: dom.financeEntryNotes?.value,
+      });
+      if (financeEntryModalEl) financeEntryModalEl.dataset.editId = '';
+      closeModal('financeEntryModal');
+      await rerender('Запись обновлена');
+      return;
+    }
     addFinanceEntry({
       apartmentId: dom.financeEntryApartment?.value,
       type: dom.financeEntryType?.value,
@@ -685,8 +708,27 @@ function bindFinanceModals() {
     if (action === 'delete-entry') {
       const id = btn.dataset.id;
       if (!id) return;
+      if (!confirm('Удалить запись?')) return;
       deleteFinanceEntry(id);
       await rerender('Запись удалена');
+    }
+
+    if (action === 'edit-entry') {
+      const id = btn.dataset.id;
+      if (!id) return;
+      const state = getState();
+      const entry = state.finance?.entries?.find((e) => e.id === id);
+      if (!entry) { setStatus('Запись не найдена'); return; }
+      if (dom.financeEntryApartment) dom.financeEntryApartment.value = entry.apartmentId || '';
+      if (dom.financeEntryType) dom.financeEntryType.value = entry.type || 'expense';
+      if (dom.financeEntryTitle) dom.financeEntryTitle.value = entry.title || '';
+      if (dom.financeEntryCategory) dom.financeEntryCategory.value = entry.category || '';
+      if (dom.financeEntryAmount) dom.financeEntryAmount.value = String(entry.amount || '');
+      if (dom.financeEntryDate) dom.financeEntryDate.value = entry.date || new Date().toISOString().slice(0,10);
+      if (dom.financeEntryNotes) dom.financeEntryNotes.value = entry.notes || '';
+      if (financeEntryModalEl) financeEntryModalEl.dataset.editId = id;
+      if (financeEntryTitleEl) financeEntryTitleEl.textContent = 'Редактирование записи';
+      openModal('financeEntryModal');
     }
 
     if (action === 'confirm-entry') {

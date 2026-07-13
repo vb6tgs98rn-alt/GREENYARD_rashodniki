@@ -45,7 +45,12 @@ button,input,select{font:inherit} button{cursor:pointer;border:none;background:n
 .recurring-list{display:grid;gap:.75rem}
 
 /* ── Finance card ───────────────────────────────── */
-.finance-card{padding:1rem 1.1rem;border-radius:var(--radius-lg);background:var(--color-surface-2);border:1px solid rgba(60,60,60,.1);display:grid;gap:.55rem;transition:border-color var(--transition)}
+.finance-card{position:relative;padding:1rem 1.1rem;border-radius:var(--radius-lg);background:var(--color-surface-2);border:1px solid rgba(60,60,60,.1);display:grid;gap:.55rem;transition:border-color var(--transition)}
+.finance-card-icons{position:absolute;top:.55rem;right:.6rem;display:flex;gap:.15rem;z-index:2}
+.finance-icon-btn{background:transparent;border:none;padding:.35rem;border-radius:.5rem;color:var(--color-text-muted);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:background var(--transition),color var(--transition)}
+.finance-icon-btn:hover{background:rgba(255,255,255,.06);color:var(--color-text)}
+.finance-icon-btn:active{transform:scale(.96)}
+.finance-card .finance-card-top{padding-right:4.2rem}
 .finance-card:hover{border-color:rgba(1,105,111,.2)}
 .finance-card.income{border-left:3px solid var(--color-success)}
 .finance-card.expense{border-left:3px solid var(--color-error)}

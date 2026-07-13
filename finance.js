@@ -99,6 +99,26 @@ export function updateFinanceEntryStatus(id, status) {
   });
 }
 
+// Частичное обновление ручной записи (тип, название, сумма, дата, квартира, комментарий).
+// Системные записи (RC/уборка) не трогаем — они перезапишутся при следующем синке.
+export function updateFinanceEntry(id, patch = {}) {
+  updateState((state) => {
+    const entry = state.finance.entries.find((e) => e.id === id);
+    if (!entry) return;
+    if (patch.apartmentId != null) entry.apartmentId = patch.apartmentId;
+    if (patch.type != null) entry.type = patch.type;
+    if (patch.title != null) entry.title = patch.title;
+    if (patch.amount != null) {
+      const n = Number(patch.amount) || 0;
+      entry.amount = n;
+      entry.netAmount = n;
+    }
+    if (patch.date != null) entry.date = patch.date;
+    if (patch.notes != null) entry.notes = patch.notes;
+    if (patch.status != null) entry.status = patch.status;
+  });
+}
+
 export function addRecurringRule(rule) {
   const normalized = createRecurringRuleDraft(rule);
   updateState((state) => { state.finance.recurringRules.unshift(normalized); });
@@ -223,14 +243,14 @@ export function applyRealtyCalendarBookings(bookings = []) {
       if (!apartment) { result.skipped++; return; }
 
       // Активная бронь — обновляем или создаём
-      const date = (b.rc_created_at ? String(b.rc_created_at).slice(0, 10) : '') || b.begin_date || new Date().toISOString().slice(0, 10);
-      const title = `Бронь #${b.booking_id}${b.client_fio ? ' · ' + b.client_fio : ''}`;
-      const notes = [
-        formatRange(b.begin_date, b.end_date),
-        b.client_phone || '',
-        b.source ? `Источник: ${b.source}` : '',
-        b.booking_url || ''
-      ].filter(Boolean).join(' · ');
+      // Дата в карточке — дата заезда, а не создания брони.
+      const date = b.begin_date || (b.rc_created_at ? String(b.rc_created_at).slice(0, 10) : '') || new Date().toISOString().slice(0, 10);
+      // В заголовке — только имя гостя (если есть) и даты заселения.
+      const range = formatRange(b.begin_date, b.end_date);
+      const guest = b.client_fio ? ` · ${b.client_fio}` : '';
+      const title = range ? `${range}${guest}` : `Бронь #${b.booking_id}${guest}`;
+      // Пользователь просил не показывать подробности в фин учёте.
+      const notes = '';
 
       // Комиссия площадки (Avito/ЦИАН/Суточно и т.п.) приходит в platform_tax.
       // Для ручных броней (source=manual) это поле null → комиссия = 0 → netAmount = amount.
