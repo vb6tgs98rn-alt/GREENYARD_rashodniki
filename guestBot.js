@@ -429,11 +429,12 @@ function renderBookingsFilters(state) {
 }
 
 function detectBookingStatus(b) {
-  // Активная: today between begin and end
-  // Предстоящая: begin > today
-  // Завершённая: end < today
-  // Отменённая: is_deleted/status_cd derivatives — есть в данных
-  if (b.is_deleted) return 'cancelled';
+  // Отменённая имеет приоритет над датами: RealtyCalendar может прислать
+  // статус "canceled" (одна l) или "deleted", или is_deleted=true.
+  const st = String(b.status || '').toLowerCase();
+  if (b.is_deleted || st === 'canceled' || st === 'cancelled' || st === 'deleted' || st === 'removed') {
+    return 'cancelled';
+  }
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const beg = b.begin_date ? new Date(b.begin_date) : null;
   const end = b.end_date ? new Date(b.end_date) : null;
@@ -442,7 +443,6 @@ function detectBookingStatus(b) {
     if (today >= beg && today < end) return 'active';
     if (today >= end) return 'past';
   }
-  if (b.status === 'cancelled') return 'cancelled';
   return 'upcoming';
 }
 
@@ -481,12 +481,32 @@ function renderBookingsList(state) {
     const guestName = b.client_fio || 'Без имени';
     const dates = `${fmtDate(b.begin_date)} → ${fmtDate(b.end_date)}`;
     const sourceTag = b.source ? `<span class="bk-tag">${esc(b.source)}</span>` : '';
+    const isCancelled = detectBookingStatus(b) === 'cancelled';
     const taxLine = tax > 0
       ? `<div class="small" style="opacity:.7;">Комиссия: ${fmtMoney(tax)} · Чистый: <b>${fmtMoney(net)}</b></div>`
       : `<div class="small" style="opacity:.7;">Без комиссии</div>`;
 
+    const cancelBlock = isCancelled
+      ? `<div class="bk-cancel-reason" style="margin-top:.5rem;padding:.5rem;background:rgba(255,80,80,.08);border-radius:.5rem;">
+           <div class="small" style="margin-bottom:.3rem;opacity:.7;">Причина отмены:</div>
+           <textarea data-cancel-reason="${esc(b.booking_id)}" rows="2" placeholder="Например: гость отменил, двойное бронирование, техническая ошибка…" style="width:100%;box-sizing:border-box;resize:vertical;min-height:2.5rem;">${esc(b.cancellation_reason || '')}</textarea>
+           <div style="display:flex;justify-content:flex-end;margin-top:.3rem;">
+             <button class="btn btn-secondary btn-sm" data-save-cancel-reason="${esc(b.booking_id)}" type="button">Сохранить</button>
+           </div>
+         </div>`
+      : '';
+
+    const actions = isCancelled
+      ? ''
+      : `<div class="bk-card-actions">
+          <button class="btn btn-secondary bk-btn-chat" data-session-booking="${esc(b.booking_id)}">💬 Чат</button>
+          <button class="btn btn-primary bk-btn-link ${linkSent ? 'is-sent' : ''}" data-link-booking="${esc(b.booking_id)}" data-secure="${esc(secureId)}">
+            ${linkSent ? '✓ Ссылка скопирована' : '📋 Ссылка гостю'}
+          </button>
+        </div>`;
+
     return `
-      <div class="bk-card" data-booking="${esc(b.booking_id)}">
+      <div class="bk-card${isCancelled ? ' bk-cancelled' : ''}" data-booking="${esc(b.booking_id)}" style="${isCancelled ? 'opacity:.75;' : ''}">
         <div class="bk-card-head">
           <div>
             <div class="bk-guest">${esc(guestName)}</div>
@@ -499,12 +519,8 @@ function renderBookingsList(state) {
           <div class="bk-amount">${fmtMoney(gross)} ${sourceTag}</div>
           ${taxLine}
         </div>
-        <div class="bk-card-actions">
-          <button class="btn btn-secondary bk-btn-chat" data-session-booking="${esc(b.booking_id)}">💬 Чат</button>
-          <button class="btn btn-primary bk-btn-link ${linkSent ? 'is-sent' : ''}" data-link-booking="${esc(b.booking_id)}" data-secure="${esc(secureId)}">
-            ${linkSent ? '✓ Ссылка скопирована' : '📋 Ссылка гостю'}
-          </button>
-        </div>
+        ${cancelBlock}
+        ${actions}
       </div>`;
   };
 
@@ -586,6 +602,9 @@ export async function openInstructionsModal(state) {
 }
 
 async function loadInstructionIntoForm(apartmentId, apartmentTitle) {
+  // Перед загрузкой — очищаем все поля, чтобы не показывались данные от предыдущей квартиры
+  // в момент между асинхронной загрузкой.
+  document.querySelectorAll('#guestInstructionsModal [data-instr-field]').forEach(el => { el.value = ''; });
   const data = await fetchInstructionFor(apartmentId) || {};
   setFieldVal('instr_full_address', data.full_address);
   setFieldVal('instr_directions_metro', data.directions_metro);
@@ -743,7 +762,6 @@ function ensureInstructionsModal() {
 
         <div id="instrSaveMsg" class="small" style="margin-top:.5rem;" hidden></div>
         <div class="actions" style="justify-content:flex-end;gap:.5rem;margin-top:1rem;">
-          <button class="btn btn-secondary" id="instrCopyFromBtn" type="button">⧉ Скопировать из другой квартиры</button>
           <button class="btn btn-primary" id="instrSaveBtn" type="button">Сохранить</button>
         </div>
       </div>
@@ -1252,6 +1270,30 @@ export function bindGuestBotEvents(state) {
 
     const reload = e.target.closest('#bookingsReloadBtn');
     if (reload) { await reloadBookings(state); return; }
+
+    const saveCancelBtn = e.target.closest('[data-save-cancel-reason]');
+    if (saveCancelBtn) {
+      const bid = saveCancelBtn.getAttribute('data-save-cancel-reason');
+      const textarea = document.querySelector(`textarea[data-cancel-reason="${bid}"]`);
+      const reason = (textarea?.value || '').trim();
+      const supabase = getSupabaseClient();
+      if (!supabase) return;
+      try {
+        const { error } = await supabase
+          .from('rc_bookings')
+          .update({ cancellation_reason: reason || null })
+          .eq('booking_id', Number(bid));
+        if (error) throw error;
+        // Обновляем локальное состояние
+        const b = _bookingsState.all.find(x => String(x.booking_id) === String(bid));
+        if (b) b.cancellation_reason = reason || null;
+        saveCancelBtn.textContent = '✓ Сохранено';
+        setTimeout(() => { if (saveCancelBtn) saveCancelBtn.textContent = 'Сохранить'; }, 1500);
+      } catch (err) {
+        alert('Не удалось сохранить причину: ' + (err?.message || err));
+      }
+      return;
+    }
 
     const linkBtn = e.target.closest('[data-link-booking]');
     if (linkBtn) {

@@ -379,12 +379,14 @@ async function saveMaidFromForm() {
       // Показать инвайт
       const inviteBox = document.getElementById('maidEditInviteBox');
       const inviteInput = document.getElementById('maidEditInviteLink');
-      inviteBox.hidden = false;
-      inviteInput.value = renderInviteLink(maid.invite_token);
-      document.getElementById('maidEditDeleteBtn').hidden = false;
+      if (inviteBox) inviteBox.hidden = false;
+      if (inviteInput) inviteInput.value = renderInviteLink(maid.invite_token);
+      const delBtn = document.getElementById('maidEditDeleteBtn');
+      if (delBtn) delBtn.hidden = false;
       setStatus('Горничная создана. Отправьте ссылку.');
     }
-    await renderMaidsList();
+    // Обновление списка — не критично, сетевые ошибки не должны виднеться как «Ошибка сохранения».
+    try { await renderMaidsList(); } catch (rerr) { console.warn('[maids] renderMaidsList after save:', rerr?.message || rerr); }
   } catch (e) {
     console.error('[maids] save:', e);
     alert('Ошибка сохранения: ' + (e?.message || e));
