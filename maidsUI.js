@@ -87,7 +87,7 @@ async function createMaid({ name, phone, realtyIds }) {
       user_id: user.id,
       realty_id: Number(rid),
     }));
-    const { error: e2 } = await sb.from('maid_apartments').insert(rows);
+    const { error: e2 } = await sb.from('maid_apartments').upsert(rows, { onConflict: 'maid_id,realty_id', ignoreDuplicates: true });
     if (e2) {
       console.error('[maids] link error:', e2);
       throw new Error('Не удалось закрепить квартиры: ' + (e2.message || e2.code || 'unknown'));
@@ -111,7 +111,7 @@ async function updateMaidApartments(maidId, realtyIds) {
       user_id: user.id,
       realty_id: Number(rid),
     }));
-    const { error: eIns } = await sb.from('maid_apartments').insert(rows);
+    const { error: eIns } = await sb.from('maid_apartments').upsert(rows, { onConflict: 'maid_id,realty_id', ignoreDuplicates: true });
     if (eIns) {
       console.error('[maids] insert links error:', eIns);
       throw new Error('Не удалось сохранить квартиры: ' + (eIns.message || 'unknown'));
@@ -356,8 +356,10 @@ function renderMaidEditForm(maid = null) {
 }
 
 function getSelectedApartmentsFromForm() {
-  return Array.from(document.querySelectorAll('#maidEditApartments input[data-maid-apt]:checked'))
+  // Дедуплицируем: в приложении две квартиры могут иметь один realty_id.
+  const ids = Array.from(document.querySelectorAll('#maidEditApartments input[data-maid-apt]:checked'))
     .map(el => el.getAttribute('data-maid-apt'));
+  return [...new Set(ids)];
 }
 
 async function saveMaidFromForm() {
@@ -399,6 +401,86 @@ export async function openMaidsModal(state) {
 
 // ---------- Bind ----------
 
+// ---------- Чат с горничной ----------
+
+let _openChatMaidId = null;
+let _chatChannel = null;
+
+function renderMaidChatMessages(messages, maid) {
+  const box = document.getElementById('maidChatBox');
+  if (!box) return;
+  if (!messages.length) {
+    box.innerHTML = '<div class="small" style="color:var(--color-text-muted);padding:1rem;text-align:center;">Пока сообщений нет.</div>';
+    return;
+  }
+  const html = messages.map(m => {
+    const mine = m.sender === 'manager' || m.direction === 'out';
+    const bubbleCls = mine
+      ? 'background:var(--color-accent);color:#000;align-self:flex-end;'
+      : 'background:var(--color-surface-3);align-self:flex-start;';
+    const photo = m.photo_url ? `<img src="${m.photo_url}" alt="" style="max-width:220px;border-radius:.5rem;margin-bottom:.3rem;display:block;" />` : '';
+    const text = m.text ? htmlEscape(m.text).replaceAll('\n', '<br>') : '';
+    return `<div style="max-width:75%;padding:.5rem .75rem;border-radius:.75rem;${bubbleCls}">${photo}${text}<div class="small" style="opacity:.65;margin-top:.2rem;font-size:.7rem;">${fmtDate(m.created_at)}</div></div>`;
+  }).join('');
+  box.innerHTML = html;
+  box.scrollTop = box.scrollHeight;
+}
+
+async function openMaidChatModal(maidId) {
+  _openChatMaidId = maidId;
+  const sb = supabase();
+  const { data: maid } = await sb.from('maids').select('id, name, tg_chat_id').eq('id', maidId).maybeSingle();
+  document.getElementById('maidChatTitle').textContent = maid ? `Чат: ${maid.name}` : 'Чат с горничной';
+  const input = document.getElementById('maidChatInput');
+  const sendBtn = document.getElementById('maidChatSend');
+  const disabled = !maid?.tg_chat_id;
+  if (input) { input.value = ''; input.disabled = disabled; input.placeholder = disabled ? 'Горничная ещё не подключена к боту' : 'Напишите сообщение…'; }
+  if (sendBtn) sendBtn.disabled = disabled;
+  openModal('maidChatModal');
+  const messages = await fetchMaidMessages(maidId, 200);
+  renderMaidChatMessages(messages, maid);
+
+  // Realtime
+  try {
+    if (_chatChannel) { await sb.removeChannel(_chatChannel); _chatChannel = null; }
+    _chatChannel = sb
+      .channel(`maid_chat_${maidId}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'maid_messages', filter: `maid_id=eq.${maidId}` }, async () => {
+        if (_openChatMaidId !== maidId) return;
+        const msgs = await fetchMaidMessages(maidId, 200);
+        renderMaidChatMessages(msgs, maid);
+      })
+      .subscribe();
+  } catch (err) { console.warn('[maids] realtime chat:', err?.message || err); }
+}
+
+async function closeMaidChatModal() {
+  _openChatMaidId = null;
+  if (_chatChannel) {
+    try { await supabase().removeChannel(_chatChannel); } catch {}
+    _chatChannel = null;
+  }
+  closeModal('maidChatModal');
+}
+
+async function sendMaidChatFromInput() {
+  if (!_openChatMaidId) return;
+  const input = document.getElementById('maidChatInput');
+  const text = (input?.value || '').trim();
+  if (!text) return;
+  const btn = document.getElementById('maidChatSend');
+  if (btn) btn.disabled = true;
+  try {
+    await sendManagerMessageToMaid(_openChatMaidId, text);
+    if (input) input.value = '';
+  } catch (err) {
+    alert('Не удалось отправить: ' + (err?.message || err));
+  } finally {
+    if (btn) btn.disabled = false;
+    if (input) input.focus();
+  }
+}
+
 export function bindMaidsEvents(state) {
   window.__gyState = state;
   ensureMaidsModal();
@@ -412,6 +494,20 @@ export function bindMaidsEvents(state) {
   document.body.addEventListener('click', async (e) => {
     if (e.target.closest('#closeMaidsModal')) {
       closeModal('maidsModal');
+      return;
+    }
+    const chatBtn = e.target.closest('[data-maid-chat]');
+    if (chatBtn) {
+      const id = chatBtn.getAttribute('data-maid-chat');
+      await openMaidChatModal(id);
+      return;
+    }
+    if (e.target.closest('#closeMaidChatModal')) {
+      closeMaidChatModal();
+      return;
+    }
+    if (e.target.closest('#maidChatSend')) {
+      await sendMaidChatFromInput();
       return;
     }
     if (e.target.closest('#maidsAddBtn')) {
