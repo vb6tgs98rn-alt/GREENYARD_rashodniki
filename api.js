@@ -29,7 +29,7 @@ export function getWebhookUrl() {
  * @param {number} [limit=2000]
  * @returns {Promise<Array>}
  */
-export async function fetchRealtyCalendarBookings(limit = 2000) {
+export async function fetchRealtyCalendarBookings(limit = 500) {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
   await waitForAuthReady();
@@ -41,7 +41,7 @@ export async function fetchRealtyCalendarBookings(limit = 2000) {
     .select('*')
     .eq('user_id', user.id)
     .order('rc_created_at', { ascending: false })
-    .limit(Math.max(1, Math.min(5000, Number(limit) || 2000)));
+    .limit(Math.max(1, Math.min(1000, Number(limit) || 500)));
   if (error) {
     console.warn('[RC] fetchRealtyCalendarBookings error:', error.message);
     return [];

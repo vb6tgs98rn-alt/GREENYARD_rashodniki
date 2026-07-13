@@ -412,7 +412,7 @@ export async function openBookingsModal(state) {
 async function reloadBookings(state) {
   const box = document.getElementById('bookingsListBox');
   if (box) box.innerHTML = '<div class="small" style="padding:1rem;opacity:.6;">Загрузка...</div>';
-  const all = await fetchRealtyCalendarBookings(2000);
+  const all = await fetchRealtyCalendarBookings(500);
   _bookingsState.all = all || [];
   renderBookingsList(state);
   renderBookingsFilters(state);
