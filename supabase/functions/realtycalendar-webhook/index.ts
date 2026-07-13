@@ -185,12 +185,9 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
           { text: "✅ Принять", callback_data: `maid_accept:${cleaningId}` },
           { text: "❌ Отказаться", callback_data: `maid_decline:${cleaningId}` },
         ],
-        [
-          { text: "📦 Заказать расходник", callback_data: `maid_supply:${cleaningId}` },
-        ],
       ],
     };
-    const text = `🧹 <b>Новая уборка</b>\n📍 ${htmlEscape(booking.apartment_title || "?")}\n📅 ${fmtDate(booking.end_date)}, ${(cleaningTime as string).slice(0,5)}\n👤 Гость выселяется ${fmtDate(booking.end_date)}`;
+    const text = `Следующая уборка <b>${fmtDate(booking.end_date)}</b>\nАдрес: ${htmlEscape(booking.apartment_title || "?")}`;
     const r = await tgSend(m.tg_chat_id, text, { reply_markup: kb });
     if (r?.ok && r.result?.message_id) {
       offered.push(m.id);

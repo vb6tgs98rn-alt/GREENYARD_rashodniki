@@ -369,8 +369,8 @@ async function handleMaidCallback(maid: Maid, data: string, cq: any): Promise<bo
       }
     }
 
-    await tgSendMessage(chatId, `✅ Уборка принята.\n📍 ${htmlEscape(cleaning.apartment_title || "")}\n📅 ${fmtDateShort(cleaning.scheduled_date)} в ${String(cleaning.scheduled_time || "12:00").slice(0,5)}\n\nВ день уборки я пришлю напоминание.`);
-    await notifyManager(maid.user_id, `✅ Горничная <b>${htmlEscape(maid.name)}</b> приняла уборку по брони <code>${cleaning.booking_id || "—"}</code> (${htmlEscape(cleaning.apartment_title || "")}, ${fmtDateShort(cleaning.scheduled_date)}).`, "notify_on_cleaning_response");
+    await tgSendMessage(chatId, `✅ Спасибо. Уборка <b>${fmtDateShort(cleaning.scheduled_date)}</b> за вами.`);
+    await notifyManager(maid.user_id, `✅ <b>${htmlEscape(maid.name)}</b> сможет убраться <b>${fmtDateShort(cleaning.scheduled_date)}</b> (${htmlEscape(cleaning.apartment_title || "")}).`, "notify_on_cleaning_response");
     return true;
   }
 
@@ -386,8 +386,8 @@ async function handleMaidCallback(maid: Maid, data: string, cq: any): Promise<bo
     if (others.length === 0) updatePatch.status = "declined";
     await sb.from("cleanings").update(updatePatch).eq("id", cleaning.id);
 
-    await tgSendMessage(chatId, `❌ Вы отказались от уборки.\n📍 ${htmlEscape(cleaning.apartment_title || "")}\n📅 ${fmtDateShort(cleaning.scheduled_date)}`);
-    await notifyManager(maid.user_id, `❌ Горничная <b>${htmlEscape(maid.name)}</b> отказалась от уборки по брони <code>${cleaning.booking_id || "—"}</code> (${htmlEscape(cleaning.apartment_title || "")}, ${fmtDateShort(cleaning.scheduled_date)}).${others.length === 0 ? "\n⚠️ Больше никому не предложено — назначьте вручную." : ""}`, "notify_on_cleaning_response");
+    await tgSendMessage(chatId, `❌ Хорошо, передали менеджеру. Уборка <b>${fmtDateShort(cleaning.scheduled_date)}</b>.`);
+    await notifyManager(maid.user_id, `❌ <b>${htmlEscape(maid.name)}</b> не сможет убраться <b>${fmtDateShort(cleaning.scheduled_date)}</b> (${htmlEscape(cleaning.apartment_title || "")}).${others.length === 0 ? "\n⚠️ Больше никому не предложено — назначьте вручную." : ""}`, "notify_on_cleaning_response");
     return true;
   }
 
@@ -463,7 +463,7 @@ async function handleMaidStart(chatId: number, token: string, from: any) {
   }).eq("id", maid.id);
 
   const displayName = maid.name || [from?.first_name, from?.last_name].filter(Boolean).join(" ") || "";
-  const welcome = `Здравствуйте, <b>${htmlEscape(displayName)}</b>.\n\nВы зарегистрированы как горничная в системе Green Yard. Ожидайте уведомлений о новых уборках — они будут приходить сюда с кнопками «Принять» и «Отказаться».\n\nЧтобы заказать расходники — используйте кнопку в уведомлении об уборке или напишите менеджеру напрямую в этот чат.`;
+  const welcome = `Здравствуйте, <b>${htmlEscape(displayName)}</b>.\n\nКогда появится новая уборка, вы получите сообщение с двумя кнопками: <b>Принять</b> или <b>Отказаться</b>.\n\nНапишите любое сообщение в этот чат — менеджер его увидит и ответит.`;
   await tgSendMessage(chatId, welcome);
   await logMaidMessage({ ...maid, tg_chat_id: chatId }, "outbound", "bot", welcome);
 
@@ -1201,11 +1201,8 @@ async function endpointCleaningReminders(req: Request): Promise<Response> {
     if (!c.maid_id) continue;
     const { data: maid } = await sb.from("maids").select("tg_chat_id, name").eq("id", c.maid_id).maybeSingle();
     if (!maid?.tg_chat_id) continue;
-    const kb = {
-      inline_keyboard: [[{ text: "🏠 Я на месте", callback_data: `maid_on_site:${c.id}` }]],
-    };
-    const text = `⏰ <b>Напоминание об уборке</b>\n📍 ${htmlEscape(c.apartment_title || "")}\n📅 Сегодня в ${String(c.scheduled_time || "12:00").slice(0,5)}\n\nКогда прибудете — нажмите кнопку ниже.`;
-    const r = await tgSendMessage(maid.tg_chat_id, text, { reply_markup: kb });
+    const text = `⏰ Напоминание: сегодня уборка.\nАдрес: ${htmlEscape(c.apartment_title || "")}`;
+    const r = await tgSendMessage(maid.tg_chat_id, text);
     if (r?.ok) {
       await sb.from("cleanings").update({ reminded_at: new Date().toISOString() }).eq("id", c.id);
       sent++;

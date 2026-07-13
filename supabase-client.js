@@ -48,12 +48,18 @@ export function waitForAuthReady() {
   return _authReadyPromise;
 }
 
-/** Возвращает текущего пользователя, дождавшись готовности сессии. */
+/** Возвращает текущего пользователя, дождавшись готовности сессии. С ретраями. */
 export async function requireUser() {
   await _authReadyPromise;
   if (_currentUser) return _currentUser;
-  const { data } = await supabase.auth.getSession();
-  return data?.session?.user ?? null;
+  // Ретраим getSession() несколько раз — SDK мог ещё не закончить hydrate
+  for (let i = 0; i < 5; i++) {
+    const { data } = await supabase.auth.getSession();
+    const u = data?.session?.user;
+    if (u) { _currentUser = u; _currentSession = data.session; return u; }
+    await new Promise(r => setTimeout(r, 200));
+  }
+  return null;
 }
 
 /** Синхронный геттер кэшированного user — после waitForAuthReady() гарантированно актуален. */

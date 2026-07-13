@@ -11,7 +11,7 @@
 // Требует: supabase-client.js, render.js, config (BOT_FUNCTION_URL)
 // ==================================================
 
-import { getSupabaseClient, waitForAuthReady} from './supabase-client.js';
+import { getSupabaseClient, waitForAuthReady, requireUser } from './supabase-client.js';
 import { openModal, closeModal, setStatus } from './render.js';
 import { BOT_FUNCTION_URL, TELEGRAM_BOT_USERNAME_DEFAULT } from './guestBot.js';
 
@@ -42,9 +42,7 @@ function randomToken(len = 24) {
 
 export async function fetchMaids() {
   const sb = supabase();
-  await waitForAuthReady();
-  const { data: { session: _sess } } = await sb.auth.getSession();
-  const user = _sess?.user ?? null;
+  const user = await requireUser();
   if (!user) return [];
   const { data: maids, error } = await sb
     .from('maids')
@@ -68,9 +66,7 @@ export async function fetchMaids() {
 
 async function createMaid({ name, phone, realtyIds }) {
   const sb = supabase();
-  await waitForAuthReady();
-  const { data: { session: _sess } } = await sb.auth.getSession();
-  const user = _sess?.user ?? null;
+  const user = await requireUser();
   if (!user) throw new Error('unauthorized');
   const token = randomToken(20);
   const { data: maid, error } = await sb
@@ -102,9 +98,7 @@ async function createMaid({ name, phone, realtyIds }) {
 
 async function updateMaidApartments(maidId, realtyIds) {
   const sb = supabase();
-  await waitForAuthReady();
-  const { data: { session: _sess } } = await sb.auth.getSession();
-  const user = _sess?.user ?? null;
+  const user = await requireUser();
   if (!user) throw new Error('unauthorized');
   const { error: eDel } = await sb.from('maid_apartments').delete().eq('maid_id', maidId);
   if (eDel) {
@@ -139,9 +133,7 @@ async function deleteMaid(maidId) {
 
 export async function fetchMaidChats() {
   const sb = supabase();
-  await waitForAuthReady();
-  const { data: { session: _sess } } = await sb.auth.getSession();
-  const user = _sess?.user ?? null;
+  const user = await requireUser();
   if (!user) return [];
   const { data: maids } = await sb
     .from('maids')
