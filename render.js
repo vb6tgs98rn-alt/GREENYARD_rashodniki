@@ -102,6 +102,32 @@ function financeEntryCard(entry) {
   const net = Number(entry.netAmount != null ? entry.netAmount : gross);
   const showTwoSums = isIncome && net !== gross;
 
+  // Нормализация для RC-броней (не уборка): одинаковый формат на всех карточках.
+  // Заголовок = «YYYY-MM-DD → YYYY-MM-DD · Имя», notes скрываем (телефон/источник/ссылка не показываем).
+  const _bidRaw = String(entry.externalBookingId || '');
+  const _isRcBooking = isIncome && entry.source === 'realtycalendar' && _bidRaw && !_bidRaw.endsWith(':cleaning');
+  let displayTitle = entry.title || entry.category || (isIncome ? 'Доход' : 'Расход');
+  let displayNotes = entry.notes || '';
+  let displayDate = entry.date || '';
+  if (_isRcBooking) {
+    const bd = entry.meta?.begin_date || '';
+    const ed = entry.meta?.end_date || '';
+    // Пытаемся вытащить имя гостя: сначала meta, затем из старого title «Бронь #… · Имя».
+    let guest = entry.meta?.client_fio || '';
+    if (!guest && typeof entry.title === 'string') {
+      const parts = entry.title.split(' · ');
+      if (parts.length >= 2 && /^Бронь #/i.test(parts[0])) guest = parts.slice(1).join(' · ').trim();
+    }
+    const range = (bd && ed) ? `${bd} → ${ed}` : (bd || ed || '');
+    if (range) {
+      displayTitle = guest ? `${range} · ${guest}` : range;
+      if (bd) displayDate = bd;
+    } else if (guest) {
+      displayTitle = guest;
+    }
+    displayNotes = '';
+  }
+
   // Блок «Договор»: только для доходных броней RC (не уборка)
   let contractBlock = '';
   const bookingIdRaw = String(entry.externalBookingId || '');
@@ -149,16 +175,16 @@ function financeEntryCard(entry) {
     ${iconsHtml}
     <div class="finance-card-top">
       <div class="finance-card-left">
-        <div class="finance-card-title">${entry.title || entry.category || (isIncome ? 'Доход' : 'Расход')}</div>
+        <div class="finance-card-title">${displayTitle}</div>
         <div class="finance-card-meta">
           <span>${entry.apartmentName}</span>
           <span class="sep">·</span>
-          <span>${entry.date}</span>
+          <span>${displayDate}</span>
           <span class="sep">·</span>
           <span>${sourceIcon(entry.source)} ${sourceLabel(entry.source)}</span>
         </div>
-        ${entry.category ? `<div class="finance-card-cat">${entry.category}</div>` : ''}
-        ${entry.notes ? `<div class="finance-card-notes">${entry.notes}</div>` : ''}
+        ${(!_isRcBooking && entry.category) ? `<div class="finance-card-cat">${entry.category}</div>` : ''}
+        ${displayNotes ? `<div class="finance-card-notes">${displayNotes}</div>` : ''}
       </div>
       <div class="finance-card-right">
         <div class="finance-amount ${entry.type}">${isIncome ? '+' : '−'}${fmt(showTwoSums ? net : gross)} ₽</div>

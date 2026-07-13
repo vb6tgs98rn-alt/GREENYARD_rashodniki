@@ -278,6 +278,7 @@ export function applyRealtyCalendarBookings(bookings = []) {
           apartment_title: b.apartment_title,
           begin_date: b.begin_date,
           end_date: b.end_date,
+          client_fio: b.client_fio || '',
           booking_url: b.booking_url,
           rc_status: b.status,
           platform_tax: platformTax,
