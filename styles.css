@@ -842,3 +842,27 @@ body:has(.drawer.open) .auth-corner-btn{ display:none !important; }
   }
   .maid-apt-row{ padding:.55rem .5rem; }
 }
+
+/* ── Гостевой экран входа ─────────────────────────── */
+.guest-gate{display:none;position:fixed;inset:0;z-index:9999;align-items:center;justify-content:center;padding:1.25rem;background:var(--color-bg,#0b0d10);overflow-y:auto}
+body.is-guest .guest-gate{display:flex}
+body.is-guest .app,
+body.is-guest .drawer,
+body.is-guest .drawer-backdrop,
+body.is-guest .auth-corner,
+body.is-guest .modal-backdrop{display:none !important}
+.guest-gate-card{width:100%;max-width:26rem;background:var(--color-surface,#151719);border:1px solid rgba(255,255,255,.06);border-radius:var(--radius-xl,1rem);padding:1.75rem 1.5rem;box-shadow:0 20px 60px rgba(0,0,0,.35);display:grid;gap:.65rem}
+.guest-gate-title{margin:.25rem 0 .35rem;font-size:1.4rem;font-weight:700}
+.guest-gate-hint{margin:0 0 .5rem;color:var(--color-text-muted);font-size:.9rem;line-height:1.4}
+.guest-gate input[type=email],
+.guest-gate input[type=password],
+.guest-gate input[type=text]{width:100%;padding:.7rem .85rem;border-radius:var(--radius-md,.6rem);background:var(--color-surface-2);border:1px solid rgba(255,255,255,.08);color:var(--color-text);font-size:1rem;outline:none;transition:border-color var(--transition)}
+.guest-gate input:focus{border-color:var(--color-primary)}
+.guest-gate-pwd{position:relative}
+.guest-gate-pwd input{padding-right:2.5rem}
+.guest-gate-eye{position:absolute;top:50%;right:.55rem;transform:translateY(-50%);background:transparent;border:none;color:var(--color-text-muted);font-size:1.05rem;cursor:pointer;padding:.3rem .4rem}
+.guest-gate-actions{display:flex;gap:.5rem;margin-top:.35rem}
+.guest-gate-actions .btn{flex:1;justify-content:center}
+.guest-gate-msg{min-height:1.1rem;font-size:.85rem;color:var(--color-text-muted)}
+.guest-gate-msg.error{color:var(--color-error)}
+.guest-gate-msg.success{color:var(--color-success)}

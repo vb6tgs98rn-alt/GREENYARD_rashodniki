@@ -532,6 +532,11 @@ export function render() {
 export function renderAuthStatus(user) {
   const btn = dom.authCornerBtn;
   const drop = dom.authDropdown;
+  // Переключаем видимость всего приложения: для гостя (user===null) показываем только экран входа.
+  try {
+    if (user) document.body.classList.remove('is-guest');
+    else document.body.classList.add('is-guest');
+  } catch {}
   if (!btn) return;
 
   if (user) {

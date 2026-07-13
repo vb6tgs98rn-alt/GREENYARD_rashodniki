@@ -211,8 +211,30 @@ function formatRange(beginDate, endDate) {
  * @param {Array} bookings — ряды из таблицы rc_bookings
  * @returns {{ added:number, updated:number, removed:number, skipped:number }}
  */
+// Самолечение: убирает дубли записей с одинаковым externalBookingId (оставляет первую).
+// Вызывается перед каждым синком и после загрузки состояния.
+export function dedupeFinanceEntriesByExternalId() {
+  let removed = 0;
+  updateState((state) => {
+    const seen = new Set();
+    const kept = [];
+    for (const e of state.finance.entries) {
+      if (e.source === 'realtycalendar' && e.externalBookingId) {
+        const key = `${e.source}:${String(e.externalBookingId)}`;
+        if (seen.has(key)) { removed++; continue; }
+        seen.add(key);
+      }
+      kept.push(e);
+    }
+    if (removed) state.finance.entries = kept;
+  });
+  return removed;
+}
+
 export function applyRealtyCalendarBookings(bookings = []) {
   const result = { added: 0, updated: 0, removed: 0, skipped: 0 };
+  // Сначала чистим возможные дубли от старых багов синхронизации.
+  dedupeFinanceEntriesByExternalId();
   updateState((state) => {
     const existingByBookingId = new Map();
     state.finance.entries.forEach((entry, idx) => {

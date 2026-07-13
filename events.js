@@ -1374,4 +1374,86 @@ function bindAuth() {
   [dom.authBarEmail, dom.authBarPassword].forEach((inp) => {
     inp?.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSignIn(); });
   });
+
+  // ─── Гостевой экран входа ───
+  const gateEmail = document.getElementById('gateEmail');
+  const gatePwd = document.getElementById('gatePassword');
+  const gateMsg = document.getElementById('gateMsg');
+  const gateSignIn = document.getElementById('gateSignIn');
+  const gateSignUp = document.getElementById('gateSignUp');
+  const gateToggle = document.getElementById('gateTogglePwd');
+
+  function setGateMsg(text, kind = '') {
+    if (!gateMsg) return;
+    gateMsg.textContent = text || '';
+    gateMsg.classList.remove('error', 'success');
+    if (kind) gateMsg.classList.add(kind);
+  }
+  function gateBusy(on) {
+    [gateSignIn, gateSignUp].forEach((b) => { if (b) b.disabled = on; });
+  }
+  function gateValidate(email, password) {
+    if (!email || !/.+@.+\..+/.test(email)) return 'Укажите корректный email.';
+    if (!password || password.length < 6) return 'Пароль минимум 6 символов.';
+    return null;
+  }
+  async function gateDoSignIn() {
+    const email = (gateEmail?.value || '').trim();
+    const password = gatePwd?.value || '';
+    const err = gateValidate(email, password);
+    if (err) { setGateMsg(err, 'error'); return; }
+    gateBusy(true);
+    setGateMsg('Выполняется вход...');
+    try {
+      const { error } = await signInWithEmail(email, password);
+      if (error) {
+        const msg = error.message && (error.message.includes('Invalid login') || error.message.includes('invalid_credentials'))
+          ? 'Неверный email или пароль.'
+          : `Ошибка: ${error.message || error}`;
+        setGateMsg(msg, 'error');
+      } else {
+        setGateMsg('Вход выполнен', 'success');
+        if (gatePwd) gatePwd.value = '';
+      }
+    } catch (e) {
+      setGateMsg(`Сетевая ошибка: ${e?.message || e}`, 'error');
+    } finally { gateBusy(false); }
+  }
+  async function gateDoSignUp() {
+    const email = (gateEmail?.value || '').trim();
+    const password = gatePwd?.value || '';
+    const err = gateValidate(email, password);
+    if (err) { setGateMsg(err, 'error'); return; }
+    gateBusy(true);
+    setGateMsg('Создаём аккаунт...');
+    try {
+      const { user, session, error } = await signUpWithEmail(email, password);
+      if (error) {
+        const msg = error.message && (error.message.includes('already registered') || error.message.includes('already exists'))
+          ? 'Этот email уже зарегистрирован. Попробуйте войти.'
+          : `Ошибка: ${error.message || error}`;
+        setGateMsg(msg, 'error');
+        return;
+      }
+      if (session) {
+        setGateMsg('Аккаунт создан, выполняется вход...', 'success');
+        if (gatePwd) gatePwd.value = '';
+      } else if (user && !user.confirmed_at) {
+        setGateMsg(`Аккаунт создан. Проверьте почту ${email} для подтверждения.`, 'success');
+      } else {
+        setGateMsg('Аккаунт создан', 'success');
+      }
+    } catch (e) {
+      setGateMsg(`Сетевая ошибка: ${e?.message || e}`, 'error');
+    } finally { gateBusy(false); }
+  }
+  gateSignIn?.addEventListener('click', gateDoSignIn);
+  gateSignUp?.addEventListener('click', gateDoSignUp);
+  gateToggle?.addEventListener('click', () => {
+    if (!gatePwd) return;
+    gatePwd.type = gatePwd.type === 'password' ? 'text' : 'password';
+  });
+  [gateEmail, gatePwd].forEach((inp) => {
+    inp?.addEventListener('keydown', (e) => { if (e.key === 'Enter') gateDoSignIn(); });
+  });
 }

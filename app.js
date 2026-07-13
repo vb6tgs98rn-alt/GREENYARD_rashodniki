@@ -34,7 +34,7 @@ import {
 } from './storage.js';
 import { render, setStatus, renderAuthStatus, renderStorageBadge } from './render.js';
 import { bindEvents } from './events.js';
-import { ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings } from './finance.js';
+import { ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, dedupeFinanceEntriesByExternalId } from './finance.js';
 import { getCurrentUser, onAuthStateChange, getSupabaseClient } from './supabase-client.js';
 import {
   fetchRealtyCalendarBookings,
@@ -130,6 +130,8 @@ async function bootstrapForSignedInUser(user, { firstBoot = false } = {}) {
     if (res.ok && res.found) {
       // 2a. В облаке есть запись — это источник истины. Просто показываем её.
       setState(ensureStateShape(res.state));
+      // Однократная чистка дублей RC-броней от старых багов синка.
+      try { dedupeFinanceEntriesByExternalId(); } catch (e) { console.warn('[dedupe] error:', e); }
       ensureFinanceGeneratedForCurrentMonth();
       // Обновляем локальный кэш (обход флага — это безопасно, пишем ОБЛАЧНЫЕ данные)
       try { writeLocalCache(); } catch (e) { console.warn('[bootstrap] writeLocalCache:', e); }
