@@ -10,7 +10,7 @@
 // мы определяем пользователя по agency_id (он уникален в RealtyCalendar).
 // =============================================================================
 
-import { getSupabaseClient, waitForAuthReady} from './supabase-client.js';
+import { getSupabaseClient, requireUser } from './supabase-client.js';
 
 export const API_CONFIG = {
   webhookUrl: 'https://wpwuxcxmtvdxftqrrxuu.supabase.co/functions/v1/realtycalendar-webhook',
@@ -32,9 +32,9 @@ export function getWebhookUrl() {
 export async function fetchRealtyCalendarBookings(limit = 500) {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
-  await waitForAuthReady();
-  const { data: { session: _sess } } = await supabase.auth.getSession();
-  const user = _sess?.user ?? null;
+  // Ждём готовности сессии с ретраями (5×200мс). Без этого после быстрого входа
+  // supabase-js ещё не успевает обновить getSession(), и запрос возвращает пустоту.
+  const user = await requireUser();
   if (!user) return [];
   const { data, error } = await supabase
     .from('rc_bookings')
@@ -56,9 +56,7 @@ export async function fetchRealtyCalendarBookings(limit = 500) {
 export async function fetchRealtyCalendarLog(limit = 20) {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
-  await waitForAuthReady();
-  const { data: { session: _sess } } = await supabase.auth.getSession();
-  const user = _sess?.user ?? null;
+  const user = await requireUser();
   if (!user) return [];
   const { data, error } = await supabase
     .from('rc_webhook_log')
@@ -80,9 +78,7 @@ export async function fetchRealtyCalendarLog(limit = 20) {
 export async function fetchRealtyCalendarIntegration() {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
-  await waitForAuthReady();
-  const { data: { session: _sess } } = await supabase.auth.getSession();
-  const user = _sess?.user ?? null;
+  const user = await requireUser();
   if (!user) return null;
   const { data, error } = await supabase
     .from('rc_integrations')
@@ -104,9 +100,7 @@ export async function fetchRealtyCalendarIntegration() {
 export async function saveRealtyCalendarIntegration(agencyId) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
-  await waitForAuthReady();
-  const { data: { session: _sess } } = await supabase.auth.getSession();
-  const user = _sess?.user ?? null;
+  const user = await requireUser();
   if (!user) throw new Error('Войдите в аккаунт');
   const num = Number(agencyId);
   if (!Number.isInteger(num) || num <= 0) {
@@ -139,9 +133,7 @@ export async function saveRealtyCalendarIntegration(agencyId) {
 export async function disconnectRealtyCalendar() {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase не подключён');
-  await waitForAuthReady();
-  const { data: { session: _sess } } = await supabase.auth.getSession();
-  const user = _sess?.user ?? null;
+  const user = await requireUser();
   if (!user) throw new Error('Войдите в аккаунт');
   const { error } = await supabase
     .from('rc_integrations')

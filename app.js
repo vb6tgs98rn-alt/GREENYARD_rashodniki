@@ -118,7 +118,22 @@ async function init() {
  * @param {boolean} opts.firstBoot - true при первой инициализации страницы,
  *                                   false при SIGNED_IN после взаимодействия.
  */
+// Гарантируем, что бутстрап для одного user.id не запускается дважды параллельно
+// (два источника могут его звать: SIGNED_IN event и gate-хендлер вручную).
+let _bootstrapInFlight = null;
+let _lastBootstrappedUserId = null;
+
 async function bootstrapForSignedInUser(user, { firstBoot = false } = {}) {
+  if (_bootstrapInFlight && _lastBootstrappedUserId === (user?.id || null)) {
+    return _bootstrapInFlight;
+  }
+  _lastBootstrappedUserId = user?.id || null;
+  _bootstrapInFlight = _doBootstrapForSignedInUser(user, { firstBoot });
+  try { return await _bootstrapInFlight; }
+  finally { _bootstrapInFlight = null; }
+}
+
+async function _doBootstrapForSignedInUser(user, { firstBoot = false } = {}) {
   // 1. ЖЁСТКАЯ блокировка любых сохранений до завершения бутстрапа
   setHydrating(true);
   setStorageMode('cloud', user);
@@ -356,6 +371,10 @@ async function handleAuthChange(event, session) {
 }
 
 // ─── Запуск ────────────────────────────────────────────────────────────────
+// Экспорт бутстрапа в window — чтобы gate-хендлер мог его вызвать при входе
+// (страховка от того, что supabase-js не эмитнет SIGNED_IN event вовремя).
+window.__gy_bootstrapForSignedInUser = (user) => bootstrapForSignedInUser(user, { firstBoot: false });
+
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', init, { once: true });
 } else {

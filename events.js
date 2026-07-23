@@ -1405,7 +1405,7 @@ function bindAuth() {
     gateBusy(true);
     setGateMsg('Выполняется вход...');
     try {
-      const { error } = await signInWithEmail(email, password);
+      const { user, session, error } = await signInWithEmail(email, password);
       if (error) {
         const msg = error.message && (error.message.includes('Invalid login') || error.message.includes('invalid_credentials'))
           ? 'Неверный email или пароль.'
@@ -1414,6 +1414,19 @@ function bindAuth() {
       } else {
         setGateMsg('Вход выполнен', 'success');
         if (gatePwd) gatePwd.value = '';
+        // Страховка: если supabase-js не эмитнет SIGNED_IN вовремя (бывает при медленной сети),
+        // вручную подтверждаем вход в UI — снимаем is-guest и запускаем бутстрап.
+        try {
+          const authed = user || session?.user;
+          if (authed) {
+            document.body.classList.remove('is-guest');
+            if (typeof window.__gy_bootstrapForSignedInUser === 'function') {
+              await window.__gy_bootstrapForSignedInUser(authed);
+            }
+          }
+        } catch (bootErr) {
+          console.warn('[gate] manual bootstrap failed:', bootErr);
+        }
       }
     } catch (e) {
       setGateMsg(`Сетевая ошибка: ${e?.message || e}`, 'error');
