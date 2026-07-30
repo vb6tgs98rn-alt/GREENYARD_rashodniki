@@ -20,6 +20,14 @@ const json = (status: number, body: unknown) =>
     headers: { ...CORS, "Content-Type": "application/json" },
   });
 
+// Центральный обработчик ошибок: детали логируем только в серверном console,
+// клиенту отдаём генеричное сообщение без stack trace / SQL / внутренних путей.
+// CodeQL js/stack-trace-exposure: sensitive info stays server-side.
+const errorResponse = (status: number, context: string, err: unknown, publicMessage = "Internal server error") => {
+  console.error(`[okidoki-proxy] ${context}:`, err);
+  return json(status, { error: publicMessage });
+};
+
 async function getUserAndSettings(auth: string | null) {
   if (!auth) return { user: null, key: null, settings: null };
   const supa = createClient(SUPABASE_URL, SERVICE_ROLE);
@@ -58,7 +66,9 @@ async function oki(path: string, method: "GET" | "POST", api_key: string, body?:
       return { ok: res.ok, status: res.status, data };
     }
   } catch (err) {
-    return { ok: false, status: 0, data: { error: String((err as Error).message || err) } };
+    // Детали ошибки upstream-вызова логируем серверно, наружу не отдаём.
+    console.error("[okidoki-proxy] upstream fetch failed:", err);
+    return { ok: false, status: 0, data: { error: "upstream request failed" } };
   } finally {
     clearTimeout(t);
   }
@@ -74,6 +84,9 @@ function ddmmyyyy(d: string | Date | null | undefined): string {
 }
 
 Deno.serve(async (req) => {
+  // Top-level try/catch — любая необработанная ошибка логируется серверно,
+  // клиенту возвращаем generic 500 (js/stack-trace-exposure guard).
+  try {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json(405, { error: "method not allowed" });
 
@@ -134,7 +147,8 @@ Deno.serve(async (req) => {
       deposit: deposit ?? null,
       updated_at: new Date().toISOString(),
     }, { onConflict: "user_id,realty_id" });
-    if (error) return json(500, { error: error.message });
+    // Не пробрасываем error.message от Supabase в ответ (может содержать детали SQL/таблиц).
+    if (error) return errorResponse(500, "save_apartment_template upsert failed", error);
     return json(200, { ok: true });
   }
 
@@ -143,7 +157,7 @@ Deno.serve(async (req) => {
     if (!realty_id) return json(400, { error: "realty_id required" });
     const { error } = await supa!.from("apartment_contract_templates")
       .delete().eq("user_id", user.id).eq("realty_id", realty_id);
-    if (error) return json(500, { error: error.message });
+    if (error) return errorResponse(500, "delete_apartment_template failed", error);
     return json(200, { ok: true });
   }
 
@@ -247,7 +261,12 @@ Deno.serve(async (req) => {
     if (payload.redirect_url) contractBody.redirect_url = String(payload.redirect_url);
 
     const r = await oki("/external/contract", "POST", key, contractBody, 20000);
-    if (!r.ok) return json(502, { error: "okidoki error", status: r.status, data: r.data });
+    // Сообщение upstream Okidoki не полноценный stack, но всё же логируем серверно
+    // для диагностики и возвращаем короткое генеричное сообщение.
+    if (!r.ok) {
+      console.error("[okidoki-proxy] contract create upstream error:", r.status, r.data);
+      return json(502, { error: "okidoki request failed", status: r.status });
+    }
 
     const link = r.data?.link || "";
     const contract_id = r.data?.contract_id || "";
@@ -273,4 +292,7 @@ Deno.serve(async (req) => {
   }
 
   return json(400, { error: `unknown action: ${action}` });
+  } catch (err) {
+    return errorResponse(500, "unhandled route error", err);
+  }
 });

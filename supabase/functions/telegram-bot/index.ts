@@ -1225,7 +1225,10 @@ Deno.serve(async (req) => {
     if (req.method === "GET"  && (path === "/" || path === ""))    return json({ ok: true, service: "telegram-bot", endpoints: ["POST /", "POST /send", "POST /send_maid", "POST /test", "POST /cleaning_reminders"] });
     return json({ ok: false, error: "not_found", path }, 404);
   } catch (e) {
+    // Полные детали (вкл. stack) логируем только в серверный console;
+    // клиенту — генеричное сообщение без внутренней детализации
+    // (CodeQL js/stack-trace-exposure).
     console.error("[telegram-bot] router error:", e);
-    return json({ ok: false, error: "internal", message: String(e) }, 500);
+    return json({ ok: false, error: "Internal server error" }, 500);
   }
 });

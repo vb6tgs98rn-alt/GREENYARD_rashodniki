@@ -318,6 +318,9 @@ function normalize(payload: any): { action: string; status: string; booking: RcB
 // ---------------------------------------------------------------------------
 
 serve(async (req) => {
+  // Top-level try/catch — любая необработанная ошибка логируется серверно,
+  // клиенту возвращаем generic 500 без stack trace (CodeQL js/stack-trace-exposure).
+  try {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
   if (req.method !== "POST") return ok({ ok: false, error: "method_not_allowed" }, 405);
 
@@ -432,4 +435,17 @@ serve(async (req) => {
     .eq("user_id", userId);
 
   return ok({ ok: true });
+  } catch (err) {
+    // Полные детали ошибки (stack и прочее) логируются только в серверный console;
+    // клиенту — генеричное сообщение.
+    console.error("[rc-webhook] unhandled error:", err);
+    try {
+      await admin.from("rc_webhook_log").insert({
+        action: "unhandled_error", http_status: 500, error_text: "internal", raw_payload: null,
+      });
+    } catch (logErr) {
+      console.error("[rc-webhook] failed to log unhandled_error:", logErr);
+    }
+    return ok({ ok: false, error: "Internal server error" }, 500);
+  }
 });
