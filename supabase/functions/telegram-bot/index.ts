@@ -85,8 +85,11 @@ async function tgSendMessage(chatId: number | string, text: string, extra: any =
     if (!data.ok) console.error("[telegram-bot] sendMessage error:", JSON.stringify(data));
     return data;
   } catch (e) {
+    // Детали exception логируем серверно; наружу — только generic-флаг,
+    // чтобы String(e) не пробросился в HTTP-ответ через details: tgRes
+    // (CodeQL js/stack-trace-exposure).
     console.error("[telegram-bot] sendMessage exception:", e);
-    return { ok: false, error: String(e) };
+    return { ok: false, error: "telegram_send_failed" };
   }
 }
 
@@ -1116,7 +1119,11 @@ async function endpointSend(req: Request): Promise<Response> {
   if (session.user_id !== userId) return json({ ok: false, error: "forbidden" }, 403);
   if (!session.tg_chat_id) return json({ ok: false, error: "guest_not_connected" }, 409);
   const tgRes = await tgSendMessage(session.tg_chat_id, text);
-  if (!tgRes.ok) return json({ ok: false, error: "telegram_error", details: tgRes }, 502);
+  // Скрываем внутренние детали tgRes от клиента; в серверный лог — полностью.
+  if (!tgRes.ok) {
+    console.error("[telegram-bot] telegram send error:", tgRes);
+    return json({ ok: false, error: "telegram_error" }, 502);
+  }
   const tgMessageId = tgRes?.result?.message_id ?? null;
   const { error: insErr } = await sb.from("guest_messages").insert({
     user_id: session.user_id,
@@ -1139,7 +1146,11 @@ async function endpointTest(req: Request): Promise<Response> {
   if (!settings?.manager_tg_chat_id) return json({ ok: false, error: "manager_chat_id_not_set" }, 400);
   const text = "✅ <b>Это тестовое сообщение от Green Yard.</b>\n\nЕсли вы видите его — уведомления настроены корректно и бот будет писать сюда о действиях гостей.";
   const r = await tgSendMessage(settings.manager_tg_chat_id, text);
-  if (!r.ok) return json({ ok: false, error: "telegram_error", details: r }, 502);
+  // Детали upstream-ответа Telegram — в серверный лог, клиенту генерик.
+  if (!r.ok) {
+    console.error("[telegram-bot] endpointTest telegram error:", r);
+    return json({ ok: false, error: "telegram_error" }, 502);
+  }
   return json({ ok: true });
 }
 
@@ -1163,7 +1174,11 @@ async function endpointSendMaid(req: Request): Promise<Response> {
   if (maid.user_id !== userId) return json({ ok: false, error: "forbidden" }, 403);
   if (!maid.tg_chat_id) return json({ ok: false, error: "maid_not_connected" }, 409);
   const tgRes = await tgSendMessage(maid.tg_chat_id, text);
-  if (!tgRes.ok) return json({ ok: false, error: "telegram_error", details: tgRes }, 502);
+  // Скрываем внутренние детали tgRes от клиента; в серверный лог — полностью.
+  if (!tgRes.ok) {
+    console.error("[telegram-bot] telegram send error:", tgRes);
+    return json({ ok: false, error: "telegram_error" }, 502);
+  }
   const tgMessageId = tgRes?.result?.message_id ?? null;
   await sb.from("maid_messages").insert({
     user_id: maid.user_id,
