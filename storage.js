@@ -1,20 +1,24 @@
 /**
- * storage.js — слой хранения с двумя режимами:
- *   - 'local'  : пользователь не залогинен. Источник истины = localStorage.
- *   - 'cloud'  : пользователь залогинен. Источник истины = Supabase (public.app_state).
- *                localStorage используется только как write-through кэш и offline fallback.
+ * storage.js — единственный источник истины: Supabase (public.app_state).
  *
- * Внешний контракт:
- *   - setStorageMode(mode, user?)  — переключение режима (вызывается из app.js при auth-событиях)
- *   - persistState(setStatus)      — ЕДИНАЯ ФУНКЦИЯ сохранения. Сама выбирает облако или локалку.
- *   - loadInitialState(setStatus)  — первая загрузка при старте приложения
- *   - tryLoadFromApi(setStatus)    — принудительно загрузить state из облака
- *   - syncToApi(setStatus, silent) — принудительно записать state в облако
- *   - migrateLocalToCloud(setStatus) — после регистрации/первого логина
- *   - exportJson() / importJson(file) — без изменений
+ * Локальное хранение (localStorage) ПОЛНОСТЬЮ ОТКЛЮЧЕНО — никаких записей
+ * в localStorage приложение больше не делает. При старте старый кэш очищается,
+ * чтобы гарантировать чистоту данных (бывали случаи, когда старые локальные записи
+ * затирали облако или выглядели как «откат» недавних правок).
  *
- * Старые имена saveToBrowser / loadFromBrowser оставлены как алиасы persistState/loadInitialState
- * для обратной совместимости — весь код приложения зовёт их.
+ * Режимы:
+ *   - 'cloud' : пользователь залогинен. persistState пишет в Supabase.
+ *   - 'local' : не залогинен. persistState блокируется (guest gate всё равно не пускает
+ *               пользователя в UI). Режим нужен только как начальное состояние.
+ *
+ * Внешний контракт (без изменений названий функций):
+ *   - setStorageMode(mode, user?)  — переключение режима
+ *   - persistState(setStatus)      — единая точка сохранения (только cloud)
+ *   - loadInitialState(setStatus)  — первая загрузка при старте
+ *   - tryLoadFromApi / syncToApi / fetchCloudState — облачные вызовы
+ *   - migrateLocalToCloud          — оставлен на случай вызовов из старого кода
+ *                                    (теперь это просто syncToApi)
+ *   - exportJson / importJson      — без изменений
  */
 
 import {
@@ -34,10 +38,15 @@ let mode = 'local';   // 'local' | 'cloud'
 let cachedUser = null;
 
 // КРИТИЧЕСКИЙ флаг: пока приложение загружает/инициализирует state из облака после входа,
-// НИКАКИЕ вызовы persistState() / syncToApi() / writeLocal() НЕ должны
-// писать в облако или в localStorage — иначе они затрут реальные данные пользователя дефолтным
-// или гостевым state'ом. Снимается в app.js после успешной инициализации облачного state.
+// НИКАКИЕ вызовы persistState() / syncToApi() НЕ должны писать в облако —
+// иначе они затрут реальные данные пользователя дефолтным или гостевым state'ом.
+// Снимается в app.js после успешной инициализации облачного state.
 let isHydratingFromCloud = false;
+
+// При первой загрузке модуля — чистим старый локальный кэш.
+// Старые записи могли «воскрешать» устаревшие версии state (напр. вернувшийся старый
+// realtyCalendarUnitId), так что вычищаем единовременно при загрузке приложения.
+try { localStorage.removeItem(LOCAL_STORAGE_KEY); } catch { /* ignore */ }
 
 export function getStorageMode() {
   return mode;
@@ -154,34 +163,20 @@ export function normalizeImportedState(raw) {
 
 // ─── Локальное хранение ───────────────────────────────────────────────────────
 
+// Функции оставлены как no-op для обратной совместимости.
+// Supabase (public.app_state) — единственный источник истины, localStorage не используется.
+
 function writeLocal() {
-  try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(getState()));
-    return true;
-  } catch (e) {
-    console.warn('[storage] writeLocal error:', e);
-    return false;
-  }
+  return false;
 }
 
-/**
- * Безопасный вызов writeLocal() в обход флага hydrating — используется только
- * после успешной загрузки state из облака, чтобы синхронизировать локальный кэш.
- * localStorage — всегда кэш, его содержимое не является источником истины в cloud-режиме.
- */
+/** @deprecated локальное хранение отключено — функция ничего не делает */
 export function writeLocalCache() {
-  return writeLocal();
+  return false;
 }
 
 function readLocal() {
-  try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (!raw) return null;
-    return normalizeImportedState(JSON.parse(raw));
-  } catch (e) {
-    console.warn('[storage] readLocal error:', e);
-    return null;
-  }
+  return null;
 }
 
 // ─── Облачное хранение (Supabase) ─────────────────────────────────────────────
@@ -234,8 +229,6 @@ export async function tryLoadFromApi(setStatus) {
   const res = await fetchCloudState(setStatus);
   if (res.ok && res.found) {
     setState(res.state);
-    // Локальный write-through, чтобы офлайн-перезагрузка тоже что-то показала
-    writeLocal();
     notify(setStatus, `Загружено из облака в ${nowLabel()}`);
     return true;
   }
@@ -277,69 +270,56 @@ export async function syncToApi(setStatus, silent = false) {
     return true;
   } catch (e) {
     console.warn('[storage] syncToApi error:', e);
-    notify(setStatus, 'Сетевая ошибка, сохранено только локально', silent);
+    // Локального fallback больше нет — честно сообщаем об ошибке.
+    notify(setStatus, 'Ошибка сохранения: нет связи с облаком. Попробуйте ещё раз.', silent);
     return false;
   }
 }
 
-/** После первого логина: льём локальный state в облако. */
+/**
+ * Совместимость со старым кодом: локального state больше нет, так что
+ * просто вызываем syncToApi — текущий in-memory state уйдёт в облако.
+ */
 export async function migrateLocalToCloud(setStatus) {
-  const synced = await syncToApi(setStatus, true);
-  if (synced) notify(setStatus, 'Локальные данные перенесены в облако');
-  return synced;
+  return syncToApi(setStatus, true);
 }
 
 // ─── Главная функция сохранения ──────────────────────────────────────────────
 
 /**
- * persistState() — единая точка сохранения для всего приложения.
- * После каждого действия пользователя вызывается ИМЕННО ЭТА функция.
- *
- * Режим 'cloud':
- *   - основное сохранение = Supabase (await)
- *   - localStorage обновляется СИНХРОННО как write-through cache / offline fallback
- *   - при сетевой ошибке: данные остаются в localStorage и попадут в облако при следующем сохранении
- *
- * Режим 'local':
- *   - сохранение только в localStorage
- *   - облака нет, не пытаемся
+ * persistState() — единая точка сохранения. Пишет ТОЛЬКО в облако.
+ * Если пользователь не залогинен (mode === 'local') — возвращает false
+ * и просит войти. localStorage не трогаем вообще.
  */
 export async function persistState(setStatus, silent = false) {
-  // КРИТИЧЕСКИ: во время бутстрапа (загрузка state из облака после входа)
-  // НЕ разрешаем НИКАКОГО сохранения — ни в локалку, ни в облако.
-  // Иначе фоновые persistState() (от render/events) затрут облачные данные
-  // дефолтом или гостевым state'ом.
+  // КРИТИЧЕСКИ: во время бутстрапа НЕ пишем — иначе затрём облако дефолтом.
   if (isHydratingFromCloud) {
     console.warn('[storage] persistState blocked: hydrating from cloud');
     return false;
   }
 
-  // Локальный write-through всегда — он быстрый, синхронный, не сетевой
-  const localOk = writeLocal();
-
   if (mode === 'cloud') {
     const cloudOk = await syncToApi(setStatus, silent);
     if (!cloudOk && !silent) {
-      notify(setStatus, `Сохранено локально (нет связи) в ${nowLabel()}`);
+      notify(setStatus, 'Сохранение не удалось — проверьте связь и повторите');
     }
     return cloudOk;
   }
 
-  // mode === 'local'
-  if (localOk && !silent) notify(setStatus, `Сохранено локально в ${nowLabel()}`);
-  return localOk;
+  // mode === 'local' — пользователь не вошёл. Guest gate всё равно не даёт UI.
+  if (!silent) notify(setStatus, 'Войдите в аккаунт, чтобы сохранять данные');
+  return false;
 }
 
 // ─── Загрузка при старте ──────────────────────────────────────────────────────
 
 /**
- * loadInitialState() — единственная загрузка при инициализации приложения.
+ * loadInitialState() — единственная загрузка при старте. Только облако.
  *
- *  - Если есть Supabase-пользователь → пробуем облако.
- *      ✓ облако нашлось   → ставим mode='cloud', возвращаем true
- *      ✗ облако пустое    → mode='cloud', но НЕ подмешиваем чужие локальные данные.
- *        Возвращаем false → app.js поставит createDefaultState() и сохранит его в облако.
- *  - Если пользователя нет → читаем локалку, mode='local'.
+ *  - Есть Supabase-пользователь → пробуем облако.
+ *      ✓ нашлось → mode='cloud', true
+ *      ✗ пусто   → mode='cloud', false (app.js поставит default и упсертнет)
+ *  - Нет пользователя → mode='local', ничего не грузим (guest gate закроет UI).
  */
 export async function loadInitialState(setStatus) {
   let user = null;
@@ -347,23 +327,14 @@ export async function loadInitialState(setStatus) {
 
   if (user) {
     setStorageMode('cloud', user);
-
     const cloudOk = await tryLoadFromApi(setStatus);
     if (cloudOk) return true;
-
-    // В облаке для этого user_id пусто. Не подмешиваем сюда локальный кэш —
-    // он мог быть оставлен другим аккаунтом или гостевым сеансом. Возвращаем
-    // false, чтобы app.js явно поставил default state для нового аккаунта.
     return false;
   }
 
-  // Не залогинен → локальный режим
+  // Не залогинен → ничего не грузим. localStorage больше не читаем.
   setStorageMode('local', null);
-  const local = readLocal();
-  if (!local) return false;
-  setState(local);
-  notify(setStatus, `Загружено локально в ${nowLabel()}`);
-  return true;
+  return false;
 }
 
 // ─── Алиасы для обратной совместимости со старым API ──────────────────────────
