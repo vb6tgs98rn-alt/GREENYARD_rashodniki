@@ -1180,19 +1180,14 @@ function ensureNotifySettingsModal() {
 // 10) Действие: скопировать ссылку гостю
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function copyGuestInviteToClipboard(booking, state) {
-  // 1) Создаём/обновляем сессию (фиксируем secure_id и время «ссылка отправлена»)
+// Собираем текст приглашения (все сетевые вызовы внутри).
+async function buildInviteText(booking, state) {
   const session = await ensureSessionForBooking(booking);
-
-  // 2) Берём шаблон + настройки бота
   const settings = await fetchManagerSettings() || {};
   const tpl = settings.guest_invite_template || DEFAULT_INVITE_TEMPLATE;
-
-  // 3) Имя бота: пытаемся прочитать из настроек, иначе дефолт
   const botUsername = window.__GUEST_BOT_USERNAME__ || TELEGRAM_BOT_USERNAME_DEFAULT;
   const link = buildGuestLink(session.secure_id, botUsername);
 
-  // 4) Адрес — из инструкции квартиры
   const apts = state?.apartments || [];
   const apt = apts.find(a => String(a.externalIds?.realtyCalendarUnitId || '') === String(booking.realty_id || ''));
   let address = booking.apartment_title || '';
@@ -1201,7 +1196,6 @@ export async function copyGuestInviteToClipboard(booking, state) {
     if (instr?.full_address) address = instr.full_address;
   }
 
-  // 5) Текст
   const text = renderInviteText(tpl, {
     name:    booking.client_fio || 'гость',
     address: address,
@@ -1210,19 +1204,126 @@ export async function copyGuestInviteToClipboard(booking, state) {
     amount:  Number(booking.amount || 0).toLocaleString('ru-RU'),
     link,
   });
+  return { text, link };
+}
 
-  // 6) Кладём в буфер
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    // fallback
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    document.body.appendChild(ta); ta.select();
-    try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+/**
+ * Копирует в буфер приглашение для гостя.
+ * ВАЖНО: вызывать СИНХРОННО из обработчика клика — без await до вызова.
+ * На iOS Safari clipboard.writeText после await из user-gesture молча блокируется,
+ * поэтому используем ClipboardItem с Promise (Safari 13.4+) — это единственный способ
+ * «продлить» user-gesture через сетевые вызовы.
+ *
+ * Возвращает { ok: true, text, link } если удалось положить в буфер.
+ * Бросает исключение если оба способа не сработали (тогда UI должен показать fallback).
+ */
+export function copyGuestInviteToClipboard(booking, state) {
+  // Готовим Promise<Blob> заранее, ДО await — это ключ к работе на iOS.
+  const dataPromise = buildInviteText(booking, state);
+  const blobPromise = dataPromise.then(({ text }) =>
+    new Blob([text], { type: 'text/plain' })
+  );
+
+  // Путь A: async clipboard API с ClipboardItem (Safari/Chrome/Edge)
+  const hasAsyncClipboard =
+    typeof ClipboardItem !== 'undefined' &&
+    navigator.clipboard &&
+    typeof navigator.clipboard.write === 'function';
+
+  if (hasAsyncClipboard) {
+    const item = new ClipboardItem({ 'text/plain': blobPromise });
+    return navigator.clipboard.write([item])
+      .then(async () => {
+        const { text, link } = await dataPromise;
+        return { ok: true, text, link };
+      })
+      .catch(async (errWrite) => {
+        // Fallback: writeText (десктоп Chrome, Android)
+        try {
+          const { text, link } = await dataPromise;
+          await navigator.clipboard.writeText(text);
+          return { ok: true, text, link };
+        } catch (errText) {
+          // Последний шанс: execCommand + textarea
+          const { text, link } = await dataPromise;
+          const ok = legacyCopy(text);
+          if (ok) return { ok: true, text, link };
+          const e = new Error('Не удалось скопировать. Скопируйте текст вручную.');
+          e.text = text; e.link = link;
+          throw e;
+        }
+      });
   }
 
-  return { ok: true, text, link };
+  // Путь B: нет ClipboardItem — сразу writeText / execCommand
+  return dataPromise.then(async ({ text, link }) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return { ok: true, text, link };
+    } catch {
+      const ok = legacyCopy(text);
+      if (ok) return { ok: true, text, link };
+      const e = new Error('Не удалось скопировать. Скопируйте текст вручную.');
+      e.text = text; e.link = link;
+      throw e;
+    }
+  });
+}
+
+// Legacy fallback через скрытый textarea + execCommand.
+function legacyCopy(text) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.left = '0';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    // iOS: нужно именно так, чтобы поле стало selectable
+    ta.contentEditable = 'true';
+    const range = document.createRange();
+    range.selectNodeContents(ta);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return !!ok;
+  } catch {
+    return false;
+  }
+}
+
+// Модалка с текстом для ручного копирования (когда буфер обмена недоступен).
+export function showManualCopyModal(text) {
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:1rem;';
+  wrap.innerHTML = `
+    <div class="modal" style="background:#1a1a1a;border-radius:12px;padding:1.25rem;max-width:520px;width:100%;max-height:80vh;display:flex;flex-direction:column;gap:.75rem;">
+      <h3 style="margin:0;font-size:1.05rem;">Скопируйте текст вручную</h3>
+      <p class="small" style="margin:0;opacity:.75;">Браузер заблокировал автокопирование. Выделите текст и скопируйте.</p>
+      <textarea readonly style="flex:1;min-height:220px;width:100%;padding:.75rem;border-radius:8px;background:#111;color:#eee;border:1px solid #333;font-family:inherit;font-size:.9rem;"></textarea>
+      <div style="display:flex;gap:.5rem;justify-content:flex-end;">
+        <button class="btn btn-secondary" data-select-all>Выделить всё</button>
+        <button class="btn btn-primary" data-close>Закрыть</button>
+      </div>
+    </div>
+  `;
+  const ta = wrap.querySelector('textarea');
+  ta.value = text;
+  wrap.querySelector('[data-select-all]').addEventListener('click', () => {
+    ta.focus();
+    ta.setSelectionRange(0, ta.value.length);
+  });
+  wrap.querySelector('[data-close]').addEventListener('click', () => wrap.remove());
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) wrap.remove(); });
+  document.body.appendChild(wrap);
+  // Автоматически выделяем текст
+  setTimeout(() => { ta.focus(); ta.setSelectionRange(0, ta.value.length); }, 50);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1300,14 +1401,19 @@ export function bindGuestBotEvents(state) {
       const bid = linkBtn.getAttribute('data-link-booking');
       const b = _bookingsState.all.find(x => String(x.booking_id) === String(bid));
       if (!b) return;
-      try {
-        await copyGuestInviteToClipboard(b, state);
+      // ВАЖНО: вызываем СИНХРОННО, без await до этой строки — нужно для iOS.
+      copyGuestInviteToClipboard(b, state).then(() => {
         linkBtn.textContent = '✓ Ссылка скопирована';
         linkBtn.classList.add('is-sent');
         setStatus('Текст приглашения в буфере');
-      } catch (err) {
-        alert('Не удалось скопировать ссылку: ' + (err?.message || err));
-      }
+      }).catch((err) => {
+        // Буфер обмена не сработал — показываем модалку с текстом для ручного копирования
+        if (err?.text) {
+          showManualCopyModal(err.text);
+        } else {
+          alert('Не удалось скопировать ссылку: ' + (err?.message || err));
+        }
+      });
       return;
     }
 
