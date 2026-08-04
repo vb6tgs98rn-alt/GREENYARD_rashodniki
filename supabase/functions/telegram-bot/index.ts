@@ -681,7 +681,7 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
   // 2) Ищем шаблон квартиры
   const { data: apt } = await sb
     .from("apartment_contract_templates")
-    .select("okidoki_template_id, field_mapping, apartment_address, deposit")
+    .select("okidoki_template_id, field_mapping, okidoki_object_id, deposit")
     .eq("user_id", session.user_id)
     .eq("realty_id", bk.realty_id)
     .maybeSingle();
@@ -696,10 +696,9 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
     return null;
   }
 
-  // ВАЖНО: keyword'ы должны СОВПАДАТЬ с названиями полей в шаблоне Okidoki
-  // именно так, как они там записаны (с заглавной буквы, если так в шаблоне).
-  // «Описание и адрес квартиры» — это dropdown-объект (system entity), поэтому
-  // через entities передавать её бесполезно; текстовый адрес шлём в «Адрес».
+  // ВАЖНО: keyword'ы должны СОВПАДАТЬ с названиями полей в шаблоне Okidoki.
+  // «Описание и адрес квартиры» — dropdown-объект. Передаём value = ID объекта
+  // из настроек шаблона Okidoki (хранится в apartment_contract_templates.okidoki_object_id).
   const DEFAULT_MAPPING: Record<string, string> = {
     begin_date:            "Дата заселения",
     end_date:              "Дата выселения",
@@ -708,7 +707,7 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
     price_total:           "Полная стоимость",
     prepaid:               "Оплачено",
     deposit:               "Обеспечительный платеж",
-    apartment_address:     "Адрес",
+    apartment_object:      "Описание и адрес квартиры",
   };
   const userMapping: Record<string, string> = (ms.okidoki_field_mapping as any) || {};
   const aptMapping: Record<string, string> = apt.field_mapping || {};
@@ -722,7 +721,7 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
   const pricePerNight = nights > 0 ? Math.round((priceTotal / nights) * 100) / 100 : priceTotal;
 
   const deposit = Number(apt.deposit ?? 0);
-  const aptAddress = String(apt.apartment_address || bk.apartment_title || "");
+  const aptObjectId = String(apt.okidoki_object_id || "");
   const logical: Record<string, string> = {
     begin_date:      ddmmyyyy(bk.begin_date),
     end_date:        ddmmyyyy(bk.end_date),
@@ -733,7 +732,7 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
     remaining:       String(remaining),
     deposit:         String(deposit),
     apartment_title:       String(bk.apartment_title || ""),
-    apartment_address:     aptAddress,
+    apartment_object:      aptObjectId,
   };
   const entities: Array<{ keyword: string; value: string }> = [];
   for (const [logicalKey, keyword] of Object.entries(mapping)) {

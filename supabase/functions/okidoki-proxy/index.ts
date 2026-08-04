@@ -129,13 +129,13 @@ Deno.serve(async (req) => {
   if (action === "list_apartment_templates") {
     const { data } = await supa!
       .from("apartment_contract_templates")
-      .select("realty_id, apartment_name, okidoki_template_id, field_mapping, apartment_address, deposit, updated_at")
+      .select("realty_id, apartment_name, okidoki_template_id, field_mapping, okidoki_object_id, deposit, updated_at")
       .eq("user_id", user.id);
     return json(200, { items: data || [] });
   }
 
   if (action === "save_apartment_template") {
-    const { realty_id, apartment_name, okidoki_template_id, field_mapping, apartment_address, deposit } = payload;
+    const { realty_id, apartment_name, okidoki_template_id, field_mapping, okidoki_object_id, deposit } = payload;
     if (!realty_id || !okidoki_template_id) return json(400, { error: "realty_id и okidoki_template_id обязательны" });
     const { error } = await supa!.from("apartment_contract_templates").upsert({
       user_id: user.id,
@@ -143,7 +143,7 @@ Deno.serve(async (req) => {
       apartment_name: apartment_name || null,
       okidoki_template_id,
       field_mapping: field_mapping || {},
-      apartment_address: apartment_address ?? null,
+      okidoki_object_id: okidoki_object_id ?? null,
       deposit: deposit ?? null,
       updated_at: new Date().toISOString(),
     }, { onConflict: "user_id,realty_id" });
@@ -177,7 +177,7 @@ Deno.serve(async (req) => {
     // Ищем шаблон для этой квартиры (по realty_id)
     const { data: apt } = await supa!
       .from("apartment_contract_templates")
-      .select("okidoki_template_id, field_mapping")
+      .select("okidoki_template_id, field_mapping, okidoki_object_id, deposit")
       .eq("user_id", user.id)
       .eq("realty_id", bk.realty_id)
       .maybeSingle();
@@ -190,8 +190,8 @@ Deno.serve(async (req) => {
     }
 
     // Keyword’ы одинаковые во всех шаблонах — зашиты как дефолт.
-    // Пользовательский override через manager_settings.okidoki_field_mapping если вдруг в каком-то шаблоне keyword другой.
-    // С заглавной — как в шаблоне Okidoki. Объект «Описание и адрес квартиры» — dropdown, не передаётся через entities.
+    // Пользовательский override через manager_settings.okidoki_field_mapping или apt.field_mapping.
+    // «Описание и адрес квартиры» — dropdown-объект. Передаём value = ID объекта (okidoki_object_id).
     const DEFAULT_MAPPING: Record<string, string> = {
       begin_date:            "Дата заселения",
       end_date:              "Дата выселения",
@@ -200,7 +200,7 @@ Deno.serve(async (req) => {
       price_total:           "Полная стоимость",
       prepaid:               "Оплачено",
       deposit:               "Обеспечительный платеж",
-      apartment_address:     "Адрес",
+      apartment_object:      "Описание и адрес квартиры",
     };
     const userMapping: Record<string, string> = (settings?.okidoki_field_mapping as any) || {};
     const aptMapping: Record<string, string> = apt?.field_mapping || {};
@@ -222,10 +222,9 @@ Deno.serve(async (req) => {
       price_per_night: String(pricePerNight),
       prepaid:         String(prepaid),
       remaining:       String(remaining),
-      deposit:         String(payload.deposit ?? ""),
+      deposit:         String(payload.deposit ?? apt?.deposit ?? ""),
       apartment_title: String(bk.apartment_title || ""),
-      apartment_address: String(payload.apartment_address ?? bk.apartment_title ?? ""),
-      apartment_description: String(payload.apartment_description ?? ""),
+      apartment_object: String(payload.okidoki_object_id ?? apt?.okidoki_object_id ?? ""),
     };
 
     const entities: Array<{ keyword: string; value: string }> = [];
