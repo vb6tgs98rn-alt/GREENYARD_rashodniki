@@ -622,7 +622,7 @@ body:has(.drawer.open) .auth-corner-btn{ display:none !important; }
   line-height:1.45;
 }
 .chat-msg-meta{ opacity:.7; margin-bottom:.2rem; font-size:.7rem; }
-.chat-msg-body{ white-space:pre-wrap; word-break:break-word; }
+.chat-msg-body{ white-space:pre-wrap;  }
 .msg-inbound{
   align-self:flex-start;
   background:var(--color-surface-2, rgba(0,0,0,.06));
@@ -851,7 +851,7 @@ body.is-guest .drawer,
 body.is-guest .drawer-backdrop,
 body.is-guest .auth-corner,
 body.is-guest .modal-backdrop{display:none !important}
-.guest-gate-card{width:100%;max-width:26rem;background:var(--color-surface,#151719);border:1px solid rgba(255,255,255,.06);border-radius:var(--radius-xl,1rem);padding:1.75rem 1.5rem;box-shadow:0 20px 60px rgba(0,0,0,.35);display:grid;gap:.65rem}
+.guest-gate-card{width:100%;max-width:26rem;background:var(--color-surface,#151719);border:1px solid rgba(255,255,255,.06);border-radius:var(--radius-xl,1rem);padding:1.75rem 1.5rem;box-shadow:0 20px 60px rgba(0,0,0,.35);display:grid;grid-template-columns:minmax(0,1fr);gap:.65rem}
 .guest-gate-title{margin:.25rem 0 .35rem;font-size:1.4rem;font-weight:700}
 .guest-gate-hint{margin:0 0 .5rem;color:var(--color-text-muted);font-size:.9rem;line-height:1.4}
 .guest-gate input[type=email],
@@ -885,8 +885,8 @@ body.is-guest .modal-backdrop{display:none !important}
 .authbar-consent-check > span{
   flex:1 1 auto;
   min-width:0;
-  overflow-wrap:anywhere;
-  word-break:break-word;
+  
+  
 }
 .gate-consent-check input[type=checkbox],
 .authbar-consent-check input[type=checkbox]{
