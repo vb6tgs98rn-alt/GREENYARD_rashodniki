@@ -891,7 +891,16 @@ body.is-guest .modal-backdrop{display:none !important}
 .gate-consent-check input[type=checkbox],
 .authbar-consent-check input[type=checkbox]{
   flex:0 0 auto;
-  margin-top:.2rem;
+  width:16px;
+  height:16px;
+  min-width:16px;
+  padding:0;
+  margin:.2rem 0 0;
+  border:1px solid rgba(60,60,60,.35);
+  border-radius:3px;
+  background:transparent;
+  appearance:auto;
+  -webkit-appearance:checkbox;
 }
 .gate-consent-check a,
 .authbar-consent-check a{color:#7fd3ff;text-decoration:underline}
