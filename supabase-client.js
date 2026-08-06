@@ -84,13 +84,20 @@ export async function signUpWithEmail(email, password) {
 
 /** Вход по email + password. Возвращает { user, session, error }. */
 export async function signInWithEmail(email, password) {
+  console.log('[auth] signInWithEmail: start');
   try {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: String(email || '').trim().toLowerCase(),
-      password,
-    });
+    const raced = await Promise.race([
+      supabase.auth.signInWithPassword({
+        email: String(email || '').trim().toLowerCase(),
+        password,
+      }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('signIn timeout after 15s')), 15000)),
+    ]);
+    console.log('[auth] signInWithEmail: got response');
+    const { data, error } = raced;
     return { user: data?.user ?? null, session: data?.session ?? null, error };
   } catch (e) {
+    console.error('[auth] signInWithEmail exception:', e?.message || e);
     return { user: null, session: null, error: e };
   }
 }
