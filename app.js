@@ -360,15 +360,21 @@ function handleAuthChange(event, session) {
 }
 
 async function _processAuthChange(event, session) {
-  console.log('[auth] _processAuthChange enter:', event, 'authBusy=', authBusy);
-  if (authBusy) { console.log('[auth] SKIPPED (busy)'); return; }
+  if (authBusy) return;
   authBusy = true;
 
   const user = session?.user ?? null;
 
   try {
     if (event === 'SIGNED_IN') {
-      console.log('[auth] branch SIGNED_IN, calling bootstrap');
+      // SIGNED_IN может асинхронно прийти в момент, когда supabase-js держит auth-lock.
+      // Если бутстрапнем сейчас, любой supabase.from(...) внутри fetchCloudState()
+      // зависнет на этом же lock и никогда не завершится.
+      //
+      // Поэтому откладываем бутстрап через setTimeout — к этому моменту внешний вызов
+      // signInWithPassword() уже гарантированно резолвнется и лок отпустится.
+      // Отдаём текущий fiber, чтобя signInWithPassword завершился.
+      await new Promise((r) => setTimeout(r, 300));
       await bootstrapForSignedInUser(user, { firstBoot: false });
     } else if (event === 'SIGNED_OUT') {
       // Возвращаемся в гостевой режим и сбрасываем UI к виду "первого входа":
