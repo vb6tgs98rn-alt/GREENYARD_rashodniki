@@ -9,8 +9,8 @@ import { addApartment, addCustomItem, applyWriteoff, createPurchaseRequest, dele
 import { bindGuestBotEvents } from './guestBot.js';
 import { bindMaidsEvents } from './maidsUI.js';
 import { openOkidokiSettings } from './okidoki.js';
-import { checkConsentAfterAuth, showPolicyModal, submitConsent } from './consentUI.js';
-import { loadActivePolicy, getStatus as getConsentStatus } from './consent.js';
+import { checkConsentAfterAuth, showPolicyModal } from './consentUI.js';
+import { loadActivePolicy, getStatus as getConsentStatus, submitConsent } from './consent.js';
 
 async function rerender(statusText = 'Сохранено') {
   ensureFinanceGeneratedForCurrentMonth();
