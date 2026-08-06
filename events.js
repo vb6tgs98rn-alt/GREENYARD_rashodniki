@@ -1456,11 +1456,13 @@ function bindAuth() {
           const authed = user || session?.user;
           if (authed) {
             document.body.classList.remove('is-guest');
-            // Сначала проверяем consent (для существующих юзеров — покажет модалку)
-            try { await checkConsentAfterAuth(); } catch (ce) { console.warn('[gate] consent check failed:', ce); }
             if (typeof window.__gy_bootstrapForSignedInUser === 'function') {
               await window.__gy_bootstrapForSignedInUser(authed);
             }
+            // Consent запускаем ФОНОМ после bootstrap — не блокирует вход
+            Promise.resolve().then(() => checkConsentAfterAuth()).catch((ce) => {
+              console.warn('[gate] consent check failed:', ce);
+            });
           }
         } catch (bootErr) {
           console.warn('[gate] manual bootstrap failed:', bootErr);

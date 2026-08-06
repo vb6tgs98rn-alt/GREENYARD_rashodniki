@@ -188,13 +188,11 @@ async function _doBootstrapForSignedInUser(user, { firstBoot = false } = {}) {
     renderStorageBadge('cloud');
 
     // 4.5. Проверяем consent (не блокируем bootstrap — модалка поверх UI).
-    // Для существующих юзеров без согласия будет показана модалка; сервер всё равно
-    // вернёт 403 от чувствительных ручек (okidoki-proxy) — это strict гарантия.
-    try {
-      await checkConsentAfterAuth();
-    } catch (e) {
+    // Запускаем ФОНОМ — если модалка нужна, она всплывёт поверх UI сама.
+    // Никогда не await'им: любой ступор здесь не должен блокировать вход.
+    Promise.resolve().then(() => checkConsentAfterAuth()).catch((e) => {
       console.warn('[bootstrap] consent check failed:', e);
-    }
+    });
   } finally {
     // 5. Снимаем блокировку — с этого момента persistState() снова работает,
     //    и любые правки пользователя начнут сохраняться в облако (источник истины).
