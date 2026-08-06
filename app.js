@@ -343,6 +343,7 @@ async function refreshRealtyCalendarData() {
 // supabase.from(...) → тот тоже пытается взять auth-mutex → всё виснет.
 // Поэтому обрабатываем событие в отдельном микротаске (fire-and-forget).
 function handleAuthChange(event, session) {
+  console.log('[auth] event:', event, 'hasSession:', !!session);
   // TOKEN_REFRESHED / USER_UPDATED — фон, нас не касается
   if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') return;
   // Отдаём управление обратно supabase-js МГНОВЕННО.
