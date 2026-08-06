@@ -191,18 +191,22 @@ function readLocal() {
  * Не трогает текущий state в памяти и не пишет в localStorage.
  */
 export async function fetchCloudState(setStatus) {
+  console.log('[fetch] enter, cachedUser=', !!cachedUser);
   let user = cachedUser;
   if (!user) {
     try { user = await getCurrentUser(); } catch { user = null; }
   }
+  console.log('[fetch] user id=', user?.id);
   if (!user) return { ok: false, error: new Error('No user') };
 
   try {
+    console.log('[fetch] about to select app_state');
     const { data, error } = await supabase
       .from(USER_STATES_TABLE)
       .select('state')
       .eq('user_id', user.id)
       .maybeSingle();
+    console.log('[fetch] select done, err=', error?.message, 'has data=', !!data);
 
     if (error) {
       notify(setStatus, `Ошибка загрузки из облака: ${error.message}`);
