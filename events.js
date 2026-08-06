@@ -1356,9 +1356,15 @@ async function doSignUp() {
 }
 
 async function doSignOut() {
+  // 1) Запускаем signOut() в фоне (не await'им) — supabase.auth.signOut() может виснуть
+  //    если есть кеш connection cloudflare. Нам важно очистить UI сразу.
+  signOutUser().catch((e) => console.warn('[auth] signOut bg error:', e));
+
+  // 2) Очищаем UI немедленно (не ждём эмиссии SIGNED_OUT).
   try {
-    await signOutUser();
-    // Дальнейшую очистку UI и state делает onAuthStateChange в app.js
+    if (typeof window.__gy_handleSignOut === 'function') {
+      await window.__gy_handleSignOut();
+    }
   } catch (e) {
     setAuthMsg(`Ошибка выхода: ${e?.message || e}`, 'error');
   }

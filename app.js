@@ -381,21 +381,7 @@ async function _processAuthChange(event, session) {
       await new Promise((r) => setTimeout(r, 300));
       await bootstrapForSignedInUser(user, { firstBoot: false });
     } else if (event === 'SIGNED_OUT') {
-      // Возвращаемся в гостевой режим и сбрасываем UI к виду "первого входа":
-      // state = default, localStorage перезаписывается дефолтом, чтобы данные
-      // предыдущего аккаунта не остались в браузере. ОБЛАЧНЫЕ данные пользователя
-      // остаются нетронутыми — они подтянутся при следующем входе в этот аккаунт.
-      await teardownRealtyCalendar().catch(() => {});
-      setStorageMode('local', null);
-      setState(createDefaultState());
-      ensureFinanceGeneratedForCurrentMonth();
-      // persistState теперь пишет ТОЛЬКО локально (mode='local', user=null),
-      // и упсерта в облако точно не случится.
-      await persistState(setStatus, true).catch(() => {});
-      render();
-      renderAuthStatus(null);
-      renderStorageBadge('local');
-      setStatus('Вы вышли. Данные аккаунта остались в облаке.');
+      await handleSignOut();
     } else if (event === 'INITIAL_SESSION') {
       // Эмитится один раз при подписке. UI уже выставлен init()'ом —
       // просто синхронизируем визуальные индикаторы.
@@ -414,6 +400,23 @@ async function _processAuthChange(event, session) {
 // Экспорт бутстрапа в window — чтобы gate-хендлер мог его вызвать при входе
 // (страховка от того, что supabase-js не эмитнет SIGNED_IN event вовремя).
 window.__gy_bootstrapForSignedInUser = (user) => bootstrapForSignedInUser(user, { firstBoot: false });
+
+// Экспорт очистки в window — events.js вызывает её немедленно после signOut(),
+// не дожидаясь эмиссии SIGNED_OUT через onAuthStateChange (которая может не сработать,
+// если signOut() виснет).
+async function handleSignOut() {
+  await teardownRealtyCalendar().catch(() => {});
+  setStorageMode('local', null);
+  setState(createDefaultState());
+  ensureFinanceGeneratedForCurrentMonth();
+  await persistState(setStatus, true).catch(() => {});
+  render();
+  renderAuthStatus(null);
+  renderStorageBadge('local');
+  setStatus('Вы вышли. Данные аккаунта остались в облаке.');
+  document.body.classList.add('is-guest');
+}
+window.__gy_handleSignOut = handleSignOut;
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', init, { once: true });
