@@ -36,19 +36,22 @@ function ensureStyles() {
     .gy-consent-btn.primary:hover { background: #338a58; }
     .gy-consent-btn.ghost { background: transparent; }
 
-    .gy-consent-modal { background: #1a1a1a; color: #eee; width: 100%; max-width: 640px; max-height: 90vh; border-radius: 16px; padding: 1.25rem; display: flex; flex-direction: column; gap: .75rem; }
+    .gy-consent-modal { background: #1a1a1a; color: #eee; width: 100%; max-width: 640px; max-height: 90vh; border-radius: 16px; padding: 1.25rem; display: flex; flex-direction: column; gap: .75rem; overflow-y: auto; -webkit-overflow-scrolling: touch; }
     .gy-consent-modal h3 { margin: 0; font-size: 1.05rem; }
     .gy-consent-modal .body { flex: 1; overflow-y: auto; padding: .5rem; background: #111; border-radius: 8px; border: 1px solid #2a2a2a; font-size: .85rem; line-height: 1.5; }
     .gy-consent-modal .body h1, .gy-consent-modal .body h2, .gy-consent-modal .body h3 { margin-top: 1em; }
     .gy-consent-cat-list { display: flex; flex-direction: column; gap: .5rem; padding: .5rem 0; }
-    .gy-consent-cat { display: flex; align-items: flex-start; gap: .6rem; padding: .5rem; background: #111; border-radius: 8px; border: 1px solid #2a2a2a; }
-    .gy-consent-cat input { margin-top: .2rem; }
+    .gy-consent-cat { display: flex; align-items: flex-start; gap: .6rem; padding: .5rem .75rem; background: #111; border-radius: 8px; border: 1px solid #2a2a2a; cursor: pointer; }
+    .gy-consent-cat > input[type=checkbox] { flex: 0 0 auto; width: 20px; height: 20px; margin: 2px 0 0 0; padding: 0; accent-color: #2d7a4f; cursor: pointer; }
+    .gy-consent-cat > div { flex: 1 1 auto; min-width: 0; }
     .gy-consent-cat .cat-title { font-weight: 600; }
-    .gy-consent-cat .cat-desc { font-size: .8rem; opacity: .7; margin-top: .1rem; }
-    .gy-consent-cat.disabled { opacity: .6; }
+    .gy-consent-cat .cat-desc { font-size: .8rem; opacity: .7; margin-top: .1rem; line-height: 1.4; }
+    .gy-consent-cat.disabled { opacity: .6; cursor: default; }
+    .gy-consent-cat.disabled > input[type=checkbox] { cursor: default; }
 
     .gy-consent-check { display: flex; gap: .5rem; align-items: flex-start; margin: .5rem 0; font-size: .9rem; }
-    .gy-consent-check input { margin-top: .2rem; }
+    .gy-consent-check > input[type=checkbox] { flex: 0 0 auto; width: 20px; height: 20px; margin: 2px 0 0 0; padding: 0; accent-color: #2d7a4f; }
+    .gy-consent-check > span { flex: 1 1 auto; min-width: 0; }
     .gy-consent-error { color: #ff7676; font-size: .85rem; margin-top: .25rem; }
   `;
   document.head.appendChild(style);

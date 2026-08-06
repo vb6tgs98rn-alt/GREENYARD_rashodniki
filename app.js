@@ -337,9 +337,22 @@ async function refreshRealtyCalendarData() {
 }
 
 // ─── Auth state machine ────────────────────────────────────────────────────
-async function handleAuthChange(event, session) {
+// ВАЖНО: этот callback НЕ должен возвращать Promise, который supabase-js будет
+// await'ить внутри signInWithPassword/signOut. Иначе мы попадаем в deadlock:
+// signIn держит auth-mutex → эмитит SIGNED_IN → ждёт нас → мы дёргаем
+// supabase.from(...) → тот тоже пытается взять auth-mutex → всё виснет.
+// Поэтому обрабатываем событие в отдельном микротаске (fire-and-forget).
+function handleAuthChange(event, session) {
   // TOKEN_REFRESHED / USER_UPDATED — фон, нас не касается
   if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') return;
+  // Отдаём управление обратно supabase-js МГНОВЕННО.
+  // Реальную работу делаем асинхронно, не блокируя signIn/signOut.
+  Promise.resolve().then(() => _processAuthChange(event, session)).catch((e) => {
+    console.error('[auth] handler error:', e);
+  });
+}
+
+async function _processAuthChange(event, session) {
   if (authBusy) return;
   authBusy = true;
 
