@@ -382,6 +382,7 @@ export async function checkConsentAfterAuth() {
 // ─── Утилита ──────────────────────────────────────────────────────────────
 async function isAuthenticated() {
   const { supabase } = await import('./supabase-client.js');
-  const { data: { user } } = await supabase.auth.getUser();
-  return !!user;
+  // getSession() — локальный, без HTTP
+  const { data: { session } } = await supabase.auth.getSession();
+  return !!session?.user;
 }

@@ -135,16 +135,24 @@ async function bootstrapForSignedInUser(user, { firstBoot = false } = {}) {
 }
 
 async function _doBootstrapForSignedInUser(user, { firstBoot = false } = {}) {
-  console.log('[bootstrap] START uid=', user?.id, 'firstBoot=', firstBoot);
   // 1. ЖЁСТКАЯ блокировка любых сохранений до завершения бутстрапа
   setHydrating(true);
   setStorageMode('cloud', user);
 
+  // СРАЗУ обновляем UI (кнопка “Выход”, снимаем is-guest) — чтобы не зависеть от fetchCloudState.
+  // Если supabase-запрос медленный (большой JSON, cloudflare), главное — UI уже отвечает.
+  if (firstBoot) bindEvents();
+  renderAuthStatus(user);
+  renderStorageBadge('cloud');
+
   try {
     setStatus('Загружаем данные аккаунта...');
-    console.log('[bootstrap] before fetchCloudState');
-    const res = await fetchCloudState(setStatus);
-    console.log('[bootstrap] after fetchCloudState:', { ok: res.ok, found: res.found });
+    // Таймаут 15с — чтобы бесконечно не висеть на select'е (бывает при первом REST-вызове через кэш-connection cloudflare).
+    const res = await Promise.race([
+      fetchCloudState(setStatus),
+      new Promise((resolve) => setTimeout(() => resolve({ ok: false, timeout: true }), 15000)),
+    ]);
+    if (res.timeout) console.warn('[bootstrap] fetchCloudState timeout after 15s');
 
     if (res.ok && res.found) {
       // 2a. В облаке есть запись — это источник истины. Просто показываем её.
@@ -182,13 +190,8 @@ async function _doBootstrapForSignedInUser(user, { firstBoot = false } = {}) {
       setStatus('Не удалось загрузить данные из облака. Не редактируйте — обновите страницу.');
     }
 
-    // 3. Bind events — только если ещё не сделано (при firstBoot)
-    if (firstBoot) bindEvents();
-
-    // 4. Рендер с уже корректным state
+    // 4. Рендер с уже корректным state (bindEvents/renderAuthStatus уже отработали выше)
     render();
-    renderAuthStatus(user);
-    renderStorageBadge('cloud');
 
     // 4.5. Проверяем consent (не блокируем bootstrap — модалка поверх UI).
     // Запускаем ФОНОМ — если модалка нужна, она всплывёт поверх UI сама.

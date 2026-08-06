@@ -141,7 +141,9 @@ export async function loadActivePolicy() {
  * Если пользователь не авторизован — no-op.
  */
 export async function loadUserConsent() {
-  const { data: { user } } = await supabase.auth.getUser();
+  // getSession() — локальный, не делает HTTP-вызовов (в отличие от getUser())
+  const { data: { session } } = await supabase.auth.getSession();
+  const user = session?.user || null;
   if (!user) {
     _state.loaded = true;
     _state.hasConsent = false;
@@ -214,7 +216,9 @@ export function isPolicyOutdated() {
  * @param {string}  opts.policyVersion версия принятой политики
  */
 export async function submitConsent({ categories = {}, personalData = false, policyVersion }) {
-  const { data: { user } } = await supabase.auth.getUser();
+  // getSession() — локальный, не делает HTTP-вызовов
+  const { data: { session } } = await supabase.auth.getSession();
+  const user = session?.user || null;
   if (!user) {
     throw new Error('Нельзя записать согласие: пользователь не авторизован');
   }
