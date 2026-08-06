@@ -135,13 +135,16 @@ async function bootstrapForSignedInUser(user, { firstBoot = false } = {}) {
 }
 
 async function _doBootstrapForSignedInUser(user, { firstBoot = false } = {}) {
+  console.log('[bootstrap] START uid=', user?.id, 'firstBoot=', firstBoot);
   // 1. ЖЁСТКАЯ блокировка любых сохранений до завершения бутстрапа
   setHydrating(true);
   setStorageMode('cloud', user);
 
   try {
     setStatus('Загружаем данные аккаунта...');
+    console.log('[bootstrap] before fetchCloudState');
     const res = await fetchCloudState(setStatus);
+    console.log('[bootstrap] after fetchCloudState:', { ok: res.ok, found: res.found });
 
     if (res.ok && res.found) {
       // 2a. В облаке есть запись — это источник истины. Просто показываем её.
