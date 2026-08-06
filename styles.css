@@ -866,3 +866,35 @@ body.is-guest .modal-backdrop{display:none !important}
 .guest-gate-msg{min-height:1.1rem;font-size:.85rem;color:var(--color-text-muted)}
 .guest-gate-msg.error{color:var(--color-error)}
 .guest-gate-msg.success{color:var(--color-success)}
+
+/* ─── Consent checkbox в gate/authBar ─── */
+/* min-width:0 критичен, чтобы flex/grid item не распирал контейнер мин-вшириной контента */
+.gate-consent-check,
+.authbar-consent-check{
+  display:flex;
+  gap:.5rem;
+  align-items:flex-start;
+  font-size:.85rem;
+  line-height:1.4;
+  margin:.5rem 0;
+  width:100%;
+  min-width:0;
+  box-sizing:border-box;
+}
+.gate-consent-check > span,
+.authbar-consent-check > span{
+  flex:1 1 auto;
+  min-width:0;
+  overflow-wrap:anywhere;
+  word-break:break-word;
+}
+.gate-consent-check input[type=checkbox],
+.authbar-consent-check input[type=checkbox]{
+  flex:0 0 auto;
+  margin-top:.2rem;
+}
+.gate-consent-check a,
+.authbar-consent-check a{color:#7fd3ff;text-decoration:underline}
+.gate-consent-check small,
+.authbar-consent-check em{opacity:.65;font-style:normal}
+.authbar-consent-check{font-size:.78rem;line-height:1.35;margin:.4rem 0}
