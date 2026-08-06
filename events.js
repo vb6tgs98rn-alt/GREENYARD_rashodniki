@@ -9,6 +9,8 @@ import { addApartment, addCustomItem, applyWriteoff, createPurchaseRequest, dele
 import { bindGuestBotEvents } from './guestBot.js';
 import { bindMaidsEvents } from './maidsUI.js';
 import { openOkidokiSettings } from './okidoki.js';
+import { checkConsentAfterAuth, showPolicyModal, submitConsent } from './consentUI.js';
+import { loadActivePolicy, getStatus as getConsentStatus } from './consent.js';
 
 async function rerender(statusText = 'Сохранено') {
   ensureFinanceGeneratedForCurrentMonth();
@@ -86,6 +88,17 @@ function bindDrawerModals() {
   byId('openOkidokiSettings')?.addEventListener('click', () => {
     closeDrawer();
     openOkidokiSettings().catch((err) => setStatus('Ошибка Okidoki: ' + (err?.message || err)));
+  });
+
+  // Настройки конфиденциальности (152-ФЗ)
+  byId('openConsentSettings')?.addEventListener('click', async () => {
+    closeDrawer();
+    try {
+      const { showConsentSettings } = await import('./consentUI.js');
+      await showConsentSettings();
+    } catch (err) {
+      setStatus('Ошибка открытия настроек: ' + (err?.message || err));
+    }
   });
 }
 
@@ -1286,11 +1299,27 @@ async function doSignIn() {
 
 async function doSignUp() {
   const { email, password } = authReadFields();
+  const consentCheckbox = document.getElementById('authBarConsentPersonal');
   const err = authValidate(email, password);
   if (err) { setAuthMsg(err, 'error'); return; }
+
+  // ─── Consent gate: обязательное согласие на ПДн для регистрации ─────────────
+  if (!consentCheckbox?.checked) {
+    setAuthMsg('Для регистрации отметьте согласие с политикой конфиденциальности.', 'error');
+    return;
+  }
+
   authSetLoading(true);
   setAuthMsg('Создаём аккаунт...');
   try {
+    // Предварительно загружаем версию политики
+    await loadActivePolicy();
+    const activePolicy = getConsentStatus().activePolicy;
+    if (!activePolicy) {
+      setAuthMsg('Не удалось загрузить политику. Попробуйте ещё раз.', 'error');
+      return;
+    }
+
     const { user, session, error } = await signUpWithEmail(email, password);
     if (error) {
       const msg = error.message && (error.message.includes('already registered') || error.message.includes('already exists'))
@@ -1300,12 +1329,21 @@ async function doSignUp() {
       return;
     }
     if (session) {
-      // Email confirmation отключён — пользователь сразу залогинен
       setAuthMsg('Аккаунт создан, выполняется вход...', 'success');
       clearPasswordInputs();
       closeAuthDropdown();
+      // Записываем consent в БД сразу после signup
+      try {
+        await submitConsent({
+          categories:    { analytics: false, marketing: false, functional: false },
+          personalData:  true,
+          policyVersion: activePolicy.version,
+        });
+      } catch (ce) {
+        console.warn('[authBar] submitConsent after signup failed:', ce);
+      }
     } else if (user && !user.confirmed_at) {
-      setAuthMsg(`Аккаунт создан. Проверьте почту ${email} для подтверждения.`, 'success');
+      setAuthMsg(`Аккаунт создан. Проверьте почту ${email} для подтверждения. Согласие будет записано при первом входе.`, 'success');
     } else {
       setAuthMsg('Аккаунт создан', 'success');
       clearPasswordInputs();
@@ -1414,12 +1452,12 @@ function bindAuth() {
       } else {
         setGateMsg('Вход выполнен', 'success');
         if (gatePwd) gatePwd.value = '';
-        // Страховка: если supabase-js не эмитнет SIGNED_IN вовремя (бывает при медленной сети),
-        // вручную подтверждаем вход в UI — снимаем is-guest и запускаем бутстрап.
         try {
           const authed = user || session?.user;
           if (authed) {
             document.body.classList.remove('is-guest');
+            // Сначала проверяем consent (для существующих юзеров — покажет модалку)
+            try { await checkConsentAfterAuth(); } catch (ce) { console.warn('[gate] consent check failed:', ce); }
             if (typeof window.__gy_bootstrapForSignedInUser === 'function') {
               await window.__gy_bootstrapForSignedInUser(authed);
             }
@@ -1435,11 +1473,28 @@ function bindAuth() {
   async function gateDoSignUp() {
     const email = (gateEmail?.value || '').trim();
     const password = gatePwd?.value || '';
+    const consentCheckbox = document.getElementById('gateConsentPersonal');
     const err = gateValidate(email, password);
     if (err) { setGateMsg(err, 'error'); return; }
+
+    // ─── Consent gate: для регистрации — обязательное согласие на ПДн ────────
+    if (!consentCheckbox?.checked) {
+      setGateMsg('Для регистрации отметьте согласие с политикой конфиденциальности.', 'error');
+      return;
+    }
+
     gateBusy(true);
     setGateMsg('Создаём аккаунт...');
     try {
+      // Загружаем актуальную версию политики ЗАРАНЕЕ (до signup),
+      // чтобы зафиксировать версию, которую юзер видел в момент регистрации.
+      await loadActivePolicy();
+      const activePolicy = getConsentStatus().activePolicy;
+      if (!activePolicy) {
+        setGateMsg('Не удалось загрузить политику. Попробуйте ещё раз.', 'error');
+        return;
+      }
+
       const { user, session, error } = await signUpWithEmail(email, password);
       if (error) {
         const msg = error.message && (error.message.includes('already registered') || error.message.includes('already exists'))
@@ -1448,11 +1503,23 @@ function bindAuth() {
         setGateMsg(msg, 'error');
         return;
       }
+
+      // Если есть активная сессия — сразу записываем consent в БД на текущего user_id.
       if (session) {
         setGateMsg('Аккаунт создан, выполняется вход...', 'success');
         if (gatePwd) gatePwd.value = '';
+        try {
+          await submitConsent({
+            categories:    { analytics: false, marketing: false, functional: false },
+            personalData:  true,
+            policyVersion: activePolicy.version,
+          });
+        } catch (ce) {
+          console.warn('[gate] submitConsent after signup failed:', ce);
+          // Не блокируем вход — опекун checkConsentAfterAuth повторит попытку модалкой
+        }
       } else if (user && !user.confirmed_at) {
-        setGateMsg(`Аккаунт создан. Проверьте почту ${email} для подтверждения.`, 'success');
+        setGateMsg(`Аккаунт создан. Проверьте почту ${email} для подтверждения. Согласие будет записано при первом входе.`, 'success');
       } else {
         setGateMsg('Аккаунт создан', 'success');
       }
@@ -1460,6 +1527,17 @@ function bindAuth() {
       setGateMsg(`Сетевая ошибка: ${e?.message || e}`, 'error');
     } finally { gateBusy(false); }
   }
+
+  // Ссылка «Политика конфиденциальности» в gate
+  document.getElementById('gateOpenPolicy')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    showPolicyModal();
+  });
+  // Аналогично в authBar dropdown (компактном вводе)
+  document.getElementById('authBarOpenPolicy')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    showPolicyModal();
+  });
   gateSignIn?.addEventListener('click', gateDoSignIn);
   gateSignUp?.addEventListener('click', gateDoSignUp);
   gateToggle?.addEventListener('click', () => {

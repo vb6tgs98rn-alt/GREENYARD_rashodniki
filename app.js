@@ -34,6 +34,7 @@ import {
 } from './storage.js';
 import { render, setStatus, renderAuthStatus, renderStorageBadge } from './render.js';
 import { bindEvents } from './events.js';
+import { checkConsentAfterAuth } from './consentUI.js';
 import { ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, dedupeFinanceEntriesByExternalId } from './finance.js';
 import { getCurrentUser, onAuthStateChange, getSupabaseClient } from './supabase-client.js';
 import {
@@ -185,6 +186,15 @@ async function _doBootstrapForSignedInUser(user, { firstBoot = false } = {}) {
     render();
     renderAuthStatus(user);
     renderStorageBadge('cloud');
+
+    // 4.5. Проверяем consent (не блокируем bootstrap — модалка поверх UI).
+    // Для существующих юзеров без согласия будет показана модалка; сервер всё равно
+    // вернёт 403 от чувствительных ручек (okidoki-proxy) — это strict гарантия.
+    try {
+      await checkConsentAfterAuth();
+    } catch (e) {
+      console.warn('[bootstrap] consent check failed:', e);
+    }
   } finally {
     // 5. Снимаем блокировку — с этого момента persistState() снова работает,
     //    и любые правки пользователя начнут сохраняться в облако (источник истины).

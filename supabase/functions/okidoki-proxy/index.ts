@@ -2,7 +2,50 @@
 // Клиент передаёт JWT и action; функция достаёт api_key пользователя из БД
 // и делает запрос к api.doki.online. Ключ никогда не улетает на клиент.
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+
+// ─── requireConsent (инлайн, дублирует ../consent-api/guard.ts) ──────────────────────
+type ConsentCheckResult = {
+  allowed:       boolean;
+  reason?:       "no_user" | "no_consent" | "no_personal_data" | "category_denied";
+  categories?:   Record<string, boolean>;
+  personalData?: boolean;
+  version?:      string;
+};
+
+async function requireConsent(
+  supabase:    SupabaseClient,
+  userId:      string | null | undefined,
+  category:    "necessary" | "analytics" | "marketing" | "functional" = "necessary",
+): Promise<ConsentCheckResult> {
+  if (!userId) return { allowed: false, reason: "no_user" };
+
+  const { data, error } = await supabase
+    .from("user_consents")
+    .select("policy_version, categories, personal_data")
+    .eq("user_id", userId)
+    .is("revoked_at", null)
+    .order("given_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error || !data) return { allowed: false, reason: "no_consent" };
+
+  const cats = (data.categories || {}) as Record<string, boolean>;
+  const personalData = !!data.personal_data;
+
+  if (category === "necessary") {
+    if (!personalData) {
+      return { allowed: false, reason: "no_personal_data", categories: cats, personalData, version: data.policy_version };
+    }
+    return { allowed: true, categories: cats, personalData, version: data.policy_version };
+  }
+
+  if (!cats[category]) {
+    return { allowed: false, reason: "category_denied", categories: cats, personalData, version: data.policy_version };
+  }
+  return { allowed: true, categories: cats, personalData, version: data.policy_version };
+}
 
 const OKI_BASE = "https://api.doki.online";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -93,6 +136,18 @@ Deno.serve(async (req) => {
   const auth = req.headers.get("authorization");
   const { user, key, settings, supa } = await getUserAndSettings(auth);
   if (!user) return json(401, { error: "not authenticated" });
+
+  // ─── Consent guard ─────────────────────────────────────────────────────
+  // Okidoki-proxy передаёт ПДн гостей (ФИО, телефон, суммы) во внешний сервис
+  // — требуем активное согласие на обработку ПДн от пользователя-менеджера.
+  const consentCheck = await requireConsent(supa, user.id, "necessary");
+  if (!consentCheck.allowed) {
+    return json(403, {
+      error:  "consent_required",
+      reason: consentCheck.reason,
+      hint:   "Примите политику конфиденциальности в разделе Настройки → Конфиденциальность",
+    });
+  }
 
   let payload: any = {};
   try { payload = await req.json(); } catch {}
