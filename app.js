@@ -357,13 +357,15 @@ function handleAuthChange(event, session) {
 }
 
 async function _processAuthChange(event, session) {
-  if (authBusy) return;
+  console.log('[auth] _processAuthChange enter:', event, 'authBusy=', authBusy);
+  if (authBusy) { console.log('[auth] SKIPPED (busy)'); return; }
   authBusy = true;
 
   const user = session?.user ?? null;
 
   try {
     if (event === 'SIGNED_IN') {
+      console.log('[auth] branch SIGNED_IN, calling bootstrap');
       await bootstrapForSignedInUser(user, { firstBoot: false });
     } else if (event === 'SIGNED_OUT') {
       // Возвращаемся в гостевой режим и сбрасываем UI к виду "первого входа":
