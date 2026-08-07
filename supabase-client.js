@@ -130,6 +130,58 @@ export async function getSession() {
   }
 }
 
+/**
+ *  Смена пароля с обязательной проверкой текущего.
+ *
+ *  Supabase сам по себе НЕ требует старый пароль при updateUser({ password }) —
+ *  достаточно валидной сессии. Поэтому проверяем текущий пароль вручную:
+ *  повторно логинимся с ним. Если пароль неверный — Supabase вернёт ошибку,
+ *  и существующая сессия при этом не рвётся (неудачный вход её не затрагивает).
+ *
+ *  @param {string} currentPassword текущий пароль
+ *  @param {string} newPassword     новый пароль
+ *  @returns {Promise<{ok: boolean, error: string|null}>}
+ */
+export async function changePassword(currentPassword, newPassword) {
+  try {
+    const user = await getCurrentUser();
+    if (!user?.email) return { ok: false, error: 'Сессия не найдена. Войдите заново.' };
+
+    // 1) Проверяем текущий пароль повторной авторизацией
+    const { error: reauthError } = await supabase.auth.signInWithPassword({
+      email: user.email,
+      password: currentPassword,
+    });
+    if (reauthError) {
+      const msg = String(reauthError.message || '');
+      if (/invalid login credentials/i.test(msg)) {
+        return { ok: false, error: 'Текущий пароль введён неверно.' };
+      }
+      return { ok: false, error: `Не удалось проверить текущий пароль: ${msg}` };
+    }
+
+    // 2) Пароль подтверждён — меняем
+    const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
+    if (updateError) {
+      const msg = String(updateError.message || '');
+      if (/should be different|same as the old/i.test(msg)) {
+        return { ok: false, error: 'Новый пароль совпадает с текущим. Придумайте другой.' };
+      }
+      if (/pwned|compromised|leaked/i.test(msg)) {
+        return { ok: false, error: 'Этот пароль найден в утечках. Выберите другой.' };
+      }
+      if (/at least|should be at least|weak/i.test(msg)) {
+        return { ok: false, error: `Пароль слишком простой: ${msg}` };
+      }
+      return { ok: false, error: msg || 'Не удалось сменить пароль.' };
+    }
+
+    return { ok: true, error: null };
+  } catch (e) {
+    return { ok: false, error: `Сетевая ошибка: ${e?.message || e}` };
+  }
+}
+
 /** Подписка на изменения auth state. Возвращает функцию отписки. */
 export function onAuthStateChange(callback) {
   const { data } = supabase.auth.onAuthStateChange(callback);

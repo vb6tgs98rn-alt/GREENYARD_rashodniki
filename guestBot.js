@@ -1332,11 +1332,20 @@ export function bindGuestBotEvents(state) {
       const supabase = getSupabaseClient();
       if (!supabase) return;
       try {
-        const { error } = await supabase
+        // Фильтр по user_id обязателен: RLS и так не даст тронуть чужую бронь,
+        // но без этого условия PostgREST вернёт тихие 0 строк без ошибки.
+        await waitForAuthReady();
+        const { data: { session: _sess } } = await supabase.auth.getSession();
+        const user = _sess?.user ?? null;
+        if (!user) throw new Error('Сеанс не найден. Войдите заново.');
+        const { data: updated, error } = await supabase
           .from('rc_bookings')
           .update({ cancellation_reason: reason || null })
-          .eq('booking_id', Number(bid));
+          .eq('user_id', user.id)
+          .eq('booking_id', Number(bid))
+          .select('booking_id');
         if (error) throw error;
+        if (!updated?.length) throw new Error('Запись не найдена или нет прав на изменение.');
         // Обновляем локальное состояние
         const b = _bookingsState.all.find(x => String(x.booking_id) === String(bid));
         if (b) b.cancellation_reason = reason || null;

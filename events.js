@@ -4,7 +4,7 @@ import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringR
 import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus, setAuthMsg } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, updateState } from './state.js';
 import { persistState, exportJson, importJson } from './storage.js';
-import { signInWithEmail, signUpWithEmail, signOutUser } from './supabase-client.js';
+import { signInWithEmail, signUpWithEmail, signOutUser, changePassword, getCurrentUser } from './supabase-client.js';
 import { addApartment, addCustomItem, applyWriteoff, createPurchaseRequest, deleteApartment, deleteItem, newCheckin, renameCurrentApartment, resetAll, restockDefaults, toggleAutoRequest, toggleRequestDone, updateItemField, updateRequestItemCost } from './actions.js';
 import { bindGuestBotEvents } from './guestBot.js';
 import { bindMaidsEvents } from './maidsUI.js';
@@ -88,6 +88,59 @@ function bindDrawerModals() {
   byId('openOkidokiSettings')?.addEventListener('click', () => {
     closeDrawer();
     openOkidokiSettings().catch((err) => setStatus('Ошибка Okidoki: ' + (err?.message || err)));
+  });
+
+  // ─── Настройки аккаунта: смена пароля, политика ПДн, выход ────────────
+  byId('openAccountSettings')?.addEventListener('click', async () => {
+    closeDrawer();
+    resetPasswordForm();
+    // Показываем email текущего пользователя
+    const box = byId('accountEmailBox');
+    if (box) {
+      box.textContent = 'Загрузка…';
+      try {
+        const user = await getCurrentUser();
+        box.textContent = user?.email ? `Вы вошли как ${user.email}` : 'Сеанс не найден. Войдите заново.';
+      } catch {
+        box.textContent = 'Не удалось получить данные аккаунта';
+      }
+    }
+    openModal('accountSettingsModal');
+  });
+  byId('closeAccountSettings')?.addEventListener('click', () => closeModal('accountSettingsModal'));
+  byId('accountSettingsModal')?.addEventListener('click', (e) => {
+    if (e.target === byId('accountSettingsModal')) closeModal('accountSettingsModal');
+  });
+
+  // Показать/скрыть вводимые пароли
+  byId('pwdShow')?.addEventListener('change', (e) => {
+    const type = e.target.checked ? 'text' : 'password';
+    ['pwdCurrent', 'pwdNew1', 'pwdNew2'].forEach((id) => { const el = byId(id); if (el) el.type = type; });
+  });
+
+  byId('pwdSubmit')?.addEventListener('click', doChangePassword);
+  // Enter в любом из полей — отправка формы
+  ['pwdCurrent', 'pwdNew1', 'pwdNew2'].forEach((id) => {
+    byId(id)?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doChangePassword(); } });
+  });
+
+  byId('accountOpenPolicy')?.addEventListener('click', () => {
+    showPolicyModal().catch((err) => setPwdMsg(`Не удалось открыть политику: ${err?.message || err}`, 'error'));
+  });
+
+  byId('accountOpenConsent')?.addEventListener('click', async () => {
+    try {
+      const { showConsentSettings } = await import('./consentUI.js');
+      await showConsentSettings();
+    } catch (err) {
+      setPwdMsg(`Не удалось открыть согласия: ${err?.message || err}`, 'error');
+    }
+  });
+
+  byId('accountSignOut')?.addEventListener('click', () => {
+    closeModal('accountSettingsModal');
+    resetPasswordForm();
+    doSignOut();
   });
 
   // Настройки конфиденциальности (152-ФЗ)
@@ -1352,6 +1405,63 @@ async function doSignUp() {
     setAuthMsg(`Сетевая ошибка: ${e?.message || e}`, 'error');
   } finally {
     authSetLoading(false);
+  }
+}
+
+// ─── Смена пароля (модалка «Настройки») ────────────────────────────────────
+
+/** Сообщение под формой смены пароля. kind: 'error' | 'success' | 'info' */
+function setPwdMsg(text, kind = 'info') {
+  const el = byId('pwdMsg');
+  if (!el) return;
+  if (!text) { el.hidden = true; el.textContent = ''; el.removeAttribute('data-kind'); return; }
+  el.textContent = text;
+  el.dataset.kind = kind;
+  el.hidden = false;
+}
+
+/** Очищает поля пароля, снимает «показать пароли» и убирает сообщение. */
+function resetPasswordForm() {
+  ['pwdCurrent', 'pwdNew1', 'pwdNew2'].forEach((id) => {
+    const el = byId(id);
+    if (el) { el.value = ''; el.type = 'password'; }
+  });
+  const show = byId('pwdShow');
+  if (show) show.checked = false;
+  setPwdMsg('');
+}
+
+/**
+ * Валидирует форму и меняет пароль.
+ * Порядок проверок: заполненность → длина ≥8 → совпадение повторов → отличие от текущего.
+ * Проверка самого текущего пароля выполняется на сервере (changePassword).
+ */
+async function doChangePassword() {
+  const btn = byId('pwdSubmit');
+  const current = byId('pwdCurrent')?.value || '';
+  const next1 = byId('pwdNew1')?.value || '';
+  const next2 = byId('pwdNew2')?.value || '';
+
+  if (!current) { setPwdMsg('Введите текущий пароль.', 'error'); byId('pwdCurrent')?.focus(); return; }
+  if (!next1 || !next2) { setPwdMsg('Заполните оба поля нового пароля.', 'error'); byId(next1 ? 'pwdNew2' : 'pwdNew1')?.focus(); return; }
+  if (next1.length < 8) { setPwdMsg('Новый пароль должен быть не короче 8 символов.', 'error'); byId('pwdNew1')?.focus(); return; }
+  if (next1 !== next2) { setPwdMsg('Новые пароли не совпадают.', 'error'); byId('pwdNew2')?.focus(); return; }
+  if (next1 === current) { setPwdMsg('Новый пароль совпадает с текущим. Придумайте другой.', 'error'); byId('pwdNew1')?.focus(); return; }
+
+  const prevLabel = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = 'Меняем…'; }
+  setPwdMsg('Проверяем текущий пароль…', 'info');
+
+  try {
+    const { ok, error } = await changePassword(current, next1);
+    if (!ok) { setPwdMsg(error || 'Не удалось сменить пароль.', 'error'); return; }
+    resetPasswordForm();
+    setPwdMsg('Пароль изменён. Сеанс сохранён — выходить не нужно.', 'success');
+    setStatus('Пароль изменён');
+  } catch (e) {
+    setPwdMsg(`Ошибка: ${e?.message || e}`, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = prevLabel || 'Сменить пароль'; }
   }
 }
 

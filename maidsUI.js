@@ -100,7 +100,8 @@ async function updateMaidApartments(maidId, realtyIds) {
   const sb = supabase();
   const user = await requireUser();
   if (!user) throw new Error('unauthorized');
-  const { error: eDel } = await sb.from('maid_apartments').delete().eq('maid_id', maidId);
+  // Фильтр по user_id — явная изоляция арендатора помимо RLS.
+  const { error: eDel } = await sb.from('maid_apartments').delete().eq('user_id', user.id).eq('maid_id', maidId);
   if (eDel) {
     console.error('[maids] delete links error:', eDel);
     throw new Error('Не удалось очистить закрепления: ' + (eDel.message || 'unknown'));
@@ -121,13 +122,18 @@ async function updateMaidApartments(maidId, realtyIds) {
 
 async function updateMaid(maidId, patch) {
   const sb = supabase();
-  const { error } = await sb.from('maids').update(patch).eq('id', maidId);
+  const user = await requireUser();
+  if (!user) throw new Error('unauthorized');
+  // Без .eq('user_id') PostgREST при блокировке RLS вернёт тихие 0 строк без ошибки.
+  const { error } = await sb.from('maids').update(patch).eq('user_id', user.id).eq('id', maidId);
   if (error) throw error;
 }
 
 async function deleteMaid(maidId) {
   const sb = supabase();
-  const { error } = await sb.from('maids').delete().eq('id', maidId);
+  const user = await requireUser();
+  if (!user) throw new Error('unauthorized');
+  const { error } = await sb.from('maids').delete().eq('user_id', user.id).eq('id', maidId);
   if (error) throw error;
 }
 
