@@ -97,10 +97,8 @@ export async function signInWithEmail(email, password) {
 
 /** Выход. Не бросает исключений. */
 export async function signOutUser() {
-  console.log('[auth] signOut called');
   try {
     const { error } = await supabase.auth.signOut();
-    console.log('[auth] signOut done, err=', error?.message);
     return { error };
   } catch (e) {
     console.warn('[auth] signOut error:', e);

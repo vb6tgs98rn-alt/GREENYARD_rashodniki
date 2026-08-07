@@ -42,7 +42,7 @@ function ensureStyles() {
     .gy-consent-modal .body h1, .gy-consent-modal .body h2, .gy-consent-modal .body h3 { margin-top: 1em; }
     .gy-consent-cat-list { display: flex; flex-direction: column; gap: .5rem; padding: .5rem 0; }
     .gy-consent-cat { display: flex; align-items: flex-start; gap: .6rem; padding: .5rem .75rem; background: #111; border-radius: 8px; border: 1px solid #2a2a2a; cursor: pointer; }
-    .gy-consent-cat > input[type=checkbox] { flex: 0 0 auto; width: 20px; height: 20px; margin: 2px 0 0 0; padding: 0; accent-color: #2d7a4f; cursor: pointer; }
+    .gy-consent-cat > input[type=checkbox] { flex: 0 0 20px !important; width: 20px !important; height: 20px !important; max-width: 20px !important; max-height: 20px !important; min-width: 20px !important; min-height: 20px !important; margin: 2px 0 0 0; padding: 0; accent-color: #2d7a4f; cursor: pointer; -webkit-appearance: checkbox; appearance: auto; }
     .gy-consent-cat > div { flex: 1 1 auto; min-width: 0; }
     .gy-consent-cat .cat-title { font-weight: 600; }
     .gy-consent-cat .cat-desc { font-size: .8rem; opacity: .7; margin-top: .1rem; line-height: 1.4; }

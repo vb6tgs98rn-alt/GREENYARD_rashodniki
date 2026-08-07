@@ -607,26 +607,14 @@ async function loadInstructionIntoForm(apartmentId, apartmentTitle) {
   document.querySelectorAll('#guestInstructionsModal [data-instr-field]').forEach(el => { el.value = ''; });
   const data = await fetchInstructionFor(apartmentId) || {};
   setFieldVal('instr_full_address', data.full_address);
-  setFieldVal('instr_directions_metro', data.directions_metro);
-  setFieldVal('instr_parking_info', data.parking_info);
-  setFieldVal('instr_entrance_code', data.entrance_code);
-  setFieldVal('instr_door_code', data.door_code);
-  setFieldVal('instr_key_location', data.key_location);
   setFieldVal('instr_checkin_from', data.checkin_from || '14:00');
-  setFieldVal('instr_checkin_instruction', data.checkin_instruction);
+  setFieldVal('instr_checkout_until', data.checkout_until || '12:00');
   setFieldVal('instr_wifi_ssid', data.wifi_ssid);
   setFieldVal('instr_wifi_password', data.wifi_password);
-  setFieldVal('instr_amenities', Array.isArray(data.amenities) ? data.amenities.join(', ') : '');
-  setFieldVal('instr_apartment_notes', data.apartment_notes);
   setFieldVal('instr_smoking_policy', data.smoking_policy);
   setFieldVal('instr_pets_policy', data.pets_policy);
   setFieldVal('instr_quiet_hours', data.quiet_hours);
   setFieldVal('instr_other_rules', data.other_rules);
-  setFieldVal('instr_checkout_until', data.checkout_until || '12:00');
-  setFieldVal('instr_checkout_checklist', data.checkout_checklist);
-  setFieldVal('instr_key_return_info', data.key_return_info);
-  setFieldVal('instr_emergency_phone', data.emergency_phone);
-  setFieldVal('instr_emergency_telegram', data.emergency_telegram);
   setFieldVal('instr_ai_instructions', data.ai_instructions);
   _instructionsState.apartmentId = apartmentId;
   _instructionsState.apartmentTitle = apartmentTitle;
@@ -655,10 +643,8 @@ function setInstructionsReadOnly(readOnly) {
 
 function hasAnyInstructionData(data) {
   if (!data) return false;
-  const keys = ['full_address','directions_metro','parking_info','entrance_code','door_code','key_location','checkin_instruction','wifi_ssid','wifi_password','apartment_notes','smoking_policy','pets_policy','quiet_hours','other_rules','checkout_checklist','key_return_info','emergency_phone','emergency_telegram','ai_instructions'];
-  if (keys.some(k => data[k] && String(data[k]).trim())) return true;
-  if (Array.isArray(data.amenities) && data.amenities.length) return true;
-  return false;
+  const keys = ['full_address','wifi_ssid','wifi_password','smoking_policy','pets_policy','quiet_hours','other_rules','ai_instructions'];
+  return keys.some(k => data[k] && String(data[k]).trim());
 }
 
 function setFieldVal(id, val) {
@@ -668,31 +654,17 @@ function setFieldVal(id, val) {
 
 function readInstructionForm() {
   const get = (id) => document.getElementById(id)?.value?.trim() || null;
-  const amenitiesRaw = get('instr_amenities') || '';
-  const amenities = amenitiesRaw.split(',').map(s => s.trim()).filter(Boolean);
   return {
-    full_address:        get('instr_full_address'),
-    directions_metro:    get('instr_directions_metro'),
-    parking_info:        get('instr_parking_info'),
-    entrance_code:       get('instr_entrance_code'),
-    door_code:           get('instr_door_code'),
-    key_location:        get('instr_key_location'),
-    checkin_from:        get('instr_checkin_from') || '14:00',
-    checkin_instruction: get('instr_checkin_instruction'),
-    wifi_ssid:           get('instr_wifi_ssid'),
-    wifi_password:       get('instr_wifi_password'),
-    amenities,
-    apartment_notes:     get('instr_apartment_notes'),
-    smoking_policy:      get('instr_smoking_policy'),
-    pets_policy:         get('instr_pets_policy'),
-    quiet_hours:         get('instr_quiet_hours'),
-    other_rules:         get('instr_other_rules'),
-    checkout_until:      get('instr_checkout_until') || '12:00',
-    checkout_checklist:  get('instr_checkout_checklist'),
-    key_return_info:     get('instr_key_return_info'),
-    emergency_phone:     get('instr_emergency_phone'),
-    emergency_telegram:  get('instr_emergency_telegram'),
-    ai_instructions:     get('instr_ai_instructions'),
+    full_address:    get('instr_full_address'),
+    checkin_from:    get('instr_checkin_from') || '14:00',
+    checkout_until:  get('instr_checkout_until') || '12:00',
+    wifi_ssid:       get('instr_wifi_ssid'),
+    wifi_password:   get('instr_wifi_password'),
+    smoking_policy:  get('instr_smoking_policy'),
+    pets_policy:     get('instr_pets_policy'),
+    quiet_hours:     get('instr_quiet_hours'),
+    other_rules:     get('instr_other_rules'),
+    ai_instructions: get('instr_ai_instructions'),
   };
 }
 
@@ -715,17 +687,12 @@ function ensureInstructionsModal() {
 
         <h3 class="instr-h">📍 Адрес</h3>
         <label><span class="small">Полный адрес</span><input data-instr-field id="instr_full_address" type="text" placeholder="Москва, ул. Маршала Тимошенко 9, кв 12, подъезд 2, этаж 5" /></label>
-        <label><span class="small">Как добраться от метро</span><input data-instr-field id="instr_directions_metro" type="text" placeholder="От м. Крылатское — автобус 829 до ост. Тимошенко, 5 мин пешком" /></label>
-        <label><span class="small">Парковка</span><input data-instr-field id="instr_parking_info" type="text" placeholder="Платная во дворе, 200 ₽/сут. Бесплатная на ул. Партизанская" /></label>
 
-        <h3 class="instr-h">🔑 Заселение</h3>
+        <h3 class="instr-h">⏰ Время заезда / выезда</h3>
         <div class="instr-grid-2">
-          <label><span class="small">Код от подъезда</span><input data-instr-field id="instr_entrance_code" type="text" placeholder="К1234" /></label>
-          <label><span class="small">Код от двери / где ключи</span><input data-instr-field id="instr_door_code" type="text" placeholder="5678" /></label>
+          <label><span class="small">Заезд с</span><input data-instr-field id="instr_checkin_from" type="text" placeholder="14:00" /></label>
+          <label><span class="small">Выезд до</span><input data-instr-field id="instr_checkout_until" type="text" placeholder="12:00" /></label>
         </div>
-        <label><span class="small">Где взять ключи</span><input data-instr-field id="instr_key_location" type="text" placeholder="Сейф у двери справа. Внутри 2 ключа" /></label>
-        <label><span class="small">Время заезда с</span><input data-instr-field id="instr_checkin_from" type="text" placeholder="14:00" /></label>
-        <label><span class="small">Инструкция заселения (свободный текст)</span><textarea data-instr-field id="instr_checkin_instruction" rows="3" placeholder="Поднимитесь на 5 этаж, квартира направо от лифта"></textarea></label>
 
         <h3 class="instr-h">📶 Wi-Fi</h3>
         <div class="instr-grid-2">
@@ -733,28 +700,13 @@ function ensureInstructionsModal() {
           <label><span class="small">Пароль</span><input data-instr-field id="instr_wifi_password" type="text" placeholder="welcome2024" /></label>
         </div>
 
-        <h3 class="instr-h">🏠 О квартире</h3>
-        <label><span class="small">Что есть (через запятую)</span><input data-instr-field id="instr_amenities" type="text" placeholder="стиралка, фен, утюг, посудомойка, кондиционер" /></label>
-        <label><span class="small">Особенности</span><textarea data-instr-field id="instr_apartment_notes" rows="2" placeholder="Балкон выходит на парк, окна шумоизолированные"></textarea></label>
-
-        <h3 class="instr-h">📋 Правила</h3>
+        <h3 class="instr-h">📋 Правила проживания</h3>
         <div class="instr-grid-2">
           <label><span class="small">Курение</span><input data-instr-field id="instr_smoking_policy" type="text" placeholder="запрещено / только на балконе / разрешено" /></label>
           <label><span class="small">Животные</span><input data-instr-field id="instr_pets_policy" type="text" placeholder="можно / нельзя" /></label>
         </div>
         <label><span class="small">Часы тишины</span><input data-instr-field id="instr_quiet_hours" type="text" placeholder="С 23:00 до 8:00 — тишина" /></label>
         <label><span class="small">Другие правила</span><textarea data-instr-field id="instr_other_rules" rows="2"></textarea></label>
-
-        <h3 class="instr-h">🚪 Выезд</h3>
-        <label><span class="small">Время выезда до</span><input data-instr-field id="instr_checkout_until" type="text" placeholder="12:00" /></label>
-        <label><span class="small">Чек-лист при выезде</span><textarea data-instr-field id="instr_checkout_checklist" rows="2" placeholder="Закройте окна, выключите свет, вынесите мусор"></textarea></label>
-        <label><span class="small">Куда оставить ключи</span><input data-instr-field id="instr_key_return_info" type="text" placeholder="В сейф, код 5678" /></label>
-
-        <h3 class="instr-h">📞 Контакты</h3>
-        <div class="instr-grid-2">
-          <label><span class="small">Телефон для экстренных</span><input data-instr-field id="instr_emergency_phone" type="text" placeholder="+7 999 123-45-67" /></label>
-          <label><span class="small">Telegram (без @)</span><input data-instr-field id="instr_emergency_telegram" type="text" placeholder="ivan_manager" /></label>
-        </div>
 
         <h3 class="instr-h">🤖 Инструкция для AI-бота</h3>
         <p class="muted small" style="margin:-.2rem 0 .4rem;">Свободный текст: любые правила, особенности, лайфхаки, ответы на частые вопросы именно по этой квартире. Бот будет отвечать гостю на основе <b>только</b> этого текста и полей выше. Если чего-то нет — предложит связаться с менеджером и не будет ничего выдумывать. Если поле пустое — AI-режим для этой квартиры выключен.</p>
