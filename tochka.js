@@ -334,6 +334,11 @@ export async function openTochkaSettings() {
   const pollBtn = document.getElementById('tochkaPoll');
   const methodSel = document.getElementById('tochkaMethod');
 
+  // Сначала поднимаем рабочий интерфейс, и только потом идём в сеть:
+  // если банк или база отвечают долго, модалка всё равно кликается.
+  applyMethodVisibility();
+  bindHandlers(modal, { closeBtn, connectBtn, refreshBtn, disconnectBtn, saveBtn, pollBtn, methodSel });
+
   // Статус подключения
   let st = null;
   try {
@@ -362,7 +367,11 @@ export async function openTochkaSettings() {
   }
 
   if (st?.status === 'connected') renderPayments().catch(() => {});
+}
 
+/** Привязывает обработчики один раз за жизнь модалки. */
+function bindHandlers(modal, els) {
+  const { closeBtn, connectBtn, refreshBtn, disconnectBtn, saveBtn, pollBtn, methodSel } = els;
   if (modal.dataset.bound) return;
   modal.dataset.bound = '1';
 
