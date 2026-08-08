@@ -7,7 +7,7 @@
  * Условия: см. файл LICENSE. Нарушение влечёт ответственность по ст. 1252,
  * 1301 ГК РФ.
  */
-// Edge Function: бот для гостей и горничных (v13 — мультиканальность).
+// Edge Function: бот для гостей и горничных (v14 — оплата через Точка Банк).
 //
 // Работает сразу в трёх мессенджерах: Telegram, MAX и WhatsApp.
 // Вся логика ниже про каналы ничего не знает: она получает Recipient
@@ -34,6 +34,7 @@ import {
   type Recipient,
   sendMessage,
 } from "../_shared/channels.ts";
+import { ensureBookingPayment, paymentMessage } from "../_shared/tochka_booking.ts";
 
 const TG_SECRET    = Deno.env.get("TELEGRAM_WEBHOOK_SECRET")   ?? "";
 const MAX_SECRET   = Deno.env.get("MAX_WEBHOOK_SECRET")        ?? "";
@@ -94,13 +95,15 @@ async function send(to: Recipient, text: string, buttons?: Btn[][], preview = fa
  * Меню гостя. Возвращается в нейтральном виде — каждый канал сам решит,
  * рисовать это кнопками или списком.
  */
-function guestKeyboard(channelUrl?: string | null): Btn[][] {
+function guestKeyboard(channelUrl?: string | null, payEnabled = false): Btn[][] {
   const rows: Btn[][] = [
     [{ text: "📍 Адрес", data: "address" }, { text: "📶 Wi-Fi", data: "wifi" }],
     [{ text: "🔑 Заселение", data: "checkin_info" }, { text: "🚪 Выезд", data: "checkout_info" }],
     [{ text: "✅ Я приехал", data: "i_arrived" }, { text: "👋 Я уезжаю", data: "i_leaving" }],
     [{ text: "📋 Правила", data: "rules" }, { text: "📞 Помощь", data: "help" }],
   ];
+  // Кнопку оплаты показываем, только если арендодатель включил приём оплаты.
+  if (payEnabled) rows.push([{ text: "💳 Оплатить проживание", data: "pay" }]);
   if (channelUrl) rows.push([{ text: "📢 Наш канал", url: channelUrl }]);
   return rows;
 }
@@ -860,6 +863,60 @@ async function maybeCreateContract(session: Session): Promise<string | null> {
   }
 }
 
+/**
+ * Отправляет гостю ссылку на оплату остатка по брони.
+ *
+ * Сумма — задолженность (полная стоимость минус внесённая предоплата).
+ * Если долга нет, ничего не отправляем. Способ оплаты (ссылка Точки,
+ * QR СБП или реквизиты) арендодатель выбирает в настройках приложения.
+ *
+ * @param silent при ручном нажатии кнопки гостю нужно ответить всегда,
+ *               при автоматической отправке — молчим, если платить нечего.
+ */
+async function sendPaymentLink(to: Recipient, session: Session, silent: boolean): Promise<void> {
+  const sb = svc();
+  let res;
+  try {
+    res = await ensureBookingPayment(sb, session.user_id, session.booking_id);
+  } catch (e) {
+    console.error("[bot] ensureBookingPayment:", (e as Error).message);
+    if (!silent) await send(to, "Не получилось подготовить оплату. Менеджер уже знает и свяжется с вами.");
+    await notifyManager(session.user_id, `❌ Не удалось создать оплату по брони <code>${htmlEscape(String(session.booking_id))}</code>: ${htmlEscape(String((e as Error).message).slice(0, 300))}`);
+    return;
+  }
+
+  if (res.kind === "disabled") {
+    if (!silent) await send(to, "Онлайн-оплата пока недоступна. Напишите сюда — менеджер подскажет, как оплатить.");
+    return;
+  }
+  if (res.kind === "nothing_to_pay") {
+    if (!silent) await send(to, "✅ Проживание полностью оплачено, доплачивать ничего не нужно.");
+    return;
+  }
+  if (res.kind === "error") {
+    if (!silent) await send(to, "Не получилось подготовить оплату. Менеджер уже знает и свяжется с вами.");
+    await notifyManager(session.user_id, `❌ Оплата по брони <code>${htmlEscape(String(session.booking_id))}</code> не создана: ${htmlEscape(String(res.reason || "").slice(0, 300))}`);
+    return;
+  }
+
+  const msg = paymentMessage(res, htmlEscape);
+  if (!msg) return;
+  await sendMessage(to, msg, { preview: false });
+  await logMessage(session, "bot", msg, {
+    kind: "payment_link",
+    method: res.method,
+    amount: res.amount,
+    payment_id: res.paymentId ?? null,
+  });
+  if (res.paymentId) {
+    await sb.from("tochka_payments")
+      .update({ sent_at: new Date().toISOString() })
+      .eq("id", res.paymentId);
+  }
+  const sum = res.amount.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  await notifyManager(session.user_id, `💳 Гостю отправлена оплата на <b>${htmlEscape(sum)} ₽</b> (бронь <code>${htmlEscape(String(session.booking_id))}</code>).`);
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // СЦЕНАРИИ ГОСТЯ
 // ═══════════════════════════════════════════════════════════════════
@@ -901,7 +958,7 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
 
   const welcome = buildWelcomeMessage(fromName, instr);
-  await send(to, welcome, guestKeyboard(settings?.guest_channel_url ?? null));
+  await send(to, welcome, guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled)));
   await logMessage(session, "bot", welcome, { kind: "welcome" });
   await logEvent(session, "custom", { kind: "bot_started", channel: to.channel, chat_id: to.chatId, from: fromName });
   await notifyManager(session.user_id, `🟢 Гость <b>${htmlEscape(fromName || "—")}</b> запустил бота (${CHANNEL_TITLE[to.channel]}).\nБронь: <code>${session.booking_id}</code>`);
@@ -917,6 +974,13 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
     }
   } catch (e) {
     console.error("[bot] maybeCreateContract failed:", e);
+  }
+
+  // Ссылка на оплату остатка — сразу за договором.
+  try {
+    await sendPaymentLink(to, session, true);
+  } catch (e) {
+    console.error("[bot] sendPaymentLink failed:", e);
   }
 }
 
@@ -938,10 +1002,14 @@ async function handleCommand(to: Recipient, cmd: string) {
     case "checkout": case "checkout_info": reply = blockCheckout(instr) || fallback; break;
     case "rules": reply = blockRules(instr) || "Особых правил нет. Будьте аккуратны и уважайте соседей."; break;
     case "help": reply = blockHelp(instr); break;
+    case "pay": case "payment":
+      await sendPaymentLink(to, session, false);
+      await logMessage(session, "inbound", "Запрос оплаты", { kind: "command", cmd });
+      return;
     case "menu": case "start_menu": reply = "Выберите, что вас интересует:"; break;
     default: reply = "Команда не распознана. Используйте кнопки ниже.";
   }
-  await send(to, reply, guestKeyboard(settings?.guest_channel_url ?? null));
+  await send(to, reply, guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled)));
   await logMessage(session, "bot", reply, { kind: "command", cmd });
 }
 
@@ -950,7 +1018,7 @@ async function handleArrival(to: Recipient, from: InboundEvent["from"], kind: "a
   if (!session) { await send(to, "Сессия не найдена. Откройте бота по ссылке от менеджера."); return; }
   const fromName = [from?.firstName, from?.lastName].filter(Boolean).join(" ") || from?.username || "";
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
-  const kb = guestKeyboard(settings?.guest_channel_url ?? null);
+  const kb = guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled));
   if (kind === "arrived") {
     const reply = "Спасибо! ✅ Я передал менеджеру, что вы приехали. Хорошего отдыха!";
     await send(to, reply, kb);
@@ -978,7 +1046,7 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
   const { id: apartmentId, diag: resolveDiag } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
   const instr = await loadInstructions(session.user_id, apartmentId);
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
-  const kb = guestKeyboard(settings?.guest_channel_url ?? null);
+  const kb = guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled));
 
   const aiInstrLen = (instr?.ai_instructions ?? "").toString().trim().length;
   const sessionAiEnabled = session.ai_enabled !== false;
@@ -1422,7 +1490,7 @@ Deno.serve(async (req) => {
       return json({
         ok: true,
         service: "green-yard-bot",
-        version: 13,
+        version: 14,
         enabled_channels: enabledChannels(),
         endpoints: [
           "POST /", "POST /max", "GET|POST /whatsapp",

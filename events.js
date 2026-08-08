@@ -18,6 +18,7 @@ import { addApartment, addCustomItem, applyWriteoff, createPurchaseRequest, dele
 import { bindGuestBotEvents } from './guestBot.js';
 import { bindMaidsEvents } from './maidsUI.js';
 import { openOkidokiSettings } from './okidoki.js';
+import { openTochkaSettings } from './tochka.js';
 import { checkConsentAfterAuth, showPolicyModal } from './consentUI.js';
 import { loadActivePolicy, getStatus as getConsentStatus, submitConsent } from './consent.js';
 
@@ -97,6 +98,12 @@ function bindDrawerModals() {
   byId('openOkidokiSettings')?.addEventListener('click', () => {
     closeDrawer();
     openOkidokiSettings().catch((err) => setStatus('Ошибка Okidoki: ' + (err?.message || err)));
+  });
+
+  // Точка Банк — приём оплаты проживания
+  byId('openTochkaSettings')?.addEventListener('click', () => {
+    closeDrawer();
+    openTochkaSettings().catch((err) => setStatus('Ошибка Точки: ' + (err?.message || err)));
   });
 
   // ─── Настройки аккаунта: смена пароля, политика ПДн, выход ────────────
