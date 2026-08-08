@@ -22,23 +22,38 @@
 // Окружение
 // ───────────────────────────────────────────────────────────────
 
-/** Боевой слой API. Для отладки можно подставить песочницу. */
-export const TOCHKA_API_BASE =
-  Deno.env.get("TOCHKA_API_BASE") ?? "https://enter.tochka.com/uapi";
-/** Хост авторизации OAuth 2.0 (у песочницы отдельного нет). */
-export const TOCHKA_AUTH_BASE =
-  Deno.env.get("TOCHKA_AUTH_BASE") ?? "https://enter.tochka.com";
+/**
+ * Читает переменную окружения без пробелов по краям и без кавычек.
+ * Ключи вбивают руками, а лишний пробел в redirect_uri ломает весь OAuth.
+ */
+function env(name: string, fallback = ""): string {
+  const raw = Deno.env.get(name);
+  if (raw == null) return fallback;
+  const clean = raw.trim().replace(/^["']|["']$/g, "").trim();
+  return clean || fallback;
+}
 
-export const TOCHKA_CLIENT_ID = Deno.env.get("TOCHKA_CLIENT_ID") ?? "";
-export const TOCHKA_CLIENT_SECRET = Deno.env.get("TOCHKA_CLIENT_SECRET") ?? "";
+/** Боевой слой API. Для отладки можно подставить песочницу. */
+export const TOCHKA_API_BASE = env("TOCHKA_API_BASE", "https://enter.tochka.com/uapi")
+  .replace(/\/+$/, "");
+/** Хост авторизации OAuth 2.0 (у песочницы отдельного нет). */
+export const TOCHKA_AUTH_BASE = env("TOCHKA_AUTH_BASE", "https://enter.tochka.com")
+  .replace(/\/+$/, "");
+
+export const TOCHKA_CLIENT_ID = env("TOCHKA_CLIENT_ID");
+export const TOCHKA_CLIENT_SECRET = env("TOCHKA_CLIENT_SECRET");
 
 /** Адрес, куда Точка возвращает клиента после подтверждения разрешений. */
-export const TOCHKA_REDIRECT_URI = Deno.env.get("TOCHKA_REDIRECT_URI") ??
-  `${Deno.env.get("SUPABASE_URL") ?? ""}/functions/v1/tochka-api/callback`;
+export const TOCHKA_REDIRECT_URI = env(
+  "TOCHKA_REDIRECT_URI",
+  `${env("SUPABASE_URL")}/functions/v1/tochka-api/callback`,
+);
 
 /** Адрес приложения — на него возвращаем арендодателя после подключения. */
-export const APP_URL = Deno.env.get("APP_URL") ??
-  "https://vb6tgs98rn-alt.github.io/GREENYARD_rashodniki/";
+export const APP_URL = env(
+  "APP_URL",
+  "https://vb6tgs98rn-alt.github.io/GREENYARD_rashodniki/",
+);
 
 /** Публичные ключи Точки для проверки подписи вебхуков. */
 export const TOCHKA_JWKS_URL = "https://enter.tochka.com/doc/openapi/static/keys/public";
