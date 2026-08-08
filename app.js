@@ -32,7 +32,7 @@ import {
   setHydrating,
   writeLocalCache,
 } from './storage.js';
-import { render, setStatus, renderAuthStatus, renderStorageBadge } from './render.js';
+import { render, setStatus, renderAuthStatus, renderStorageBadge, closeDrawer } from './render.js';
 import { bindEvents } from './events.js';
 import { checkConsentAfterAuth } from './consentUI.js';
 import { ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, dedupeFinanceEntriesByExternalId } from './finance.js';
@@ -413,6 +413,18 @@ async function handleSignOut() {
   renderAuthStatus(null);
   renderStorageBadge('local');
   setStatus('Вы вышли. Данные аккаунта остались в облаке.');
+  // Закрываем drawer, иначе он останется открытым после следующего входа.
+  closeDrawer();
+  // Сбрасываем форму входа: иначе на экране входа висит старое «Вход выполнен»
+  // и остаётся введённый пароль.
+  try {
+    const gateMsg = document.getElementById('gateMsg');
+    if (gateMsg) { gateMsg.textContent = ''; gateMsg.classList.remove('error', 'success'); }
+    const gatePassword = document.getElementById('gatePassword');
+    if (gatePassword) { gatePassword.value = ''; gatePassword.type = 'password'; }
+    const gateConsent = document.getElementById('gateConsentPersonal');
+    if (gateConsent) gateConsent.checked = false;
+  } catch {}
   document.body.classList.add('is-guest');
 }
 window.__gy_handleSignOut = handleSignOut;
