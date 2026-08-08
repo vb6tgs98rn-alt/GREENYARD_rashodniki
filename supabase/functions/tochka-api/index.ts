@@ -349,7 +349,10 @@ async function handlePayments(req: Request, url: URL): Promise<Response> {
   const bookingId = url.searchParams.get("booking_id");
   if (bookingId) q = q.eq("booking_id", Number(bookingId));
   const { data, error } = await q;
-  if (error) return json({ ok: false, error: "query_failed" }, 500);
+  if (error) {
+    console.error("[tochka] список платежей:", error.message);
+    return json({ ok: false, error: "query_failed", message: error.message }, 500);
+  }
   return json({ ok: true, items: data ?? [] });
 }
 
