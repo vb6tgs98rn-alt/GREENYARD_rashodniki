@@ -177,11 +177,23 @@ export async function saveInstruction(apartmentId, apartmentTitle, patch) {
   delete safePatch.created_at;
   delete safePatch.updated_at;
 
+  // Поля, которых нет в форме, принудительно обнуляем: раньше они оставались
+  // от старых версий интерфейса и бот отправлял гостю данные, которые
+  // менеджер уже не видит и не может исправить.
+  const LEGACY_FIELDS = {
+    directions_metro: null, parking_info: null, entrance_code: null,
+    door_code: null, key_location: null, checkin_instruction: null,
+    checkout_checklist: null, key_return_info: null,
+    emergency_phone: null, emergency_telegram: null,
+    apartment_notes: null, amenities: null,
+  };
+
   const row = {
     user_id: user.id,
     apartment_id: String(apartmentId),
     apartment_title: apartmentTitle || null,
     updated_at: new Date().toISOString(),
+    ...LEGACY_FIELDS,
     ...safePatch,
   };
   const { error } = await supabase

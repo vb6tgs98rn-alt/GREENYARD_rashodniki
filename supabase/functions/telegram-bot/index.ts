@@ -206,7 +206,9 @@ async function loadInstructions(userId: string, apartmentId: string | null) {
     .eq("apartment_id", apartmentId)
     .maybeSingle();
   if (error) console.error("[bot] loadInstructions:", error.message);
-  return data;
+  // Отдаём только поля, которые есть в форме приложения,
+  // чтобы гость видел ровно то, что менеджер ввёл.
+  return pickFormFields(data);
 }
 
 async function loadManagerSettings(userId: string) {
@@ -580,22 +582,41 @@ async function handleMaidFreeText(maid: Maid, to: Recipient, text: string, messa
 // БЛОКИ ИНСТРУКЦИЙ ДЛЯ ГОСТЯ
 // ═══════════════════════════════════════════════════════════════════
 
+// Список полей, которые менеджер реально редактирует в приложении
+// (раздел «Инструкции для гостей»). Всё остальное, что могло остаться
+// в базе от старых версий формы, бот игнорирует — иначе гостю уходят
+// данные, которые менеджер не видит и не может исправить.
+const INSTRUCTION_FORM_FIELDS = [
+  "apartment_title",
+  "full_address",
+  "checkin_from",
+  "checkout_until",
+  "wifi_ssid",
+  "wifi_password",
+  "smoking_policy",
+  "pets_policy",
+  "quiet_hours",
+  "other_rules",
+  "ai_instructions",
+] as const;
+
+function pickFormFields(instr: any): any {
+  if (!instr) return instr;
+  const out: Record<string, any> = {};
+  for (const key of INSTRUCTION_FORM_FIELDS) out[key] = (instr as any)[key] ?? null;
+  return out;
+}
+
 function blockAddress(instr: any): string | null {
   if (!instr) return null;
   const parts: string[] = [];
   if (instr.full_address)     parts.push(`📍 <b>Адрес</b>\n${htmlEscape(instr.full_address)}`);
-  if (instr.directions_metro) parts.push(`🚇 <b>Как добраться</b>\n${htmlEscape(instr.directions_metro)}`);
-  if (instr.parking_info)     parts.push(`🚗 <b>Парковка</b>\n${htmlEscape(instr.parking_info)}`);
   return parts.length ? parts.join("\n\n") : null;
 }
 function blockCheckin(instr: any): string | null {
   if (!instr) return null;
   const parts: string[] = [];
   if (instr.checkin_from)         parts.push(`🕒 <b>Заезд с</b> ${htmlEscape(instr.checkin_from)}`);
-  if (instr.entrance_code)        parts.push(`🚪 <b>Код подъезда</b> <code>${htmlEscape(instr.entrance_code)}</code>`);
-  if (instr.door_code)            parts.push(`🔐 <b>Код двери</b> <code>${htmlEscape(instr.door_code)}</code>`);
-  if (instr.key_location)         parts.push(`🔑 <b>Где ключи</b>\n${htmlEscape(instr.key_location)}`);
-  if (instr.checkin_instruction)  parts.push(`📋 <b>Инструкция</b>\n${htmlEscape(instr.checkin_instruction)}`);
   return parts.length ? parts.join("\n\n") : null;
 }
 function blockWifi(instr: any): string | null {
@@ -618,48 +639,29 @@ function blockCheckout(instr: any): string | null {
   if (!instr) return null;
   const parts: string[] = [];
   if (instr.checkout_until)     parts.push(`🕒 <b>Выезд до</b> ${htmlEscape(instr.checkout_until)}`);
-  if (instr.checkout_checklist) parts.push(`✅ <b>Перед выездом</b>\n${htmlEscape(instr.checkout_checklist)}`);
-  if (instr.key_return_info)    parts.push(`🔑 <b>Куда оставить ключи</b>\n${htmlEscape(instr.key_return_info)}`);
   return parts.length ? parts.join("\n\n") : null;
 }
-function blockHelp(instr: any): string {
-  const parts: string[] = ["📞 <b>Контакты</b>"];
-  if (instr?.emergency_phone)    parts.push(`Телефон: ${htmlEscape(instr.emergency_phone)}`);
-  if (instr?.emergency_telegram) parts.push(`Telegram: @${htmlEscape(String(instr.emergency_telegram).replace(/^@/, ""))}`);
-  if (parts.length === 1) parts.push("Напишите любое сообщение — менеджер увидит его и ответит.");
-  else                    parts.push("\nИли просто напишите сюда — менеджер ответит.");
-  return parts.join("\n");
+function blockHelp(_instr: any): string {
+  return [
+    "📞 <b>Контакты</b>",
+    "Напишите любое сообщение — менеджер увидит его и ответит.",
+  ].join("\n");
 }
 
 function buildAiSystemPrompt(instr: any): string {
-  const emergency = [
-    instr?.emergency_phone ? `телефон ${instr.emergency_phone}` : null,
-    instr?.emergency_telegram ? `Telegram @${String(instr.emergency_telegram).replace(/^@/, "")}` : null,
-  ].filter(Boolean).join(", ") || "связаться с менеджером через этот чат — он всё видит";
+  const emergency = "связаться с менеджером через этот чат — он всё видит";
 
   const facts: string[] = [];
   if (instr?.apartment_title)     facts.push(`Название квартиры: ${instr.apartment_title}`);
   if (instr?.full_address)        facts.push(`Полный адрес: ${instr.full_address}`);
-  if (instr?.directions_metro)    facts.push(`Как добраться от метро: ${instr.directions_metro}`);
-  if (instr?.parking_info)        facts.push(`Парковка: ${instr.parking_info}`);
   if (instr?.checkin_from)        facts.push(`Заезд с: ${instr.checkin_from}`);
-  if (instr?.entrance_code)       facts.push(`Код подъезда: ${instr.entrance_code}`);
-  if (instr?.door_code)           facts.push(`Код двери: ${instr.door_code}`);
-  if (instr?.key_location)        facts.push(`Где ключи: ${instr.key_location}`);
-  if (instr?.checkin_instruction) facts.push(`Инструкция по заселению: ${instr.checkin_instruction}`);
   if (instr?.wifi_ssid)           facts.push(`Wi-Fi сеть: ${instr.wifi_ssid}`);
   if (instr?.wifi_password)       facts.push(`Wi-Fi пароль: ${instr.wifi_password}`);
-  if (Array.isArray(instr?.amenities) && instr.amenities.length) {
-    facts.push(`В квартире есть: ${instr.amenities.map((a: any) => String(a)).join(", ")}`);
-  }
-  if (instr?.apartment_notes)     facts.push(`Особенности: ${instr.apartment_notes}`);
   if (instr?.smoking_policy)      facts.push(`Курение: ${instr.smoking_policy}`);
   if (instr?.pets_policy)         facts.push(`Животные: ${instr.pets_policy}`);
   if (instr?.quiet_hours)         facts.push(`Часы тишины: ${instr.quiet_hours}`);
   if (instr?.other_rules)         facts.push(`Другие правила: ${instr.other_rules}`);
   if (instr?.checkout_until)      facts.push(`Выезд до: ${instr.checkout_until}`);
-  if (instr?.checkout_checklist)  facts.push(`Чек-лист перед выездом: ${instr.checkout_checklist}`);
-  if (instr?.key_return_info)     facts.push(`Куда оставить ключи: ${instr.key_return_info}`);
 
   const factsBlock = facts.length ? facts.join("\n") : "(Структурированные данные о квартире не заполнены.)";
   const aiExtra = (instr?.ai_instructions ?? "").toString().trim() || "(Дополнительные инструкции не заданы.)";
