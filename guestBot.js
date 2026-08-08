@@ -725,13 +725,25 @@ function ensureInstructionsModal() {
 // 8) Раздел «Чаты с гостями»
 // ─────────────────────────────────────────────────────────────────────────────
 
-let _chatsState = { items: [], activeSessionId: null, realtimeChannel: null, pollTimer: null };
+let _chatsState = {
+  items: [],
+  activeSessionId: null,
+  realtimeChannel: null,
+  pollTimer: null,
+  // Кеш последней отрисованной разметки — чтобы фоновые обновления не трогали DOM впустую.
+  lastThreadSession: null,
+  lastThreadHtml: '',
+  lastHeadHtml: '',
+};
 
 export async function openChatsModal() {
   ensureChatsModal();
   // Сбрасываем активный чат при каждом открытии — начинаем со списка
   _chatsState.activeSessionId = null;
   _chatsState.items = [];
+  _chatsState.lastThreadSession = null;
+  _chatsState.lastThreadHtml = '';
+  _chatsState.lastHeadHtml = '';
   openModal('guestChatsModal');
   await reloadChats();
   // После успешной загрузки — запускаем polling и realtime
@@ -742,6 +754,8 @@ export async function openChatsModal() {
 
 // Когда пользователь возвращается во вкладку (напр. переключившись из телеграма) — сразу перечитываем
 let _lastRefetchAt = 0;
+// «Страница уходила в фон, после возврата ещё не обновлялись».
+let _needsResumeRefetch = false;
 async function refetchAllOnResume(source, { force = false } = {}) {
   const modal = document.getElementById('guestChatsModal');
   if (!modal || !modal.classList.contains('open')) return;
@@ -749,6 +763,7 @@ async function refetchAllOnResume(source, { force = false } = {}) {
   const now = Date.now();
   if (!force && now - _lastRefetchAt < 1000) return;
   _lastRefetchAt = now;
+  _needsResumeRefetch = false;
   console.log(`[bot] resume from ${source} — hard refetch`);
   // Показываем в UI что обновляемся
   const badge = document.getElementById('chatsRefreshBadge');
@@ -761,7 +776,7 @@ async function refetchAllOnResume(source, { force = false } = {}) {
     const chats = await fetchGuestChats();
     _chatsState.items = chats;
     renderChatsList();
-    if (_chatsState.activeSessionId) await renderActiveChat();
+    if (_chatsState.activeSessionId) await renderActiveChat({ silent: true });
     if (badge) { badge.textContent = '✓'; setTimeout(() => { badge.style.opacity = '0'; }, 800); }
   } catch (err) {
     console.warn(`[bot] ${source} refetch:`, err?.message || err);
@@ -773,13 +788,19 @@ function attachVisibilityRefresh() {
   if (window._botVisibilityAttached) return;
   window._botVisibilityAttached = true;
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') refetchAllOnResume('vis');
+    if (document.visibilityState === 'hidden') { _needsResumeRefetch = true; return; }
+    refetchAllOnResume('vis');
   });
   window.addEventListener('focus', () => refetchAllOnResume('focus'));
   window.addEventListener('pageshow', () => refetchAllOnResume('pageshow'));
-  // На iOS любое касание после возврата — ещё один refetch (дебаунсится)
-  document.addEventListener('touchstart', () => refetchAllOnResume('touch'), { passive: true });
-  document.addEventListener('pointerdown', () => refetchAllOnResume('pointer'), { passive: true });
+  window.addEventListener('blur', () => { _needsResumeRefetch = true; });
+  // Подстраховка для iOS: там visibilitychange/focus иногда не срабатывают, поэтому первое
+  // касание после возврата добирает данные. Проверка _needsResumeRefetch КРИТИЧНА:
+  // без неё обработчик стрелял на КАЖДОМ свайпе/нажатии — рвал WebSocket, делал два
+  // сетевых запроса и пересобирал всю разметку чата. Именно отсюда лаги при пролистывании.
+  const onMaybeResume = () => { if (_needsResumeRefetch) refetchAllOnResume('touch'); };
+  document.addEventListener('touchstart', onMaybeResume, { passive: true });
+  document.addEventListener('pointerdown', onMaybeResume, { passive: true });
 }
 
 // Polling как fallback: каждые 2 секунды.
@@ -813,7 +834,8 @@ function startChatsPolling() {
         const activeChanged = !prevActive || (activeMeta?.last_message_at !== prevActive?.last_message_at);
         if (activeChanged) {
           console.log('[bot] polling: active chat changed — refetch');
-          await renderActiveChat();
+          // тихо: без заглушки и без прыжка вниз, если пользователь читает выше
+          await renderActiveChat({ silent: true });
         }
       }
     } catch (err) {
@@ -889,7 +911,16 @@ function renderChatsList() {
   }).join('');
 }
 
-async function renderActiveChat() {
+/**
+ * Рисует активный чат.
+ *
+ * @param {object}  [opts]
+ * @param {boolean} [opts.silent=false] Фоновое обновление (polling / realtime / возврат во вкладку).
+ *   В этом режиме НЕ мигаем заглушкой «Загружаем…», не трогаем DOM если разметка
+ *   не изменилась и сохраняем позицию прокрутки, если пользователь читает историю выше.
+ *   Иначе любое фоновое обновление швыряет вид вниз и чат невозможно пролистать.
+ */
+async function renderActiveChat({ silent = false } = {}) {
   const box = document.getElementById('chatThreadBox');
   const head = document.getElementById('chatThreadHead');
   const composer = document.getElementById('chatComposer');
@@ -899,15 +930,22 @@ async function renderActiveChat() {
     box.innerHTML = `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;">Выберите чат слева</div>`;
     if (head) head.innerHTML = '';
     if (composer) composer.style.display = 'none';
+    _chatsState.lastThreadSession = null;
+    _chatsState.lastThreadHtml = '';
+    _chatsState.lastHeadHtml = '';
     return;
   }
+  // Смена чата — всегда полный рендер с промоткой вниз, даже если вызвали тихо.
+  const sessionChanged = _chatsState.lastThreadSession !== sessionId;
+  if (sessionChanged) silent = false;
+
   const meta = _chatsState.items.find(c => c.session_id === sessionId);
   if (head && meta) {
     const name = meta.tg_first_name
       ? `${esc(meta.tg_first_name)}${meta.tg_last_name ? ' ' + esc(meta.tg_last_name) : ''}`
       : (meta.client_fio ? esc(meta.client_fio) : 'Гость');
     const aiOn = meta.ai_enabled !== false;
-    head.innerHTML = `
+    const headHtml = `
       <div style="display:flex;justify-content:space-between;align-items:center;gap:.75rem;flex-wrap:wrap;">
         <div style="display:flex;align-items:center;gap:.5rem;min-width:0;">
           <button type="button" id="chatBackBtn" title="К списку чатов" style="padding:.35rem .6rem;border-radius:8px;border:1px solid #555;background:transparent;color:#ddd;cursor:pointer;font-size:.9rem;">← К списку</button>
@@ -923,20 +961,28 @@ async function renderActiveChat() {
         </button>
       </div>
     `;
-
+    // Не пересобираем шапку, если она не изменилась — лишний reflow на каждом обновлении.
+    if (headHtml !== _chatsState.lastHeadHtml) {
+      head.innerHTML = headHtml;
+      _chatsState.lastHeadHtml = headHtml;
+    }
   }
   if (composer) composer.style.display = 'flex';
 
-  box.innerHTML = `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;">Загружаем сообщения…</div>`;
+  if (!silent) {
+    box.innerHTML = `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;">Загружаем сообщения…</div>`;
+  }
   let msgs = [];
   try {
     msgs = await fetchMessages(sessionId);
   } catch (err) {
     console.warn('[bot] renderActiveChat fetch failed:', err?.message || err);
-    box.innerHTML = `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;color:#c66;">Ошибка загрузки: ${esc(err?.message || 'сеть')}</div>`;
+    // При фоновом обновлении не стираем уже прочитанные сообщения из-за обрыва сети.
+    if (!silent) {
+      box.innerHTML = `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;color:#c66;">Ошибка загрузки: ${esc(err?.message || 'сеть')}</div>`;
+    }
     return;
   }
-  console.log('[bot] renderActiveChat: session', sessionId, 'msgs:', msgs.length);
   const html = msgs.map(m => {
     const cls = m.direction === 'inbound' ? 'msg-inbound'
               : m.direction === 'manager' ? 'msg-manager'
@@ -949,20 +995,33 @@ async function renderActiveChat() {
     const time = fmtTime(m.created_at);
     return `<div class="chat-msg ${cls}"><div class="chat-msg-meta small">${esc(label)} · ${esc(time)}</div><div class="chat-msg-body">${esc(m.body || '')}</div></div>`;
   }).join('');
-  box.innerHTML = html || `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;">Сообщений пока нет (получено 0 строк).<br/>session_id: <code>${esc(sessionId)}</code></div>`;
+  const nextHtml = html || `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;">Сообщений пока нет (получено 0 строк).<br/>session_id: <code>${esc(sessionId)}</code></div>`;
+
+  // Фоновое обновление без изменений — выходим без единого касания DOM.
+  if (silent && nextHtml === _chatsState.lastThreadHtml) return;
+
+  // Запоминаем, где был пользователь: если он читал историю выше — не дёргаем вниз.
+  const prevTop = box.scrollTop;
+  const wasNearBottom = box.scrollHeight - prevTop - box.clientHeight < 80;
+
+  box.innerHTML = nextHtml;
+  _chatsState.lastThreadHtml = nextHtml;
+  _chatsState.lastThreadSession = sessionId;
 
   // прокручиваем вниз (в двух микротасках, чтобы дождаться layout)
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-      box.scrollTop = box.scrollHeight;
+      if (!silent || wasNearBottom) box.scrollTop = box.scrollHeight;
+      else box.scrollTop = prevTop; // восстанавливаем позицию чтения
     });
   });
 
-  // отмечаем прочитанным
-  await markChatAsRead(sessionId);
-  // Обновляем только бейдж unread в виде-item списка (без перерендера всего списка)
+  // Отмечаем прочитанным только когда есть что отмечать — иначе лишний UPDATE к базе.
   const rowUnread = document.querySelector(`[data-chat-session="${sessionId}"] .chat-unread`);
-  if (rowUnread) rowUnread.remove();
+  if (rowUnread || !silent) {
+    await markChatAsRead(sessionId);
+    if (rowUnread) rowUnread.remove();
+  }
 }
 
 async function attachRealtimeForChats() {
@@ -999,7 +1058,7 @@ async function attachRealtimeForChats() {
             _chatsState.items = chats;
             renderChatsList();
             if (newSessionId && newSessionId === _chatsState.activeSessionId) {
-              await renderActiveChat();
+              await renderActiveChat({ silent: true });
             }
           } catch (err) {
             console.warn('[bot] realtime handler:', err?.message || err);
@@ -1494,6 +1553,10 @@ export function bindGuestBotEvents(state) {
       if (head) head.innerHTML = '';
       if (box) box.innerHTML = '';
       if (composer) composer.style.display = 'none';
+      // Сбрасываем кеш разметки — иначе фоновое обновление решит, что рисовать нечего
+      _chatsState.lastThreadSession = null;
+      _chatsState.lastThreadHtml = '';
+      _chatsState.lastHeadHtml = '';
       renderChatsList();
       updateChatsGridMode();
       return;
