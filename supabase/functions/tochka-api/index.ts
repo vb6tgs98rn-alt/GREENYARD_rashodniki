@@ -233,8 +233,14 @@ async function handleCallback(url: URL): Promise<Response> {
       }
     }
 
-    await notifyManager(sb, conn.user_id, "✅ Точка Банк подключена. Теперь бот сможет отправлять гостям ссылку на оплату.");
-    return callbackPage("Точка Банк подключена", "Можно вернуться в приложение и включить отправку оплаты гостям.", true);
+    // Счёт подключают ради приёма оплаты, поэтому сразу включаем его:
+    // без этого бот молча не прикладывает ссылку и это выглядит как ошибка.
+    await sb.from("manager_settings")
+      .update({ tochka_enabled: true })
+      .eq("user_id", conn.user_id);
+
+    await notifyManager(sb, conn.user_id, "✅ Точка Банк подключена. Отправка ссылки на оплату гостям включена.");
+    return callbackPage("Точка Банк подключена", "Приём оплаты включён. Можно вернуться в приложение.", true);
   } catch (e) {
     const message = String((e as Error).message || e).slice(0, 400);
     console.error("[tochka] callback:", message);

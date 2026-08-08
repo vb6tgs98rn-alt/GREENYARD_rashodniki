@@ -471,7 +471,8 @@ export async function createPaymentLink(
       vatType: req.vatType,
       paymentMethod: "full_payment",
       paymentObject: "service",
-      measure: "усл.",
+      // Точка принимает только фиксированный список единиц измерения, «усл.» в него не входит.
+      measure: "шт.",
       ...(Object.keys(supplier).length ? { Supplier: supplier } : {}),
     }];
     if (Object.keys(supplier).length) Data.Supplier = supplier;

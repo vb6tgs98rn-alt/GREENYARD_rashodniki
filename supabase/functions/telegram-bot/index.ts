@@ -130,7 +130,7 @@ type Session = {
 };
 
 const SESSION_COLS =
-  "id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,channel,channel_chat_id,started_at,last_message_at,ai_enabled";
+  "id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,channel,channel_chat_id,started_at,last_message_at,ai_enabled,awaiting_email";
 
 /** Куда писать гостю. */
 function sessionRcpt(s: Session): Recipient {
@@ -893,6 +893,15 @@ async function sendPaymentLink(to: Recipient, session: Session, silent: boolean)
     if (!silent) await send(to, "✅ Проживание полностью оплачено, доплачивать ничего не нужно.");
     return;
   }
+  if (res.kind === "need_email") {
+    // Ставим признак ожидания: следующее сообщение гостя разберём как почту.
+    await sb.from("guest_sessions").update({ awaiting_email: true }).eq("id", session.id);
+    const sum = res.amount.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const ask = `Для оплаты остатка <b>${htmlEscape(sum)} ₽</b> нужна ваша почта — на неё придёт кассовый чек.\n\nНапишите адрес одним сообщением, например: <code>ivan@mail.ru</code>`;
+    await sendMessage(to, ask, { preview: false });
+    await logMessage(session, "bot", ask, { kind: "ask_email", amount: res.amount });
+    return;
+  }
   if (res.kind === "error") {
     if (!silent) await send(to, "Не получилось подготовить оплату. Менеджер уже знает и свяжется с вами.");
     await notifyManager(session.user_id, `❌ Оплата по брони <code>${htmlEscape(String(session.booking_id))}</code> не создана: ${htmlEscape(String(res.reason || "").slice(0, 300))}`);
@@ -1034,6 +1043,42 @@ async function handleArrival(to: Recipient, from: InboundEvent["from"], kind: "a
   }
 }
 
+/** Почта в свободном тексте: гость может написать «моя почта ivan@mail.ru». */
+function extractEmail(text: string): string | null {
+  const m = String(text || "").match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+  return m ? m[0].toLowerCase() : null;
+}
+
+/**
+ * Ответ гостя на вопрос о почте для чека.
+ *
+ * @returns true, если сообщение обработано и дальше его вести не надо.
+ */
+async function handleEmailAnswer(to: Recipient, session: Session, text: string): Promise<boolean> {
+  const sb = svc();
+  const email = extractEmail(text);
+  if (!email) {
+    // Гость написал что-то другое — не держим его в тупике, снимаем ожидание.
+    await sb.from("guest_sessions").update({ awaiting_email: false }).eq("id", session.id);
+    (session as any).awaiting_email = false;
+    return false;
+  }
+
+  await sb.from("rc_bookings")
+    .update({ client_email: email })
+    .eq("user_id", session.user_id)
+    .eq("booking_id", session.booking_id);
+  await sb.from("guest_sessions").update({ awaiting_email: false }).eq("id", session.id);
+  (session as any).awaiting_email = false;
+
+  const ok = `Спасибо, чек пришлём на <code>${htmlEscape(email)}</code>. Готовлю ссылку на оплату…`;
+  await sendMessage(to, ok, { preview: false });
+  await logMessage(session, "bot", ok, { kind: "email_saved" });
+
+  await sendPaymentLink(to, session, false);
+  return true;
+}
+
 async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: string, messageId: string | null) {
   const session = await findSessionByRcpt(to);
   if (!session) {
@@ -1042,6 +1087,12 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
   }
   const fromName = [from?.firstName, from?.lastName].filter(Boolean).join(" ") || from?.username || "Гость";
   await logMessage(session, "inbound", text, { message_id: messageId, channel: to.channel, from });
+
+  // Ждём почту для чека — разбираем её до всей остальной логики.
+  if ((session as any).awaiting_email) {
+    const handled = await handleEmailAnswer(to, session, text);
+    if (handled) return;
+  }
 
   const { id: apartmentId, diag: resolveDiag } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
   const instr = await loadInstructions(session.user_id, apartmentId);
@@ -1490,7 +1541,7 @@ Deno.serve(async (req) => {
       return json({
         ok: true,
         service: "green-yard-bot",
-        version: 14,
+        version: 15,
         enabled_channels: enabledChannels(),
         endpoints: [
           "POST /", "POST /max", "GET|POST /whatsapp",

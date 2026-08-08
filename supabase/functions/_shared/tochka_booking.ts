@@ -22,8 +22,11 @@ import {
 
 /** Результат подготовки оплаты по брони. */
 export interface BookingPayment {
-  /** ok — ссылка готова; nothing_to_pay — долга нет; requisites — оплата по реквизитам; error — не получилось. */
-  kind: "ok" | "nothing_to_pay" | "requisites" | "disabled" | "error";
+  /**
+   * ok — ссылка готова; nothing_to_pay — долга нет; requisites — оплата по реквизитам;
+   * need_email — для чека нужна почта гостя; error — не получилось.
+   */
+  kind: "ok" | "nothing_to_pay" | "requisites" | "disabled" | "need_email" | "error";
   amount: number;
   payUrl?: string;
   requisites?: string;
@@ -143,6 +146,13 @@ export async function ensureBookingPayment(
     return { kind: "error", amount: debt, reason: "Точка Банк не подключена" };
   }
 
+  // Для чека 54-ФЗ Точка требует почту покупателя уже при создании платежа,
+  // на странице оплаты гость её не вводит. Поэтому сначала спрашиваем её в чате.
+  const clientEmail = String(bk.client_email || "").trim();
+  if (Boolean(ms.tochka_with_receipt) && !clientEmail) {
+    return { kind: "need_email", amount: debt };
+  }
+
   const req: PaymentRequest = {
     amount: debt,
     purpose,
@@ -152,6 +162,7 @@ export async function ensureBookingPayment(
     vatType: String(ms.tochka_vat_type || "none"),
     clientName: bk.client_fio ?? null,
     clientPhone: bk.client_phone ?? null,
+    clientEmail: clientEmail || null,
     successUrl: ms.tochka_success_url ? String(ms.tochka_success_url) : null,
   };
 
