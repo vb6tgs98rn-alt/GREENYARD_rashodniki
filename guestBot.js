@@ -1216,8 +1216,9 @@ function syncManagerChannelFields(channel) {
   const label = document.getElementById('ns_manager_chat_label');
   const input = document.getElementById('ns_manager_chat');
   const isTg = channel === 'telegram';
-  if (tgWrap) tgWrap.hidden = !isTg;
-  if (wrap) wrap.hidden = isTg;
+  // Атрибут hidden не работает: у label в стилях задан display — прячем через style.
+  if (tgWrap) tgWrap.style.display = isTg ? '' : 'none';
+  if (wrap) wrap.style.display = isTg ? 'none' : '';
   if (!isTg && label && input) {
     if (channel === 'whatsapp') {
       label.textContent = 'Ваш номер WhatsApp в международном формате';
@@ -1274,7 +1275,7 @@ function ensureNotifySettingsModal() {
         <label><span class="small">Ваш Telegram chat_id (получите у @userinfobot)</span>
           <input id="ns_chat_id" type="text" inputmode="numeric" placeholder="561644215" />
         </label>
-        <label id="ns_manager_chat_wrap" hidden><span class="small" id="ns_manager_chat_label">Ваш идентификатор в мессенджере</span>
+        <label id="ns_manager_chat_wrap" style="display:none;"><span class="small" id="ns_manager_chat_label">Ваш идентификатор в мессенджере</span>
           <input id="ns_manager_chat" type="text" placeholder="" />
         </label>
         <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin:.5rem 0;">
