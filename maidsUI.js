@@ -22,7 +22,13 @@
 
 import { getSupabaseClient, waitForAuthReady, requireUser } from './supabase-client.js';
 import { openModal, closeModal, setStatus } from './render.js';
-import { BOT_FUNCTION_URL, TELEGRAM_BOT_USERNAME_DEFAULT } from './guestBot.js';
+import {
+  BOT_FUNCTION_URL,
+  CHANNEL_TITLE,
+  botAuthHeaders,
+  fillChannelOptions,
+  TELEGRAM_BOT_USERNAME_DEFAULT,
+} from './guestBot.js';
 
 const supabase = () => getSupabaseClient();
 
@@ -55,7 +61,7 @@ export async function fetchMaids() {
   if (!user) return [];
   const { data: maids, error } = await sb
     .from('maids')
-    .select('id, name, phone, tg_chat_id, invite_token, active, created_at')
+    .select('id, name, phone, tg_chat_id, channel, channel_chat_id, invite_token, active, created_at')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false });
   if (error) { console.warn('[maids] fetch:', error.message); return []; }
@@ -73,7 +79,28 @@ export async function fetchMaids() {
   return maids.map(m => ({ ...m, realty_ids: byMaid.get(m.id) || [] }));
 }
 
-async function createMaid({ name, phone, realtyIds }) {
+// ---------- Каналы (мессенджеры) ----------
+
+/** Ссылка-приглашение для горничной в выбранном мессенджере. */
+async function fetchMaidInvite(maidId, channel) {
+  const r = await fetch(`${BOT_FUNCTION_URL}/maid_invite`, {
+    method: 'POST',
+    headers: await botAuthHeaders(),
+    body: JSON.stringify({ maid_id: maidId, channel }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!j?.ok) throw new Error(j?.error || 'invite_failed');
+  return j.link;
+}
+
+/** Куда подключена горничная: возвращает id канала или null. */
+function maidChannel(m) {
+  if (m?.channel_chat_id) return m.channel || 'telegram';
+  if (m?.tg_chat_id) return 'telegram';
+  return null;
+}
+
+async function createMaid({ name, phone, channel, realtyIds }) {
   const sb = supabase();
   const user = await requireUser();
   if (!user) throw new Error('unauthorized');
@@ -85,9 +112,10 @@ async function createMaid({ name, phone, realtyIds }) {
       name: name.trim(),
       phone: (phone || '').trim() || null,
       invite_token: token,
+      channel: channel || 'telegram',
       active: true,
     })
-    .select('id, invite_token, name')
+    .select('id, invite_token, name, channel')
     .single();
   if (error) throw error;
   if (realtyIds?.length) {
@@ -258,12 +286,17 @@ function ensureMaidsModal() {
         <div style="display:grid;gap:.75rem;">
           <label><span class="small">Имя</span><input type="text" id="maidEditName" placeholder="Например, Марина" /></label>
           <label><span class="small">Телефон (необязательно)</span><input type="text" id="maidEditPhone" placeholder="+7…" /></label>
+          <label>
+            <span class="small">Мессенджер</span>
+            <select id="maidEditChannel"><option value="telegram">Telegram</option></select>
+            <span class="small" id="maidEditChannelHint" style="color:var(--color-text-muted);"></span>
+          </label>
           <div>
             <div class="small" style="margin-bottom:.35rem;">Квартиры, за которыми закреплена горничная</div>
             <div id="maidEditApartments" style="display:grid;gap:.4rem;max-height:260px;overflow-y:auto;overflow-x:hidden;padding:.5rem;border:1px solid rgba(60,60,60,.15);border-radius:.75rem;"></div>
           </div>
           <div id="maidEditInviteBox" hidden style="padding:.75rem;background:var(--color-surface-2);border-radius:.75rem;">
-            <div class="small" style="margin-bottom:.35rem;">Ссылка для входа горничной в Telegram-бот:</div>
+            <div class="small" id="maidEditInviteLabel" style="margin-bottom:.35rem;">Ссылка для входа горничной:</div>
             <div style="display:flex;gap:.5rem;align-items:center;">
               <input type="text" id="maidEditInviteLink" readonly style="flex:1;font-family:monospace;font-size:.85rem;" />
               <button class="btn btn-secondary btn-sm" id="maidEditCopyLink" type="button">Копировать</button>
@@ -300,9 +333,11 @@ async function renderMaidsList() {
   const titleByRid = new Map(apartments.filter(a => getRid(a)).map(a => [String(getRid(a)), a.name || `Квартира #${getRid(a)}`]));
   list.innerHTML = maids.map(m => {
     const apts = m.realty_ids.map(rid => titleByRid.get(String(rid)) || `#${rid}`).join(', ') || '<span style="color:var(--color-text-muted);">не закреплено</span>';
-    const connBadge = m.tg_chat_id
-      ? '<span class="pill" style="background:#e6f4ea;color:#137333;">🟢 Подключена</span>'
-      : '<span class="pill" style="background:#fef7e0;color:#8a6d3b;">⏳ Ожидает входа</span>';
+    const conn = maidChannel(m);
+    const chTitle = CHANNEL_TITLE[m.channel || 'telegram'] || 'Telegram';
+    const connBadge = conn
+      ? `<span class="pill" style="background:#e6f4ea;color:#137333;">🟢 ${htmlEscape(CHANNEL_TITLE[conn] || conn)}</span>`
+      : `<span class="pill" style="background:#fef7e0;color:#8a6d3b;">⏳ Ждёт входа в ${htmlEscape(chTitle)}</span>`;
     return `
       <div class="accordion-card" style="padding:1rem;">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:.75rem;flex-wrap:wrap;">
@@ -316,7 +351,7 @@ async function renderMaidsList() {
             <div class="small" style="margin-top:.35rem;color:var(--color-text-muted);">Квартиры: ${apts}</div>
           </div>
           <div style="display:flex;gap:.4rem;flex-wrap:wrap;">
-            ${m.tg_chat_id ? `<button class="btn btn-primary btn-sm" data-maid-chat="${m.id}" type="button">💬 Чат</button>` : ''}
+            ${conn ? `<button class="btn btn-primary btn-sm" data-maid-chat="${m.id}" type="button">💬 Чат</button>` : ''}
             <button class="btn btn-secondary btn-sm" data-maid-edit="${m.id}" type="button">Редактировать</button>
           </div>
         </div>
@@ -330,18 +365,64 @@ function getBotUsername() {
   return state.managerSettings?.tg_bot_username || TELEGRAM_BOT_USERNAME_DEFAULT;
 }
 
+/** Запасной вариант ссылки для Telegram, если серверный маршрут недоступен. */
 function renderInviteLink(token) {
   const uname = getBotUsername();
   return `https://t.me/${uname}?start=maid_${token}`;
 }
 
 let _editingMaidId = null;
+let _editingMaidToken = null;
+let _editingMaidChannel = null;
+
+/** Заполнить выпадающий список мессенджеров доступными каналами. */
+async function fillChannelSelect(selectedId) {
+  const sel = document.getElementById('maidEditChannel');
+  if (!sel) return;
+  // Если у горничной выбран канал, который сейчас выключен, всё равно его показываем.
+  await fillChannelOptions(sel, selectedId || 'telegram');
+  const hint = document.getElementById('maidEditChannelHint');
+  if (hint) {
+    hint.textContent = sel.options.length > 1
+      ? ''
+      : 'Пока подключён только Telegram. Другие мессенджеры появятся здесь после настройки токенов на сервере.';
+  }
+}
+
+/** Обновить поле со ссылкой-приглашением под выбранный мессенджер. */
+async function refreshInviteLink() {
+  const box = document.getElementById('maidEditInviteBox');
+  const input = document.getElementById('maidEditInviteLink');
+  const label = document.getElementById('maidEditInviteLabel');
+  if (!box || !input) return;
+  if (!_editingMaidId) { box.hidden = true; input.value = ''; return; }
+  const channel = document.getElementById('maidEditChannel')?.value || 'telegram';
+  box.hidden = false;
+  if (label) label.textContent = `Ссылка для входа горничной в ${CHANNEL_TITLE[channel] || channel}:`;
+  input.value = 'Получаю ссылку…';
+  try {
+    input.value = await fetchMaidInvite(_editingMaidId, channel);
+  } catch (e) {
+    if (channel === 'telegram' && _editingMaidToken) {
+      input.value = renderInviteLink(_editingMaidToken);
+    } else {
+      input.value = '';
+      const msg = e?.message === 'channel_not_configured'
+        ? `${CHANNEL_TITLE[channel] || channel} ещё не настроен на сервере — ссылку выдать нельзя.`
+        : `Не удалось получить ссылку: ${e?.message || e}`;
+      if (label) label.textContent = msg;
+    }
+  }
+}
 
 function renderMaidEditForm(maid = null) {
   _editingMaidId = maid?.id || null;
   document.getElementById('maidEditTitle').textContent = maid ? `Редактировать: ${maid.name}` : 'Новая горничная';
   document.getElementById('maidEditName').value = maid?.name || '';
   document.getElementById('maidEditPhone').value = maid?.phone || '';
+  _editingMaidToken = maid?.invite_token || null;
+  _editingMaidChannel = maid?.channel || 'telegram';
+  fillChannelSelect(_editingMaidChannel);
   const state = window.__gyState || {};
   const getRid = (a) => a?.externalIds?.realtyCalendarUnitId || a?.realtyId || null;
   const apts = (state.apartments || []).filter(a => getRid(a)).map(a => ({ ...a, _rid: String(getRid(a)) }));
@@ -360,9 +441,8 @@ function renderMaidEditForm(maid = null) {
   }
   const inviteBox = document.getElementById('maidEditInviteBox');
   const inviteInput = document.getElementById('maidEditInviteLink');
-  if (maid?.invite_token) {
-    inviteBox.hidden = false;
-    inviteInput.value = renderInviteLink(maid.invite_token);
+  if (maid?.id) {
+    refreshInviteLink();
   } else {
     inviteBox.hidden = true;
     inviteInput.value = '';
@@ -380,22 +460,26 @@ function getSelectedApartmentsFromForm() {
 async function saveMaidFromForm() {
   const name = document.getElementById('maidEditName').value.trim();
   const phone = document.getElementById('maidEditPhone').value.trim();
+  const channel = document.getElementById('maidEditChannel')?.value || 'telegram';
   if (!name) { alert('Укажите имя'); return; }
   const realtyIds = getSelectedApartmentsFromForm();
   setStatus('Сохраняю горничную…');
   try {
     if (_editingMaidId) {
-      await updateMaid(_editingMaidId, { name, phone: phone || null });
+      // При смене мессенджера старая привязка к чату недействительна — горничная войдёт заново.
+      const patch = { name, phone: phone || null, channel };
+      if (_editingMaidChannel && _editingMaidChannel !== channel) patch.channel_chat_id = null;
+      await updateMaid(_editingMaidId, patch);
+      _editingMaidChannel = channel;
       await updateMaidApartments(_editingMaidId, realtyIds);
+      await refreshInviteLink();
       setStatus('Горничная сохранена');
     } else {
-      const maid = await createMaid({ name, phone, realtyIds });
+      const maid = await createMaid({ name, phone, channel, realtyIds });
       _editingMaidId = maid.id;
-      // Показать инвайт
-      const inviteBox = document.getElementById('maidEditInviteBox');
-      const inviteInput = document.getElementById('maidEditInviteLink');
-      if (inviteBox) inviteBox.hidden = false;
-      if (inviteInput) inviteInput.value = renderInviteLink(maid.invite_token);
+      _editingMaidToken = maid.invite_token || null;
+      _editingMaidChannel = channel;
+      await refreshInviteLink();
       const delBtn = document.getElementById('maidEditDeleteBtn');
       if (delBtn) delBtn.hidden = false;
       setStatus('Горничная создана. Отправьте ссылку.');
@@ -508,6 +592,11 @@ export function bindMaidsEvents(state) {
     await openMaidsModal(state);
   });
 
+  // Смена мессенджера в форме горничной — перевыпускаем ссылку-приглашение.
+  document.body.addEventListener('change', async (e) => {
+    if (e.target?.id === 'maidEditChannel') await refreshInviteLink();
+  });
+
   document.body.addEventListener('click', async (e) => {
     if (e.target.closest('#closeMaidsModal')) {
       closeModal('maidsModal');
@@ -553,6 +642,7 @@ export function bindMaidsEvents(state) {
     }
     if (e.target.closest('#maidEditCopyLink')) {
       const inp = document.getElementById('maidEditInviteLink');
+      if (!inp.value) return;
       inp.select();
       try {
         await navigator.clipboard.writeText(inp.value);

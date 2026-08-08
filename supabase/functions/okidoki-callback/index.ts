@@ -8,13 +8,14 @@
  * 1301 ГК РФ.
  */
 // okidoki-callback — приёмник webhook'ов от Okidoki о смене статуса договора.
-// external_id = booking_id в rc_bookings. Обновляет статус и уведомляет менеджера в Telegram.
+// external_id = booking_id в rc_bookings. Обновляет статус и уведомляет менеджера
+// в том мессенджере, который он выбрал в настройках.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { type ChannelId, isChannel, type Recipient, sendMessage } from "../_shared/channels.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const TG_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 
 const supa = createClient(SUPABASE_URL, SERVICE_ROLE);
 
@@ -27,17 +28,12 @@ const RUS_STATUS_BY_INTERNAL: Record<number, string> = {
   5: "Аннулирован",
 };
 
-async function tgSend(chat_id: number | string, text: string) {
-  if (!TG_BOT_TOKEN) return;
-  try {
-    await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id, text, parse_mode: "HTML", disable_web_page_preview: true }),
-    });
-  } catch (e) {
-    console.warn("[okidoki-callback] tgSend:", e);
-  }
+/** Куда писать менеджеру. Пока настройки не обновлены — это Telegram. */
+function managerRcpt(s: any): Recipient | null {
+  const channel = (isChannel(s?.manager_channel) ? s.manager_channel : "telegram") as ChannelId;
+  const chatId = s?.manager_channel_chat_id
+    ?? (channel === "telegram" && s?.manager_tg_chat_id != null ? String(s.manager_tg_chat_id) : null);
+  return chatId ? { channel, chatId } : null;
 }
 
 Deno.serve(async (req) => {
@@ -78,11 +74,11 @@ Deno.serve(async (req) => {
   // Уведомляем менеджера в TG
   const { data: ms } = await supa
     .from("manager_settings")
-    .select("manager_tg_chat_id, notify_on_inbound")
+    .select("manager_tg_chat_id, manager_channel, manager_channel_chat_id, notify_on_inbound")
     .eq("user_id", bk.user_id)
     .maybeSingle();
-  const chat = ms?.manager_tg_chat_id;
-  if (chat) {
+  const to = managerRcpt(ms);
+  if (to) {
     let icon = "📄";
     if (status_internal === 2) icon = "✅";
     else if (status_internal === 3 || status_internal === 5) icon = "⚠️";
@@ -93,7 +89,7 @@ Deno.serve(async (req) => {
       `${bk.apartment_title || ""}\n` +
       `Гость: ${bk.client_fio || "—"}` +
       (bk.okidoki_link ? `\n<a href="${bk.okidoki_link}">Открыть договор</a>` : "");
-    await tgSend(chat, text);
+    await sendMessage(to, text);
   }
 
   return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });

@@ -7,12 +7,37 @@
  * Условия: см. файл LICENSE. Нарушение влечёт ответственность по ст. 1252,
  * 1301 ГК РФ.
  */
-// Edge Function: telegram-bot (v12 — chats realtime, per-session AI toggle)
+// Edge Function: бот для гостей и горничных (v13 — мультиканальность).
+//
+// Работает сразу в трёх мессенджерах: Telegram, MAX и WhatsApp.
+// Вся логика ниже про каналы ничего не знает: она получает Recipient
+// (канал + идентификатор чата) и отдаёт текст в HTML, а перевод в формат
+// конкретного мессенджера делает supabase/functions/_shared/channels.ts.
+//
+// Имя функции осталось прежним, чтобы не переподключать вебхук Telegram.
+//
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import {
+  answerCallback,
+  type Btn,
+  CHANNEL_TITLE,
+  type ChannelId,
+  enabledChannels,
+  htmlEscape,
+  type InboundEvent,
+  inviteLink,
+  isChannel,
+  parseMaxUpdate,
+  parseTelegramUpdate,
+  parseWhatsappUpdate,
+  type Recipient,
+  sendMessage,
+} from "../_shared/channels.ts";
 
-const TG_TOKEN     = Deno.env.get("TELEGRAM_BOT_TOKEN")        ?? "";
 const TG_SECRET    = Deno.env.get("TELEGRAM_WEBHOOK_SECRET")   ?? "";
+const MAX_SECRET   = Deno.env.get("MAX_WEBHOOK_SECRET")        ?? "";
+const WA_VERIFY    = Deno.env.get("WHATSAPP_VERIFY_TOKEN")     ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")              ?? "";
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const OR_API_KEY   = Deno.env.get("OPENROUTER_API_KEY")        ?? "";
@@ -20,13 +45,11 @@ const OR_MODEL     = Deno.env.get("OPENROUTER_MODEL")          ?? "openai/gpt-os
 const OR_REFERER   = Deno.env.get("OPENROUTER_REFERER")        ?? "https://green-yard.app";
 const OR_TITLE     = Deno.env.get("OPENROUTER_TITLE")          ?? "Green Yard Guest Bot";
 
-const TG_API = `https://api.telegram.org/bot${TG_TOKEN}`;
-
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, x-telegram-bot-api-secret-token",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
 function json(body: any, status = 200): Response {
@@ -62,66 +85,29 @@ async function getUserIdFromJwt(req: Request): Promise<string | null> {
   }
 }
 
-function htmlEscape(s: string): string {
-  return String(s ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+/** Короткий псевдоним отправки: логика ниже вызывает только его. */
+async function send(to: Recipient, text: string, buttons?: Btn[][], preview = false) {
+  return await sendMessage(to, text, { buttons, preview });
 }
 
-async function tgSendMessage(chatId: number | string, text: string, extra: any = {}) {
-  if (!TG_TOKEN) {
-    console.error("[telegram-bot] TELEGRAM_BOT_TOKEN не задан");
-    return { ok: false, error: "no_token" };
-  }
-  try {
-    const payload: Record<string, any> = {
-      chat_id: chatId,
-      text,
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-      ...extra,
-    };
-    if (payload.parse_mode === undefined || payload.parse_mode === null || payload.parse_mode === "") {
-      delete payload.parse_mode;
-    }
-    const r = await fetch(`${TG_API}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const data = await r.json();
-    if (!data.ok) console.error("[telegram-bot] sendMessage error:", JSON.stringify(data));
-    return data;
-  } catch (e) {
-    // Детали exception логируем серверно; наружу — только generic-флаг,
-    // чтобы String(e) не пробросился в HTTP-ответ через details: tgRes
-    // (CodeQL js/stack-trace-exposure).
-    console.error("[telegram-bot] sendMessage exception:", e);
-    return { ok: false, error: "telegram_send_failed" };
-  }
-}
-
-async function tgAnswerCallback(callbackId: string, text = "") {
-  try {
-    await fetch(`${TG_API}/answerCallbackQuery`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ callback_query_id: callbackId, text }),
-    });
-  } catch { /* ignore */ }
-}
-
-function guestKeyboard(channelUrl?: string | null) {
-  const rows: any[] = [
-    [{ text: "📍 Адрес", callback_data: "address" }, { text: "📶 Wi-Fi", callback_data: "wifi" }],
-    [{ text: "🔑 Заселение", callback_data: "checkin_info" }, { text: "🚪 Выезд", callback_data: "checkout_info" }],
-    [{ text: "✅ Я приехал", callback_data: "i_arrived" }, { text: "👋 Я уезжаю", callback_data: "i_leaving" }],
-    [{ text: "📋 Правила", callback_data: "rules" }, { text: "📞 Помощь", callback_data: "help" }],
+/**
+ * Меню гостя. Возвращается в нейтральном виде — каждый канал сам решит,
+ * рисовать это кнопками или списком.
+ */
+function guestKeyboard(channelUrl?: string | null): Btn[][] {
+  const rows: Btn[][] = [
+    [{ text: "📍 Адрес", data: "address" }, { text: "📶 Wi-Fi", data: "wifi" }],
+    [{ text: "🔑 Заселение", data: "checkin_info" }, { text: "🚪 Выезд", data: "checkout_info" }],
+    [{ text: "✅ Я приехал", data: "i_arrived" }, { text: "👋 Я уезжаю", data: "i_leaving" }],
+    [{ text: "📋 Правила", data: "rules" }, { text: "📞 Помощь", data: "help" }],
   ];
   if (channelUrl) rows.push([{ text: "📢 Наш канал", url: channelUrl }]);
-  return { inline_keyboard: rows };
+  return rows;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// ГОСТИ
+// ═══════════════════════════════════════════════════════════════════
 
 type Session = {
   id: string;
@@ -133,12 +119,25 @@ type Session = {
   tg_username: string | null;
   tg_first_name: string | null;
   tg_last_name: string | null;
+  channel: ChannelId;
+  channel_chat_id: string | null;
   started_at: string | null;
   last_message_at: string | null;
   ai_enabled?: boolean | null;
 };
 
-const SESSION_COLS = "id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,started_at,last_message_at,ai_enabled";
+const SESSION_COLS =
+  "id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,channel,channel_chat_id,started_at,last_message_at,ai_enabled";
+
+/** Куда писать гостю. */
+function sessionRcpt(s: Session): Recipient {
+  const channel = (isChannel(s.channel) ? s.channel : "telegram") as ChannelId;
+  return {
+    channel,
+    chatId: s.channel_chat_id
+      ?? (channel === "telegram" && s.tg_chat_id != null ? String(s.tg_chat_id) : ""),
+  };
+}
 
 async function findSessionBySecureId(secureId: string): Promise<Session | null> {
   const sb = svc();
@@ -147,20 +146,22 @@ async function findSessionBySecureId(secureId: string): Promise<Session | null> 
     .select(SESSION_COLS)
     .eq("secure_id", secureId)
     .maybeSingle();
-  if (error) console.error("[telegram-bot] findSessionBySecureId:", error.message);
+  if (error) console.error("[bot] findSessionBySecureId:", error.message);
   return (data as Session) ?? null;
 }
 
-async function findSessionByChatId(chatId: number): Promise<Session | null> {
+/** Ищем сессию по паре «канал + чат»: в разных мессенджерах id могут совпасть. */
+async function findSessionByRcpt(to: Recipient): Promise<Session | null> {
   const sb = svc();
   const { data, error } = await sb
     .from("guest_sessions")
     .select(SESSION_COLS)
-    .eq("tg_chat_id", chatId)
+    .eq("channel", to.channel)
+    .eq("channel_chat_id", to.chatId)
     .order("started_at", { ascending: false, nullsFirst: false })
     .limit(1)
     .maybeSingle();
-  if (error) console.error("[telegram-bot] findSessionByChatId:", error.message);
+  if (error) console.error("[bot] findSessionByRcpt:", error.message);
   return (data as Session) ?? null;
 }
 
@@ -174,7 +175,7 @@ async function resolveApartmentId(userId: string, realtyId: number | null, booki
     .eq("user_id", userId)
     .maybeSingle();
   if (error) {
-    console.error("[telegram-bot] resolveApartmentId app_state:", error.message);
+    console.error("[bot] resolveApartmentId app_state:", error.message);
     return { id: null, diag: { ...diag, reason: "app_state_error", error: error.message } };
   }
   const apts = (data?.state?.apartments ?? []) as any[];
@@ -201,7 +202,7 @@ async function loadInstructions(userId: string, apartmentId: string | null) {
     .eq("user_id", userId)
     .eq("apartment_id", apartmentId)
     .maybeSingle();
-  if (error) console.error("[telegram-bot] loadInstructions:", error.message);
+  if (error) console.error("[bot] loadInstructions:", error.message);
   return data;
 }
 
@@ -212,7 +213,7 @@ async function loadManagerSettings(userId: string) {
     .select("*")
     .eq("user_id", userId)
     .maybeSingle();
-  if (error) console.error("[telegram-bot] loadManagerSettings:", error.message);
+  if (error) console.error("[bot] loadManagerSettings:", error.message);
   return data;
 }
 
@@ -232,7 +233,7 @@ async function logMessage(
     payload,
     is_read_by_manager: direction !== "inbound",
   });
-  if (error) console.error("[telegram-bot] logMessage:", error.message);
+  if (error) console.error("[bot] logMessage:", error.message);
   await sb
     .from("guest_sessions")
     .update({ last_message_at: new Date().toISOString() })
@@ -248,11 +249,13 @@ async function logEvent(session: Session, eventType: string, details: any = {}) 
     event_type: eventType,
     details,
   });
-  if (error) console.error("[telegram-bot] logEvent:", error.message);
+  if (error) console.error("[bot] logEvent:", error.message);
 }
 
 type ManagerSettings = {
   manager_tg_chat_id: number | null;
+  manager_channel: ChannelId | null;
+  manager_channel_chat_id: string | null;
   notify_on_inbound: boolean | null;
   notify_on_checkin: boolean | null;
   notify_on_checkout: boolean | null;
@@ -262,17 +265,26 @@ type ManagerSettings = {
   guest_invite_template: string | null;
 };
 
+/** Куда писать менеджеру. Пока настройки не обновлены — это Telegram. */
+function managerRcpt(s: any): Recipient | null {
+  const channel = (isChannel(s?.manager_channel) ? s.manager_channel : "telegram") as ChannelId;
+  const chatId = s?.manager_channel_chat_id
+    ?? (channel === "telegram" && s?.manager_tg_chat_id != null ? String(s.manager_tg_chat_id) : null);
+  return chatId ? { channel, chatId } : null;
+}
+
 async function notifyManager(userId: string, text: string, flag?: keyof ManagerSettings) {
   const settings = await loadManagerSettings(userId);
-  if (!settings?.manager_tg_chat_id) {
-    console.log("[telegram-bot] notifyManager skipped: no manager_tg_chat_id");
+  const to = managerRcpt(settings);
+  if (!to) {
+    console.log("[bot] notifyManager пропущено: чат менеджера не задан");
     return;
   }
-  if (flag && settings[flag] === false) {
-    console.log(`[telegram-bot] notifyManager skipped by flag ${String(flag)}`);
+  if (flag && (settings as any)?.[flag] === false) {
+    console.log(`[bot] notifyManager пропущено по флагу ${String(flag)}`);
     return;
   }
-  await tgSendMessage(settings.manager_tg_chat_id, text);
+  await send(to, text);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -283,17 +295,29 @@ interface Maid {
   id: string;
   user_id: string;
   tg_chat_id: number | null;
+  channel: ChannelId;
+  channel_chat_id: string | null;
   name: string;
   phone: string | null;
   active: boolean;
 }
 
-async function findMaidByChatId(chatId: number): Promise<Maid | null> {
+const MAID_COLS = "id, user_id, tg_chat_id, channel, channel_chat_id, name, phone, active";
+
+function maidRcpt(m: { channel?: string | null; channel_chat_id?: string | null; tg_chat_id?: number | null }): Recipient | null {
+  const channel = (isChannel(m?.channel) ? m.channel : "telegram") as ChannelId;
+  const chatId = m?.channel_chat_id
+    ?? (channel === "telegram" && m?.tg_chat_id != null ? String(m.tg_chat_id) : null);
+  return chatId ? { channel, chatId } : null;
+}
+
+async function findMaidByRcpt(to: Recipient): Promise<Maid | null> {
   const sb = svc();
   const { data } = await sb
     .from("maids")
-    .select("id, user_id, tg_chat_id, name, phone, active")
-    .eq("tg_chat_id", chatId)
+    .select(MAID_COLS)
+    .eq("channel", to.channel)
+    .eq("channel_chat_id", to.chatId)
     .eq("active", true)
     .maybeSingle();
   return (data as Maid) || null;
@@ -303,7 +327,7 @@ async function findMaidByInviteToken(token: string): Promise<Maid | null> {
   const sb = svc();
   const { data } = await sb
     .from("maids")
-    .select("id, user_id, tg_chat_id, name, phone, active")
+    .select(MAID_COLS)
     .eq("invite_token", token)
     .maybeSingle();
   return (data as Maid) || null;
@@ -318,14 +342,26 @@ function fmtDateShort(iso: string | null): string {
   return `${dd}.${mm}`;
 }
 
-async function logMaidMessage(maid: Maid, direction: "inbound"|"outbound"|"system", sender: "maid"|"bot"|"manager", text: string, tgMessageId?: number, photoUrl?: string) {
-  if (!maid.tg_chat_id) return;
+async function logMaidMessage(
+  maid: Maid,
+  direction: "inbound" | "outbound" | "system",
+  sender: "maid" | "bot" | "manager",
+  text: string,
+  messageId?: string | null,
+  photoUrl?: string,
+) {
+  const to = maidRcpt(maid);
+  if (!to) return;
   const sb = svc();
   await sb.from("maid_messages").insert({
     user_id: maid.user_id,
     maid_id: maid.id,
-    tg_chat_id: maid.tg_chat_id,
-    tg_message_id: tgMessageId ?? null,
+    // Старую колонку продолжаем заполнять только для Telegram,
+    // чтобы прежние выборки по tg_chat_id не сломались.
+    tg_chat_id: to.channel === "telegram" ? Number(to.chatId) : null,
+    tg_message_id: to.channel === "telegram" && messageId ? Number(messageId) : null,
+    channel: to.channel,
+    channel_chat_id: to.chatId,
     direction,
     sender,
     text: text || null,
@@ -333,11 +369,8 @@ async function logMaidMessage(maid: Maid, direction: "inbound"|"outbound"|"syste
   });
 }
 
-// Обработка callback’ов от горничной
-async function handleMaidCallback(maid: Maid, data: string, cq: any): Promise<boolean> {
-  const chatId = cq.message?.chat?.id;
-  const messageId = cq.message?.message_id;
-  if (!chatId) return false;
+/** Обработка нажатий кнопок горничной. */
+async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messageId: string | null): Promise<boolean> {
   const sb = svc();
 
   const [action, cleaningId] = data.split(":");
@@ -350,7 +383,7 @@ async function handleMaidCallback(maid: Maid, data: string, cq: any): Promise<bo
     .maybeSingle();
 
   if (!cleaning || cleaning.user_id !== maid.user_id) {
-    await tgSendMessage(chatId, "Уборка не найдена или уже неактуальна.");
+    await send(to, "Уборка не найдена или уже неактуальна.");
     return true;
   }
 
@@ -358,9 +391,9 @@ async function handleMaidCallback(maid: Maid, data: string, cq: any): Promise<bo
     if (cleaning.status !== "pending_response") {
       // Кто-то уже принял
       if (cleaning.maid_id && cleaning.maid_id !== maid.id) {
-        await tgSendMessage(chatId, `Эта уборка уже принята другой горничной. Спасибо.`);
+        await send(to, `Эта уборка уже принята другой горничной. Спасибо.`);
       } else {
-        await tgSendMessage(chatId, `Статус уборки: ${cleaning.status}.`);
+        await send(to, `Статус уборки: ${cleaning.status}.`);
       }
       return true;
     }
@@ -368,48 +401,51 @@ async function handleMaidCallback(maid: Maid, data: string, cq: any): Promise<bo
       status: "accepted",
       maid_id: maid.id,
       accepted_at: new Date().toISOString(),
-      tg_message_id: messageId ?? null,
+      tg_message_id: to.channel === "telegram" && messageId ? Number(messageId) : null,
+      channel: to.channel,
+      channel_message_id: messageId,
     }).eq("id", cleaning.id);
 
-    // Убираем кнопки у остальных, кому предложили
+    // Убираем предложение у остальных, кому его отправляли
     const offered: string[] = Array.isArray(cleaning.offered_to) ? cleaning.offered_to : [];
     for (const otherId of offered) {
       if (otherId === maid.id) continue;
-      const { data: other } = await sb.from("maids").select("tg_chat_id").eq("id", otherId).maybeSingle();
-      if (other?.tg_chat_id) {
-        await tgSendMessage(other.tg_chat_id, `ℹ️ Уборка (${htmlEscape(cleaning.apartment_title || "")}, ${fmtDateShort(cleaning.scheduled_date)}) уже принята другой горничной.`);
+      const { data: other } = await sb.from("maids").select("channel, channel_chat_id, tg_chat_id").eq("id", otherId).maybeSingle();
+      const otherTo = other ? maidRcpt(other) : null;
+      if (otherTo) {
+        await send(otherTo, `ℹ️ Уборка (${htmlEscape(cleaning.apartment_title || "")}, ${fmtDateShort(cleaning.scheduled_date)}) уже принята другой горничной.`);
       }
     }
 
-    await tgSendMessage(chatId, `✅ Спасибо. Уборка <b>${fmtDateShort(cleaning.scheduled_date)}</b> за вами.`);
-    await notifyManager(maid.user_id, `✅ <b>${htmlEscape(maid.name)}</b> сможет убраться <b>${fmtDateShort(cleaning.scheduled_date)}</b> (${htmlEscape(cleaning.apartment_title || "")}).`, "notify_on_cleaning_response");
+    await send(to, `✅ Спасибо. Уборка <b>${fmtDateShort(cleaning.scheduled_date)}</b> за вами.`);
+    await notifyManager(maid.user_id, `✅ <b>${htmlEscape(maid.name)}</b> сможет убраться <b>${fmtDateShort(cleaning.scheduled_date)}</b> (${htmlEscape(cleaning.apartment_title || "")}).`, "notify_on_cleaning_response" as any);
     return true;
   }
 
   if (action === "maid_decline") {
     if (cleaning.status !== "pending_response") {
-      await tgSendMessage(chatId, `Уборка уже в статусе: ${cleaning.status}.`);
+      await send(to, `Уборка уже в статусе: ${cleaning.status}.`);
       return true;
     }
-    // Если уборку предлагали ещё кому-то — не отменяем; иначе ставим pending без исполнителя
+    // Если уборку предлагали ещё кому-то — не отменяем; иначе снимаем исполнителя
     const offered: string[] = Array.isArray(cleaning.offered_to) ? cleaning.offered_to : [];
-    const others = offered.filter(id => id !== maid.id);
+    const others = offered.filter((id) => id !== maid.id);
     const updatePatch: any = { declined_at: new Date().toISOString(), offered_to: others };
     if (others.length === 0) updatePatch.status = "declined";
     await sb.from("cleanings").update(updatePatch).eq("id", cleaning.id);
 
-    await tgSendMessage(chatId, `❌ Хорошо, передали менеджеру. Уборка <b>${fmtDateShort(cleaning.scheduled_date)}</b>.`);
-    await notifyManager(maid.user_id, `❌ <b>${htmlEscape(maid.name)}</b> не сможет убраться <b>${fmtDateShort(cleaning.scheduled_date)}</b> (${htmlEscape(cleaning.apartment_title || "")}).${others.length === 0 ? "\n⚠️ Больше никому не предложено — назначьте вручную." : ""}`, "notify_on_cleaning_response");
+    await send(to, `❌ Хорошо, передали менеджеру. Уборка <b>${fmtDateShort(cleaning.scheduled_date)}</b>.`);
+    await notifyManager(maid.user_id, `❌ <b>${htmlEscape(maid.name)}</b> не сможет убраться <b>${fmtDateShort(cleaning.scheduled_date)}</b> (${htmlEscape(cleaning.apartment_title || "")}).${others.length === 0 ? "\n⚠️ Больше никому не предложено — назначьте вручную." : ""}`, "notify_on_cleaning_response" as any);
     return true;
   }
 
   if (action === "maid_on_site") {
     if (cleaning.maid_id !== maid.id) {
-      await tgSendMessage(chatId, "Эта уборка не назначена вам.");
+      await send(to, "Эта уборка не назначена вам.");
       return true;
     }
     if (cleaning.status === "completed") {
-      await tgSendMessage(chatId, "Уборка уже завершена.");
+      await send(to, "Уборка уже завершена.");
       return true;
     }
     await sb.from("cleanings").update({
@@ -417,21 +453,19 @@ async function handleMaidCallback(maid: Maid, data: string, cq: any): Promise<bo
       on_site_at: new Date().toISOString(),
     }).eq("id", cleaning.id);
 
-    const kb = {
-      inline_keyboard: [[{ text: "✅ Уборка завершена", callback_data: `maid_completed:${cleaning.id}` }]],
-    };
-    await tgSendMessage(chatId, `🏠 Отмечено: вы на месте.\n📍 ${htmlEscape(cleaning.apartment_title || "")}\n\nКогда закончите — нажмите кнопку ниже.`, { reply_markup: kb });
-    await notifyManager(maid.user_id, `🏠 Горничная <b>${htmlEscape(maid.name)}</b> на месте: ${htmlEscape(cleaning.apartment_title || "")}.`, "notify_on_cleaning_response");
+    const kb: Btn[][] = [[{ text: "✅ Уборка завершена", data: `maid_completed:${cleaning.id}` }]];
+    await send(to, `🏠 Отмечено: вы на месте.\n📍 ${htmlEscape(cleaning.apartment_title || "")}\n\nКогда закончите — нажмите кнопку ниже.`, kb);
+    await notifyManager(maid.user_id, `🏠 Горничная <b>${htmlEscape(maid.name)}</b> на месте: ${htmlEscape(cleaning.apartment_title || "")}.`, "notify_on_cleaning_response" as any);
     return true;
   }
 
   if (action === "maid_completed") {
     if (cleaning.maid_id !== maid.id) {
-      await tgSendMessage(chatId, "Эта уборка не назначена вам.");
+      await send(to, "Эта уборка не назначена вам.");
       return true;
     }
     if (cleaning.status === "completed") {
-      await tgSendMessage(chatId, "Уборка уже отмечена как завершённая.");
+      await send(to, "Уборка уже отмечена как завершённая.");
       return true;
     }
     await sb.from("cleanings").update({
@@ -439,53 +473,60 @@ async function handleMaidCallback(maid: Maid, data: string, cq: any): Promise<bo
       completed_at: new Date().toISOString(),
     }).eq("id", cleaning.id);
 
-    await tgSendMessage(chatId, `✅ Спасибо! Уборка отмечена как завершённая.\n📍 ${htmlEscape(cleaning.apartment_title || "")}`);
-    await notifyManager(maid.user_id, `✅ Горничная <b>${htmlEscape(maid.name)}</b> завершила уборку: ${htmlEscape(cleaning.apartment_title || "")} (${fmtDateShort(cleaning.scheduled_date)}).`, "notify_on_cleaning_response");
+    await send(to, `✅ Спасибо! Уборка отмечена как завершённая.\n📍 ${htmlEscape(cleaning.apartment_title || "")}`);
+    await notifyManager(maid.user_id, `✅ Горничная <b>${htmlEscape(maid.name)}</b> завершила уборку: ${htmlEscape(cleaning.apartment_title || "")} (${fmtDateShort(cleaning.scheduled_date)}).`, "notify_on_cleaning_response" as any);
     return true;
   }
 
   if (action === "maid_supply") {
-    // Помечаем «ожидает описание расходника» через maid_messages system-запись
+    // Помечаем «ждём описание расходника» служебной записью в переписке
     await sb.from("maid_messages").insert({
       user_id: maid.user_id,
       maid_id: maid.id,
-      tg_chat_id: chatId,
+      tg_chat_id: to.channel === "telegram" ? Number(to.chatId) : null,
+      channel: to.channel,
+      channel_chat_id: to.chatId,
       direction: "system",
       sender: "bot",
       text: `awaiting_supply:${cleaning.id}`,
     });
-    await tgSendMessage(chatId, `📦 Напишите, что нужно докупить — можно текстом и/или фото.\nВаше следующее сообщение будет отправлено менеджеру как заявка.`);
+    await send(to, `📦 Напишите, что нужно докупить — можно текстом и/или фото.\nВаше следующее сообщение будет отправлено менеджеру как заявка.`);
     return true;
   }
 
   return false;
 }
 
-async function handleMaidStart(chatId: number, token: string, from: any) {
+/** Горничная перешла по ссылке-приглашению: привязываем её чат к каналу. */
+async function handleMaidStart(to: Recipient, token: string, from: InboundEvent["from"]) {
   const maid = await findMaidByInviteToken(token);
   if (!maid) {
-    await tgSendMessage(chatId, "Ссылка-приглашение недействительна или уже использована. Попросите менеджера прислать новую.");
+    await send(to, "Ссылка-приглашение недействительна или уже использована. Попросите менеджера прислать новую.");
     return;
   }
   const sb = svc();
   await sb.from("maids").update({
-    tg_chat_id: chatId,
+    // tg_chat_id заполняем только для Telegram — в других каналах его нет.
+    tg_chat_id: to.channel === "telegram" ? Number(to.chatId) : null,
+    channel: to.channel,
+    channel_chat_id: to.chatId,
     invite_token: null,
     updated_at: new Date().toISOString(),
   }).eq("id", maid.id);
 
-  const displayName = maid.name || [from?.first_name, from?.last_name].filter(Boolean).join(" ") || "";
+  const bound: Maid = { ...maid, channel: to.channel, channel_chat_id: to.chatId };
+  const displayName = maid.name || [from?.firstName, from?.lastName].filter(Boolean).join(" ") || "";
   const welcome = `Здравствуйте, <b>${htmlEscape(displayName)}</b>.\n\nКогда появится новая уборка, вы получите сообщение с двумя кнопками: <b>Принять</b> или <b>Отказаться</b>.\n\nНапишите любое сообщение в этот чат — менеджер его увидит и ответит.`;
-  await tgSendMessage(chatId, welcome);
-  await logMaidMessage({ ...maid, tg_chat_id: chatId }, "outbound", "bot", welcome);
+  await send(to, welcome);
+  await logMaidMessage(bound, "outbound", "bot", welcome);
 
-  await notifyManager(maid.user_id, `👋 Горничная <b>${htmlEscape(displayName)}</b> подключилась к боту.`);
+  await notifyManager(maid.user_id, `👋 Горничная <b>${htmlEscape(displayName)}</b> подключилась через ${CHANNEL_TITLE[to.channel]}.`);
 }
 
-async function handleMaidFreeText(maid: Maid, chatId: number, text: string, tgMessageId: number, photoUrl?: string) {
+async function handleMaidFreeText(maid: Maid, to: Recipient, text: string, messageId: string | null, photoUrl?: string) {
   const sb = svc();
 
-  // Проверяем, ждём ли мы описание расходника (последняя system-запись с awaiting_supply:<id>)
+  // Ждём ли мы описание расходника (последняя служебная запись awaiting_supply:<id>)
   const { data: sysMsg } = await sb
     .from("maid_messages")
     .select("id, text")
@@ -498,7 +539,6 @@ async function handleMaidFreeText(maid: Maid, chatId: number, text: string, tgMe
 
   if (sysMsg?.text) {
     const cleaningId = String(sysMsg.text).replace("awaiting_supply:", "");
-    // Создаём заявку
     const { data: cleaning } = await sb
       .from("cleanings")
       .select("realty_id, apartment_title")
@@ -511,28 +551,31 @@ async function handleMaidFreeText(maid: Maid, chatId: number, text: string, tgMe
       text: text || null,
       photo_url: photoUrl || null,
     });
-    // Убираем маркер ожидания
+    // Снимаем маркер ожидания
     await sb.from("maid_messages").delete().eq("id", sysMsg.id);
 
-    await logMaidMessage(maid, "inbound", "maid", text, tgMessageId, photoUrl);
-    await tgSendMessage(chatId, `📦 Заявка на расходники принята. Менеджер уведомлён.`);
+    await logMaidMessage(maid, "inbound", "maid", text, messageId, photoUrl);
+    await send(to, `📦 Заявка на расходники принята. Менеджер уведомлён.`);
     await notifyManager(
       maid.user_id,
       `📦 <b>Заявка на расходники</b>\nОт: <b>${htmlEscape(maid.name)}</b>\nКвартира: ${htmlEscape(cleaning?.apartment_title || "?")}\n\n${htmlEscape(text || "(без описания)")}${photoUrl ? `\n<a href="${photoUrl}">фото</a>` : ""}`,
-      "notify_on_supply_request"
+      "notify_on_supply_request" as any,
     );
     return;
   }
 
   // Обычное сообщение горничной → чат с менеджером
-  await logMaidMessage(maid, "inbound", "maid", text, tgMessageId, photoUrl);
+  await logMaidMessage(maid, "inbound", "maid", text, messageId, photoUrl);
   await notifyManager(
     maid.user_id,
     `💬 <b>${htmlEscape(maid.name)}</b> (горничная):\n\n${htmlEscape(text)}`,
-    "notify_on_inbound"
+    "notify_on_inbound",
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// БЛОКИ ИНСТРУКЦИЙ ДЛЯ ГОСТЯ
+// ═══════════════════════════════════════════════════════════════════
 
 function blockAddress(instr: any): string | null {
   if (!instr) return null;
@@ -661,9 +704,9 @@ function ddmmyyyy(d: string | Date | null | undefined): string {
   return `${dd}.${mm}.${dt.getFullYear()}`;
 }
 
-// Автосоздание договора Okidoki при первом /start гостя (если включён auto_send).
-// Возвращает { link } если договор создан/уже был, иначе null.
-async function maybeCreateContract(session: Session, chatId: number): Promise<string | null> {
+// Автосоздание договора Okidoki при первом старте гостя (если включён auto_send).
+// Возвращает ссылку, если договор создан или уже был, иначе null.
+async function maybeCreateContract(session: Session): Promise<string | null> {
   const sb = svc();
 
   // 1) Достаём бронь + настройки менеджера
@@ -696,17 +739,16 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
     .maybeSingle();
 
   if (!apt?.okidoki_template_id) {
-    console.log(`[telegram-bot] maybeCreateContract: no template for realty ${bk.realty_id}`);
-    // Уведомим менеджера, что нужно настроить шаблон
+    console.log(`[bot] maybeCreateContract: нет шаблона для realty ${bk.realty_id}`);
     await notifyManager(
       session.user_id,
-      `⚠️ Гость запустил бота, но для квартиры <b>${htmlEscape(bk.apartment_title || String(bk.realty_id))}</b> не назначен шаблон договора Okidoki. Договор не создан. Откройте «Договоры (Okidoki)» → «Квартиры и шаблоны».`
+      `⚠️ Гость запустил бота, но для квартиры <b>${htmlEscape(bk.apartment_title || String(bk.realty_id))}</b> не назначен шаблон договора Okidoki. Договор не создан. Откройте «Договоры (Okidoki)» → «Квартиры и шаблоны».`,
     );
     return null;
   }
 
   // ВАЖНО: keyword'ы должны СОВПАДАТЬ с названиями полей в шаблоне Okidoki.
-  // «Описание и адрес квартиры» — dropdown-объект. Передаём value = ID объекта
+  // «Описание и адрес квартиры» — выпадающий список. Передаём значение = ID объекта
   // из настроек шаблона Okidoki (хранится в apartment_contract_templates.okidoki_object_id).
   const DEFAULT_MAPPING: Record<string, string> = {
     begin_date:            "Дата заселения",
@@ -785,7 +827,7 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
     const text = await r.text();
     let data: any; try { data = JSON.parse(text); } catch { data = text; }
     if (!r.ok) {
-      console.error("[telegram-bot] okidoki contract error:", r.status, text);
+      console.error("[bot] okidoki contract error:", r.status, text);
       await notifyManager(session.user_id, `❌ Не удалось создать договор гостю (бронь <code>${session.booking_id}</code>): ${htmlEscape(String(data?.error || data || r.status))}`);
       return null;
     }
@@ -803,39 +845,46 @@ async function maybeCreateContract(session: Session, chatId: number): Promise<st
 
     // Если черновик (internal_id=0) — гостю не отправляем, а уведомляем менеджера с деталями
     if (statusInternal === 0) {
-      const sentKeywords = entities.map(e => `• ${htmlEscape(e.keyword)}: <code>${htmlEscape(e.value)}</code>`).join("\n");
+      const sentKeywords = entities.map((e) => `• ${htmlEscape(e.keyword)}: <code>${htmlEscape(e.value)}</code>`).join("\n");
       await notifyManager(
         session.user_id,
-        `⚠️ Договор по брони <code>${session.booking_id}</code> создан, но остался в статусе «Черновик».\n\nЭто значит, что keyword’ы, которые мы отправили, <b>не совпали</b> с названиями полей в шаблоне Okidoki, или в шаблоне остались незаполненные обязательные поля (например dropdown «Описание и адрес квартиры»).\n\n<b>Что делать:</b>\n1) Откройте договор, посмотрите, какие поля остались пустыми.\n2) Сверьте точные названия полей в шаблоне (какой там регистр, пробелы) — если в шаблоне название другое (например «цена в сутки», а не «Цена в сутки») — сообщите в поддержку.\n3) Сейчас мы слали keyword’ы <b>с заглавной буквы</b> — как в видимых метках полей в Okidoki.\n\n<b>Передано:</b>\n${sentKeywords}\n\n<a href="${link}">Открыть черновик</a>`
+        `⚠️ Договор по брони <code>${session.booking_id}</code> создан, но остался в статусе «Черновик».\n\nЭто значит, что keyword’ы, которые мы отправили, <b>не совпали</b> с названиями полей в шаблоне Okidoki, или в шаблоне остались незаполненные обязательные поля (например список «Описание и адрес квартиры»).\n\n<b>Что делать:</b>\n1) Откройте договор, посмотрите, какие поля остались пустыми.\n2) Сверьте точные названия полей в шаблоне (какой там регистр, пробелы) — если в шаблоне название другое (например «цена в сутки», а не «Цена в сутки») — сообщите в поддержку.\n3) Сейчас мы слали keyword’ы <b>с заглавной буквы</b> — как в видимых метках полей в Okidoki.\n\n<b>Передано:</b>\n${sentKeywords}\n\n<a href="${link}">Открыть черновик</a>`,
       );
       return null;
     }
 
     return link || null;
   } catch (e) {
-    console.error("[telegram-bot] okidoki contract exception:", e);
+    console.error("[bot] okidoki contract exception:", e);
     return null;
   }
 }
 
-async function handleStart(chatId: number, args: string, from: any) {
+// ═══════════════════════════════════════════════════════════════════
+// СЦЕНАРИИ ГОСТЯ
+// ═══════════════════════════════════════════════════════════════════
+
+async function handleStart(to: Recipient, args: string, from: InboundEvent["from"]) {
   const secureId = (args || "").trim();
-  const fromName = [from?.first_name, from?.last_name].filter(Boolean).join(" ") || from?.username || "";
+  const fromName = [from?.firstName, from?.lastName].filter(Boolean).join(" ") || from?.username || "";
   if (!secureId) {
-    await tgSendMessage(chatId, "Здравствуйте! Похоже, вы открыли бота без персональной ссылки.\n\nПожалуйста, используйте ссылку, которую прислал менеджер — она содержит данные вашего бронирования.");
+    await send(to, "Здравствуйте! Похоже, вы открыли бота без персональной ссылки.\n\nПожалуйста, используйте ссылку, которую прислал менеджер — она содержит данные вашего бронирования.");
     return;
   }
   let session = await findSessionBySecureId(secureId);
   if (!session) {
-    await tgSendMessage(chatId, "Ссылка не найдена или устарела. Свяжитесь, пожалуйста, с менеджером — он отправит новую ссылку.");
+    await send(to, "Ссылка не найдена или устарела. Свяжитесь, пожалуйста, с менеджером — он отправит новую ссылку.");
     return;
   }
   const sb = svc();
   const updatePatch: Record<string, any> = {
-    tg_chat_id: chatId,
-    tg_username: from?.username ?? null,
-    tg_first_name: from?.first_name ?? null,
-    tg_last_name: from?.last_name ?? null,
+    // Telegram-колонки заполняем только для Telegram, чтобы не смешивать данные.
+    tg_chat_id: to.channel === "telegram" ? Number(to.chatId) : null,
+    tg_username: to.channel === "telegram" ? (from?.username ?? null) : null,
+    tg_first_name: from?.firstName ?? null,
+    tg_last_name: from?.lastName ?? null,
+    channel: to.channel,
+    channel_chat_id: to.chatId,
     updated_at: new Date().toISOString(),
   };
   if (!session.started_at) updatePatch.started_at = new Date().toISOString();
@@ -852,29 +901,29 @@ async function handleStart(chatId: number, args: string, from: any) {
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
 
   const welcome = buildWelcomeMessage(fromName, instr);
-  await tgSendMessage(chatId, welcome, { reply_markup: guestKeyboard(settings?.guest_channel_url ?? null) });
+  await send(to, welcome, guestKeyboard(settings?.guest_channel_url ?? null));
   await logMessage(session, "bot", welcome, { kind: "welcome" });
-  await logEvent(session, "custom", { kind: "bot_started", chat_id: chatId, from: fromName });
-  await notifyManager(session.user_id, `🟢 Гость <b>${htmlEscape(fromName || "—")}</b> запустил бота.\nБронь: <code>${session.booking_id}</code>`);
+  await logEvent(session, "custom", { kind: "bot_started", channel: to.channel, chat_id: to.chatId, from: fromName });
+  await notifyManager(session.user_id, `🟢 Гость <b>${htmlEscape(fromName || "—")}</b> запустил бота (${CHANNEL_TITLE[to.channel]}).\nБронь: <code>${session.booking_id}</code>`);
 
   // Автосоздание договора Okidoki (если включено)
   try {
-    const link = await maybeCreateContract(session, chatId);
+    const link = await maybeCreateContract(session);
     if (link) {
       const msg = `📄 <b>Договор аренды</b>\n\nДля вашего заселения подготовлен договор. Пожалуйста, ознакомьтесь и подпишите по ссылке:\n${htmlEscape(link)}\n\nПосле подписания менеджер получит уведомление и подтвердит вашу бронь.`;
-      await tgSendMessage(chatId, msg, { disable_web_page_preview: false });
+      await sendMessage(to, msg, { preview: true });
       await logMessage(session, "bot", msg, { kind: "okidoki_link", link });
       await notifyManager(session.user_id, `📄 Гостю отправлена ссылка на договор (бронь <code>${session.booking_id}</code>).`);
     }
   } catch (e) {
-    console.error("[telegram-bot] maybeCreateContract failed:", e);
+    console.error("[bot] maybeCreateContract failed:", e);
   }
 }
 
-async function handleCommand(chatId: number, cmd: string, _from: any) {
-  const session = await findSessionByChatId(chatId);
+async function handleCommand(to: Recipient, cmd: string) {
+  const session = await findSessionByRcpt(to);
   if (!session) {
-    await tgSendMessage(chatId, "Сначала откройте бота по персональной ссылке от менеджера (она содержит /start с кодом).");
+    await send(to, "Сначала откройте бота по персональной ссылке от менеджера (она содержит код вашего бронирования).");
     return;
   }
   const { id: apartmentId } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
@@ -892,43 +941,44 @@ async function handleCommand(chatId: number, cmd: string, _from: any) {
     case "menu": case "start_menu": reply = "Выберите, что вас интересует:"; break;
     default: reply = "Команда не распознана. Используйте кнопки ниже.";
   }
-  await tgSendMessage(chatId, reply, { reply_markup: guestKeyboard(settings?.guest_channel_url ?? null) });
+  await send(to, reply, guestKeyboard(settings?.guest_channel_url ?? null));
   await logMessage(session, "bot", reply, { kind: "command", cmd });
 }
 
-async function handleArrival(chatId: number, from: any, kind: "arrived" | "leaving") {
-  const session = await findSessionByChatId(chatId);
-  if (!session) { await tgSendMessage(chatId, "Сессия не найдена. Откройте бота по ссылке от менеджера."); return; }
-  const fromName = [from?.first_name, from?.last_name].filter(Boolean).join(" ") || from?.username || "";
+async function handleArrival(to: Recipient, from: InboundEvent["from"], kind: "arrived" | "leaving") {
+  const session = await findSessionByRcpt(to);
+  if (!session) { await send(to, "Сессия не найдена. Откройте бота по ссылке от менеджера."); return; }
+  const fromName = [from?.firstName, from?.lastName].filter(Boolean).join(" ") || from?.username || "";
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
+  const kb = guestKeyboard(settings?.guest_channel_url ?? null);
   if (kind === "arrived") {
     const reply = "Спасибо! ✅ Я передал менеджеру, что вы приехали. Хорошего отдыха!";
-    await tgSendMessage(chatId, reply, { reply_markup: guestKeyboard(settings?.guest_channel_url ?? null) });
+    await send(to, reply, kb);
     await logMessage(session, "bot", reply, { kind: "arrival" });
     await logEvent(session, "checkin", { from: fromName });
     await notifyManager(session.user_id, `✅ Гость <b>${htmlEscape(fromName || "—")}</b> сообщил о заселении.\nБронь: <code>${session.booking_id}</code>`, "notify_on_checkin");
   } else {
     const reply = "Спасибо, что были у нас! 👋 Я передал менеджеру, что вы уезжаете.";
-    await tgSendMessage(chatId, reply, { reply_markup: guestKeyboard(settings?.guest_channel_url ?? null) });
+    await send(to, reply, kb);
     await logMessage(session, "bot", reply, { kind: "departure" });
     await logEvent(session, "checkout", { from: fromName });
     await notifyManager(session.user_id, `👋 Гость <b>${htmlEscape(fromName || "—")}</b> сообщил, что уезжает.\nБронь: <code>${session.booking_id}</code>`, "notify_on_checkout");
   }
 }
 
-async function handleFreeText(chatId: number, from: any, text: string, tgMessageId: number) {
-  const session = await findSessionByChatId(chatId);
+async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: string, messageId: string | null) {
+  const session = await findSessionByRcpt(to);
   if (!session) {
-    await tgSendMessage(chatId, "Сессия не найдена. Откройте бота по персональной ссылке от менеджера (она содержит /start с кодом).");
+    await send(to, "Сессия не найдена. Откройте бота по персональной ссылке от менеджера (она содержит код вашего бронирования).");
     return;
   }
-  const fromName = [from?.first_name, from?.last_name].filter(Boolean).join(" ") || from?.username || "Гость";
-  await logMessage(session, "inbound", text, { tg_message_id: tgMessageId, from });
+  const fromName = [from?.firstName, from?.lastName].filter(Boolean).join(" ") || from?.username || "Гость";
+  await logMessage(session, "inbound", text, { message_id: messageId, channel: to.channel, from });
 
   const { id: apartmentId, diag: resolveDiag } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
   const instr = await loadInstructions(session.user_id, apartmentId);
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
-  const kb = { reply_markup: guestKeyboard(settings?.guest_channel_url ?? null) };
+  const kb = guestKeyboard(settings?.guest_channel_url ?? null);
 
   const aiInstrLen = (instr?.ai_instructions ?? "").toString().trim().length;
   const sessionAiEnabled = session.ai_enabled !== false;
@@ -942,12 +992,13 @@ async function handleFreeText(chatId: number, from: any, text: string, tgMessage
     ai_instr_len: aiInstrLen,
     ai_enabled: aiEnabled,
     session_ai_enabled: sessionAiEnabled,
+    channel: to.channel,
     model: OR_MODEL,
   };
-  console.log(`[telegram-bot] handleFreeText diag: ${JSON.stringify(diag)}`);
+  console.log(`[bot] handleFreeText diag: ${JSON.stringify(diag)}`);
   try {
     await svc().from("guest_sessions").update({ debug_last: { kind: "ai_diag", at: new Date().toISOString(), ...diag } }).eq("id", session.id);
-  } catch (e) { console.error("[telegram-bot] debug_last diag update failed:", e); }
+  } catch (e) { console.error("[bot] debug_last diag update failed:", e); }
 
   if (aiEnabled) {
     const systemPrompt = buildAiSystemPrompt(instr);
@@ -995,107 +1046,95 @@ async function handleFreeText(chatId: number, from: any, text: string, tgMessage
         }
       } catch (e) { modelErr = `fetch_exception: ${String(e)}`; }
       modelErrors.push({ model: modelId, error: modelErr });
-      console.error(`[telegram-bot] openrouter model failed ${modelId}: ${modelErr}`);
+      console.error(`[bot] openrouter model failed ${modelId}: ${modelErr}`);
     }
 
     try {
       await svc().from("guest_sessions").update({ debug_last: { kind: "ai_result", at: new Date().toISOString(), ok: !!aiText, reply_len: aiText?.length ?? 0, used_model: usedModel, errors: modelErrors } }).eq("id", session.id);
-    } catch (e) { console.error("[telegram-bot] debug_last result update failed:", e); }
+    } catch (e) { console.error("[bot] debug_last result update failed:", e); }
 
     if (aiText) {
       const outText = aiText.length > 3800 ? aiText.slice(0, 3800) + "…" : aiText;
-      await tgSendMessage(chatId, outText, { ...kb, parse_mode: undefined });
+      // Ответ модели — обычный текст: разметку не интерпретируем.
+      await sendMessage(to, outText, { buttons: kb, plain: true });
       await logMessage(session, "bot", outText, { kind: "ai_reply", model: usedModel });
       await notifyManager(session.user_id, `🤖 <b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>) — вопрос:\n${htmlEscape(text)}\n\n<i>AI-ответ гостю:</i>\n${htmlEscape(outText)}`, "notify_on_inbound");
       return;
     }
-    console.warn("[telegram-bot] AI enabled but call failed; falling back to manager relay");
+    console.warn("[bot] AI включён, но вызов не удался — передаём сообщение менеджеру");
   }
 
   const reply = sessionAiEnabled
     ? "Спасибо за сообщение! ✉️ Я передал его менеджеру — он скоро ответит."
     : "Спасибо за сообщение! ✉️ Менеджер увидит его и ответит лично.";
-  await tgSendMessage(chatId, reply, kb);
+  await send(to, reply, kb);
   await logMessage(session, "bot", reply, { kind: "ack" });
   await notifyManager(session.user_id, `💬 <b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>):\n\n${htmlEscape(text)}`, "notify_on_inbound");
 }
 
-// Extract photo URL if attached (returns first photo's file_id transformed to URL)
-async function extractPhotoUrl(msg: any): Promise<string | undefined> {
-  const photos = msg?.photo;
-  if (!Array.isArray(photos) || photos.length === 0) return undefined;
-  const largest = photos[photos.length - 1];
-  const fileId = largest?.file_id;
-  if (!fileId) return undefined;
-  try {
-    const r = await fetch(`${TG_API}/getFile?file_id=${encodeURIComponent(fileId)}`);
-    const j = await r.json();
-    const path = j?.result?.file_path;
-    if (!path) return undefined;
-    return `https://api.telegram.org/file/bot${TG_TOKEN}/${path}`;
-  } catch { return undefined; }
-}
+// ═══════════════════════════════════════════════════════════════════
+// ЕДИНЫЙ ОБРАБОТЧИК ВХОДЯЩИХ СОБЫТИЙ (общий для всех каналов)
+// ═══════════════════════════════════════════════════════════════════
 
-async function handleUpdate(update: any) {
-  if (update.callback_query) {
-    const cq = update.callback_query;
-    const chatId = cq.message?.chat?.id;
-    const data = cq.data || "";
-    await tgAnswerCallback(cq.id);
-    if (!chatId) return;
+async function handleEvent(ev: InboundEvent) {
+  const to: Recipient = { channel: ev.channel, chatId: ev.chatId };
 
-    // Сначала — горничная (её callback’ы начинаются с maid_)
+  // ─── Нажатие кнопки ───────────────────────────────────────────────
+  if (ev.kind === "callback") {
+    if (ev.callbackId) await answerCallback(ev.channel, ev.callbackId);
+    const data = ev.callbackData || "";
+
+    // Сначала горничная: её кнопки начинаются с maid_
     if (data.startsWith("maid_")) {
-      const maid = await findMaidByChatId(chatId);
+      const maid = await findMaidByRcpt(to);
       if (maid) {
-        const handled = await handleMaidCallback(maid, data, cq);
+        const handled = await handleMaidCallback(maid, to, data, ev.messageId ?? null);
         if (handled) return;
       }
     }
 
-    if (data === "i_arrived") await handleArrival(chatId, cq.from, "arrived");
-    else if (data === "i_leaving") await handleArrival(chatId, cq.from, "leaving");
-    else await handleCommand(chatId, data, cq.from);
+    if (data === "i_arrived") await handleArrival(to, ev.from, "arrived");
+    else if (data === "i_leaving") await handleArrival(to, ev.from, "leaving");
+    else await handleCommand(to, data);
     return;
   }
-  const msg = update.message || update.edited_message;
-  if (!msg) return;
-  const chatId: number | undefined = msg.chat?.id;
-  const text: string = msg.text || msg.caption || "";
-  const tgMessageId: number = msg.message_id;
-  if (!chatId) return;
 
-  if (text.startsWith("/start")) {
-    const arg = text.replace(/^\/start\s*/, "").trim();
-    // Горничная перешла по инвайт-ссылке
+  // ─── Переход по ссылке-приглашению ────────────────────────────────
+  if (ev.kind === "start") {
+    const arg = (ev.startPayload || "").trim();
     if (arg.startsWith("maid_")) {
-      const token = arg.slice(5);
-      await handleMaidStart(chatId, token, msg.from);
+      await handleMaidStart(to, arg.slice(5), ev.from);
       return;
     }
-    await handleStart(chatId, arg, msg.from);
+    await handleStart(to, arg, ev.from);
     return;
   }
 
+  // ─── Обычное сообщение ────────────────────────────────────────────
+  const text = ev.text || "";
+
   // Если чат уже привязан к горничной — весь трафик её
-  const maid = await findMaidByChatId(chatId);
+  const maid = await findMaidByRcpt(to);
   if (maid) {
-    const photoUrl = await extractPhotoUrl(msg);
-    if (text.trim() || photoUrl) {
-      await handleMaidFreeText(maid, chatId, text, tgMessageId, photoUrl);
+    if (text.trim() || ev.photoUrl) {
+      await handleMaidFreeText(maid, to, text, ev.messageId ?? null, ev.photoUrl ?? undefined);
     }
     return;
   }
 
   if (text.startsWith("/")) {
     const cmd = text.split(/\s+/)[0].replace(/^\//, "").split("@")[0];
-    await handleCommand(chatId, cmd, msg.from);
+    await handleCommand(to, cmd);
     return;
   }
-  if (text.trim()) await handleFreeText(chatId, msg.from, text, tgMessageId);
+  if (text.trim()) await handleFreeText(to, ev.from, text, ev.messageId ?? null);
 }
 
-async function endpointWebhook(req: Request): Promise<Response> {
+// ═══════════════════════════════════════════════════════════════════
+// ВЕБХУКИ КАНАЛОВ
+// ═══════════════════════════════════════════════════════════════════
+
+async function endpointTelegramWebhook(req: Request): Promise<Response> {
   if (TG_SECRET) {
     const got = req.headers.get("x-telegram-bot-api-secret-token");
     if (got !== TG_SECRET) return json({ ok: false, error: "bad_secret" }, 401);
@@ -1103,9 +1142,72 @@ async function endpointWebhook(req: Request): Promise<Response> {
   let update: any = null;
   try { update = await req.json(); }
   catch { return json({ ok: false, error: "bad_json" }, 400); }
-  try { await handleUpdate(update); }
-  catch (e) { console.error("[telegram-bot] handleUpdate error:", e); }
+  try {
+    const ev = await parseTelegramUpdate(update);
+    if (ev) await handleEvent(ev);
+  } catch (e) { console.error("[bot] telegram handleEvent error:", e); }
   return json({ ok: true });
+}
+
+/**
+ * MAX не передаёт секретный заголовок, поэтому секрет кладём в адрес вебхука:
+ * .../telegram-bot/max?s=<MAX_WEBHOOK_SECRET>
+ */
+async function endpointMaxWebhook(req: Request, url: URL): Promise<Response> {
+  if (MAX_SECRET && url.searchParams.get("s") !== MAX_SECRET) {
+    return json({ ok: false, error: "bad_secret" }, 401);
+  }
+  let update: any = null;
+  try { update = await req.json(); }
+  catch { return json({ ok: false, error: "bad_json" }, 400); }
+  try {
+    const ev = parseMaxUpdate(update);
+    if (ev) await handleEvent(ev);
+  } catch (e) { console.error("[bot] max handleEvent error:", e); }
+  return json({ ok: true });
+}
+
+/** WhatsApp сначала проверяет адрес GET-запросом с контрольным токеном. */
+function endpointWhatsappVerify(url: URL): Response {
+  const mode = url.searchParams.get("hub.mode");
+  const token = url.searchParams.get("hub.verify_token");
+  const challenge = url.searchParams.get("hub.challenge") ?? "";
+  if (mode === "subscribe" && WA_VERIFY && token === WA_VERIFY) {
+    return new Response(challenge, { status: 200, headers: { "Content-Type": "text/plain" } });
+  }
+  return new Response("forbidden", { status: 403 });
+}
+
+async function endpointWhatsappWebhook(req: Request): Promise<Response> {
+  let body: any = null;
+  try { body = await req.json(); }
+  catch { return json({ ok: false, error: "bad_json" }, 400); }
+  try {
+    const events = await parseWhatsappUpdate(body);
+    for (const ev of events) await handleEvent(ev);
+  } catch (e) { console.error("[bot] whatsapp handleEvent error:", e); }
+  // WhatsApp повторяет доставку при любом ответе кроме 200.
+  return json({ ok: true });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ЭНДПОИНТЫ ДЛЯ ПРИЛОЖЕНИЯ
+// ═══════════════════════════════════════════════════════════════════
+
+/** Какие каналы настроены на сервере и как выглядят ссылки-приглашения. */
+async function endpointChannels(req: Request): Promise<Response> {
+  const userId = await getUserIdFromJwt(req);
+  if (!userId) return json({ ok: false, error: "unauthorized" }, 401);
+  const list = enabledChannels();
+  return json({
+    ok: true,
+    channels: list.map((c) => ({
+      id: c,
+      title: CHANNEL_TITLE[c],
+      // Пример ссылки с подставным кодом — чтобы интерфейс мог показать формат.
+      invite_example: inviteLink(c, "КОД"),
+    })),
+  });
 }
 
 async function endpointSend(req: Request): Promise<Response> {
@@ -1120,49 +1222,49 @@ async function endpointSend(req: Request): Promise<Response> {
   const sb = svc();
   const { data: session, error } = await sb
     .from("guest_sessions")
-    .select("id,user_id,booking_id,tg_chat_id")
+    .select("id,user_id,booking_id,tg_chat_id,channel,channel_chat_id")
     .eq("id", sessionId)
     .maybeSingle();
   if (error || !session) return json({ ok: false, error: "session_not_found" }, 404);
   if (session.user_id !== userId) return json({ ok: false, error: "forbidden" }, 403);
-  if (!session.tg_chat_id) return json({ ok: false, error: "guest_not_connected" }, 409);
-  const tgRes = await tgSendMessage(session.tg_chat_id, text);
-  // Скрываем внутренние детали tgRes от клиента; в серверный лог — полностью.
-  if (!tgRes.ok) {
-    console.error("[telegram-bot] telegram send error:", tgRes);
-    return json({ ok: false, error: "telegram_error" }, 502);
+  const to = sessionRcpt(session as Session);
+  if (!to.chatId) return json({ ok: false, error: "guest_not_connected" }, 409);
+
+  const res = await send(to, text);
+  if (!res.ok) {
+    console.error("[bot] endpointSend ошибка отправки:", res.error);
+    return json({ ok: false, error: "channel_error" }, 502);
   }
-  const tgMessageId = tgRes?.result?.message_id ?? null;
   const { error: insErr } = await sb.from("guest_messages").insert({
     user_id: session.user_id,
     session_id: session.id,
     booking_id: session.booking_id,
     direction: "manager",
     body: text,
-    payload: { tg_message_id: tgMessageId, via: "endpoint_send" },
+    payload: { message_id: res.messageId, channel: to.channel, via: "endpoint_send" },
     is_read_by_manager: true,
   });
-  if (insErr) console.error("[telegram-bot] endpointSend insert:", insErr.message);
+  if (insErr) console.error("[bot] endpointSend insert:", insErr.message);
   await sb.from("guest_sessions").update({ last_message_at: new Date().toISOString() }).eq("id", session.id);
-  return json({ ok: true, tg_message_id: tgMessageId });
+  return json({ ok: true, message_id: res.messageId, channel: to.channel, tg_message_id: res.messageId });
 }
 
 async function endpointTest(req: Request): Promise<Response> {
   const userId = await getUserIdFromJwt(req);
   if (!userId) return json({ ok: false, error: "unauthorized" }, 401);
   const settings = await loadManagerSettings(userId);
-  if (!settings?.manager_tg_chat_id) return json({ ok: false, error: "manager_chat_id_not_set" }, 400);
-  const text = "✅ <b>Это тестовое сообщение от Green Yard.</b>\n\nЕсли вы видите его — уведомления настроены корректно и бот будет писать сюда о действиях гостей.";
-  const r = await tgSendMessage(settings.manager_tg_chat_id, text);
-  // Детали upstream-ответа Telegram — в серверный лог, клиенту генерик.
+  const to = managerRcpt(settings);
+  if (!to) return json({ ok: false, error: "manager_chat_id_not_set" }, 400);
+  const text = `✅ <b>Это тестовое сообщение от Green Yard.</b>\n\nКанал: <b>${CHANNEL_TITLE[to.channel]}</b>.\nЕсли вы видите его — уведомления настроены корректно и бот будет писать сюда о действиях гостей.`;
+  const r = await send(to, text);
   if (!r.ok) {
-    console.error("[telegram-bot] endpointTest telegram error:", r);
-    return json({ ok: false, error: "telegram_error" }, 502);
+    console.error("[bot] endpointTest ошибка отправки:", r.error);
+    return json({ ok: false, error: "channel_error", channel: to.channel }, 502);
   }
-  return json({ ok: true });
+  return json({ ok: true, channel: to.channel });
 }
 
-// Отправка сообщения от менеджера горничной
+/** Сообщение от менеджера горничной. */
 async function endpointSendMaid(req: Request): Promise<Response> {
   const userId = await getUserIdFromJwt(req);
   if (!userId) return json({ ok: false, error: "unauthorized" }, 401);
@@ -1175,33 +1277,90 @@ async function endpointSendMaid(req: Request): Promise<Response> {
   const sb = svc();
   const { data: maid, error } = await sb
     .from("maids")
-    .select("id, user_id, tg_chat_id, name")
+    .select("id, user_id, tg_chat_id, channel, channel_chat_id, name")
     .eq("id", maidId)
     .maybeSingle();
   if (error || !maid) return json({ ok: false, error: "maid_not_found" }, 404);
   if (maid.user_id !== userId) return json({ ok: false, error: "forbidden" }, 403);
-  if (!maid.tg_chat_id) return json({ ok: false, error: "maid_not_connected" }, 409);
-  const tgRes = await tgSendMessage(maid.tg_chat_id, text);
-  // Скрываем внутренние детали tgRes от клиента; в серверный лог — полностью.
-  if (!tgRes.ok) {
-    console.error("[telegram-bot] telegram send error:", tgRes);
-    return json({ ok: false, error: "telegram_error" }, 502);
+  const to = maidRcpt(maid);
+  if (!to) return json({ ok: false, error: "maid_not_connected" }, 409);
+
+  const res = await send(to, text);
+  if (!res.ok) {
+    console.error("[bot] endpointSendMaid ошибка отправки:", res.error);
+    return json({ ok: false, error: "channel_error" }, 502);
   }
-  const tgMessageId = tgRes?.result?.message_id ?? null;
   await sb.from("maid_messages").insert({
     user_id: maid.user_id,
     maid_id: maid.id,
-    tg_chat_id: maid.tg_chat_id,
-    tg_message_id: tgMessageId,
+    tg_chat_id: to.channel === "telegram" ? Number(to.chatId) : null,
+    tg_message_id: to.channel === "telegram" && res.messageId ? Number(res.messageId) : null,
+    channel: to.channel,
+    channel_chat_id: to.chatId,
     direction: "outbound",
     sender: "manager",
     text,
   });
-  return json({ ok: true, tg_message_id: tgMessageId });
+  return json({ ok: true, message_id: res.messageId, channel: to.channel, tg_message_id: res.messageId });
 }
 
-// Cron endpoint: шлёт утренние напоминания горничным на день уборки
-// Защита: заголовок x-cron-secret
+/**
+ * Ссылка-приглашение для горничной в выбранном канале.
+ * Тело: { maid_id, channel }.
+ */
+async function endpointMaidInvite(req: Request): Promise<Response> {
+  const userId = await getUserIdFromJwt(req);
+  if (!userId) return json({ ok: false, error: "unauthorized" }, 401);
+  let body: any = null;
+  try { body = await req.json(); }
+  catch { return json({ ok: false, error: "bad_json" }, 400); }
+  const maidId = body?.maid_id;
+  const channel = isChannel(body?.channel) ? body.channel : "telegram";
+  if (!maidId) return json({ ok: false, error: "maid_id_required" }, 400);
+
+  const sb = svc();
+  const { data: maid } = await sb.from("maids").select("id, user_id, invite_token").eq("id", maidId).maybeSingle();
+  if (!maid) return json({ ok: false, error: "maid_not_found" }, 404);
+  if (maid.user_id !== userId) return json({ ok: false, error: "forbidden" }, 403);
+
+  // Токен одноразовый: если его уже погасили при подключении — выпускаем новый.
+  let token: string = maid.invite_token ?? "";
+  if (!token) {
+    token = crypto.randomUUID().replace(/-/g, "").slice(0, 24);
+    await sb.from("maids").update({ invite_token: token, updated_at: new Date().toISOString() }).eq("id", maid.id);
+  }
+
+  const link = inviteLink(channel, `maid_${token}`);
+  if (!link) return json({ ok: false, error: "channel_not_configured", channel }, 409);
+  return json({ ok: true, channel, link });
+}
+
+/**
+ * Ссылка-приглашение для гостя в выбранном канале.
+ * Тело: { session_id, channel }.
+ */
+async function endpointGuestInvite(req: Request): Promise<Response> {
+  const userId = await getUserIdFromJwt(req);
+  if (!userId) return json({ ok: false, error: "unauthorized" }, 401);
+  let body: any = null;
+  try { body = await req.json(); }
+  catch { return json({ ok: false, error: "bad_json" }, 400); }
+  const sessionId = body?.session_id;
+  const channel = isChannel(body?.channel) ? body.channel : "telegram";
+  if (!sessionId) return json({ ok: false, error: "session_id_required" }, 400);
+
+  const sb = svc();
+  const { data: session } = await sb.from("guest_sessions").select("id, user_id, secure_id").eq("id", sessionId).maybeSingle();
+  if (!session) return json({ ok: false, error: "session_not_found" }, 404);
+  if (session.user_id !== userId) return json({ ok: false, error: "forbidden" }, 403);
+  if (!session.secure_id) return json({ ok: false, error: "no_secure_id" }, 409);
+
+  const link = inviteLink(channel, session.secure_id);
+  if (!link) return json({ ok: false, error: "channel_not_configured", channel }, 409);
+  return json({ ok: true, channel, link });
+}
+
+/** Утренние напоминания горничным в день уборки. Защита: заголовок x-cron-secret. */
 async function endpointCleaningReminders(req: Request): Promise<Response> {
   const got = req.headers.get("x-cron-secret") || "";
   const sb = svc();
@@ -1211,7 +1370,6 @@ async function endpointCleaningReminders(req: Request): Promise<Response> {
 
   const today = new Date().toISOString().slice(0, 10);
 
-  // Все принятые уборки на сегодня, которым ещё не слали reminder
   const { data: cleanings } = await sb
     .from("cleanings")
     .select("id, user_id, maid_id, apartment_title, scheduled_date, scheduled_time, status, reminded_at")
@@ -1222,11 +1380,12 @@ async function endpointCleaningReminders(req: Request): Promise<Response> {
   let sent = 0;
   for (const c of cleanings || []) {
     if (!c.maid_id) continue;
-    const { data: maid } = await sb.from("maids").select("tg_chat_id, name").eq("id", c.maid_id).maybeSingle();
-    if (!maid?.tg_chat_id) continue;
+    const { data: maid } = await sb.from("maids").select("channel, channel_chat_id, tg_chat_id, name").eq("id", c.maid_id).maybeSingle();
+    const to = maid ? maidRcpt(maid) : null;
+    if (!to) continue;
     const text = `⏰ Напоминание: сегодня уборка.\nАдрес: ${htmlEscape(c.apartment_title || "")}`;
-    const r = await tgSendMessage(maid.tg_chat_id, text);
-    if (r?.ok) {
+    const r = await send(to, text);
+    if (r.ok) {
       await sb.from("cleanings").update({ reminded_at: new Date().toISOString() }).eq("id", c.id);
       sent++;
     }
@@ -1235,23 +1394,49 @@ async function endpointCleaningReminders(req: Request): Promise<Response> {
   return json({ ok: true, sent, total: (cleanings || []).length });
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// МАРШРУТИЗАЦИЯ
+// ═══════════════════════════════════════════════════════════════════
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
   const url = new URL(req.url);
   const path = url.pathname.replace(/^\/telegram-bot/, "") || "/";
   try {
-    if (req.method === "POST" && (path === "/" || path === ""))    return await endpointWebhook(req);
+    // Вебхуки мессенджеров
+    if (req.method === "POST" && (path === "/" || path === ""))    return await endpointTelegramWebhook(req);
+    if (req.method === "POST" && path === "/max")                  return await endpointMaxWebhook(req, url);
+    if (req.method === "GET"  && path === "/whatsapp")             return endpointWhatsappVerify(url);
+    if (req.method === "POST" && path === "/whatsapp")             return await endpointWhatsappWebhook(req);
+
+    // Эндпоинты приложения
     if (req.method === "POST" && path === "/send")                 return await endpointSend(req);
     if (req.method === "POST" && path === "/send_maid")            return await endpointSendMaid(req);
     if (req.method === "POST" && path === "/test")                 return await endpointTest(req);
+    if (req.method === "POST" && path === "/maid_invite")          return await endpointMaidInvite(req);
+    if (req.method === "POST" && path === "/guest_invite")         return await endpointGuestInvite(req);
+    if (req.method === "GET"  && path === "/channels")             return await endpointChannels(req);
     if (req.method === "POST" && path === "/cleaning_reminders")   return await endpointCleaningReminders(req);
-    if (req.method === "GET"  && (path === "/" || path === ""))    return json({ ok: true, service: "telegram-bot", endpoints: ["POST /", "POST /send", "POST /send_maid", "POST /test", "POST /cleaning_reminders"] });
+
+    if (req.method === "GET" && (path === "/" || path === "")) {
+      return json({
+        ok: true,
+        service: "green-yard-bot",
+        version: 13,
+        enabled_channels: enabledChannels(),
+        endpoints: [
+          "POST /", "POST /max", "GET|POST /whatsapp",
+          "POST /send", "POST /send_maid", "POST /test",
+          "POST /maid_invite", "POST /guest_invite",
+          "GET /channels", "POST /cleaning_reminders",
+        ],
+      });
+    }
     return json({ ok: false, error: "not_found", path }, 404);
   } catch (e) {
-    // Полные детали (вкл. stack) логируем только в серверный console;
-    // клиенту — генеричное сообщение без внутренней детализации
-    // (CodeQL js/stack-trace-exposure).
-    console.error("[telegram-bot] router error:", e);
+    // Полные детали (включая stack) — только в серверный лог;
+    // клиенту отдаём общее сообщение (CodeQL js/stack-trace-exposure).
+    console.error("[bot] router error:", e);
     return json({ ok: false, error: "Internal server error" }, 500);
   }
 });

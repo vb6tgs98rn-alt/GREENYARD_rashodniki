@@ -223,6 +223,11 @@ export async function ensureSessionForBooking(booking) {
     link_sent_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
+  // Канал по умолчанию из настроек; при первом входе гостя бот уточнит его сам.
+  try {
+    const ms = await fetchManagerSettings();
+    if (ms?.guest_default_channel) row.channel = ms.guest_default_channel;
+  } catch { /* некритично — останется Telegram */ }
   const { data, error } = await supabase
     .from('guest_sessions')
     .upsert(row, { onConflict: 'user_id,booking_id' })
@@ -404,6 +409,69 @@ export function renderInviteText(template, vars) {
 function buildGuestLink(secureId, botUsername) {
   const name = botUsername || TELEGRAM_BOT_USERNAME_DEFAULT;
   return `https://t.me/${name}?start=${encodeURIComponent(secureId)}`;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 5а) Мессенджеры: Telegram, MAX, WhatsApp
+// ──────────────────────────────────────────────────────────────────
+
+export const CHANNEL_TITLE = {
+  telegram: 'Telegram',
+  max: 'MAX',
+  whatsapp: 'WhatsApp',
+};
+
+let _channelsCache = null;
+
+/** Заголовки с JWT текущего пользователя для вызовов серверной функции. */
+export async function botAuthHeaders() {
+  const supabase = getSupabaseClient();
+  if (!supabase) throw new Error('Supabase не подключён');
+  await waitForAuthReady();
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  if (!token) throw new Error('Войдите в аккаунт');
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+}
+
+/** Мессенджеры, реально настроенные на сервере (есть токены). */
+export async function fetchChannels() {
+  if (_channelsCache) return _channelsCache;
+  try {
+    const r = await fetch(`${BOT_FUNCTION_URL}/channels`, { headers: await botAuthHeaders() });
+    const j = await r.json().catch(() => ({}));
+    _channelsCache = j?.ok && Array.isArray(j.channels) && j.channels.length
+      ? j.channels
+      : [{ id: 'telegram', title: 'Telegram' }];
+  } catch (e) {
+    console.warn('[bot] fetchChannels:', e?.message || e);
+    _channelsCache = [{ id: 'telegram', title: 'Telegram' }];
+  }
+  return _channelsCache;
+}
+
+/** Ссылка-приглашение гостю в выбранном мессенджере. */
+export async function fetchGuestInvite(sessionId, channel) {
+  const r = await fetch(`${BOT_FUNCTION_URL}/guest_invite`, {
+    method: 'POST',
+    headers: await botAuthHeaders(),
+    body: JSON.stringify({ session_id: sessionId, channel }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!j?.ok) throw new Error(j?.error || 'invite_failed');
+  return j.link;
+}
+
+/** Заполнить <select> списком мессенджеров. */
+export async function fillChannelOptions(selectEl, selectedId) {
+  if (!selectEl) return;
+  const list = await fetchChannels();
+  const cur = selectedId || 'telegram';
+  const rows = [...list];
+  if (!rows.some(c => c.id === cur)) rows.push({ id: cur, title: CHANNEL_TITLE[cur] || cur });
+  selectEl.innerHTML = rows
+    .map(c => `<option value="${c.id}"${c.id === cur ? ' selected' : ''}>${c.title || CHANNEL_TITLE[c.id] || c.id}</option>`)
+    .join('');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1138,10 +1206,45 @@ function ensureChatsModal() {
 // 9) Раздел «Настройки уведомлений»
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Показываем только то поле, которое нужно выбранному мессенджеру:
+ * для Telegram — числовой chat_id, для MAX — id чата, для WhatsApp — номер телефона.
+ */
+function syncManagerChannelFields(channel) {
+  const tgWrap = document.getElementById('ns_chat_id')?.closest('label');
+  const wrap = document.getElementById('ns_manager_chat_wrap');
+  const label = document.getElementById('ns_manager_chat_label');
+  const input = document.getElementById('ns_manager_chat');
+  const isTg = channel === 'telegram';
+  if (tgWrap) tgWrap.hidden = !isTg;
+  if (wrap) wrap.hidden = isTg;
+  if (!isTg && label && input) {
+    if (channel === 'whatsapp') {
+      label.textContent = 'Ваш номер WhatsApp в международном формате';
+      input.placeholder = '79001234567';
+    } else {
+      label.textContent = 'Ваш chat_id в MAX (напишите боту — он подскажет)';
+      input.placeholder = '1234567890';
+    }
+  }
+}
+
 export async function openNotifySettingsModal() {
   ensureNotifySettingsModal();
   openModal('notifySettingsModal');
   const s = await fetchManagerSettings() || {};
+  const mgrChannel = s.manager_channel || 'telegram';
+  await fillChannelOptions(document.getElementById('ns_manager_channel'), mgrChannel);
+  await fillChannelOptions(document.getElementById('ns_guest_channel'), s.guest_default_channel || 'telegram');
+  setFieldVal('ns_manager_chat', s.manager_channel_chat_id ?? '');
+  syncManagerChannelFields(mgrChannel);
+  const chList = await fetchChannels();
+  const hint = document.getElementById('ns_channels_hint');
+  if (hint) {
+    hint.textContent = chList.length > 1
+      ? `Настроены: ${chList.map(c => c.title).join(', ')}.`
+      : 'Пока работает только Telegram. Остальные мессенджеры включатся, когда на сервер добавят их токены.';
+  }
   setFieldVal('ns_chat_id', s.manager_tg_chat_id ?? '');
   setFieldVal('ns_channel_url', s.guest_channel_url ?? 'https://t.me/Green_yard_apart');
   setFieldVal('ns_template', s.guest_invite_template || DEFAULT_INVITE_TEMPLATE);
@@ -1165,8 +1268,14 @@ function ensureNotifySettingsModal() {
         </div>
 
         <h3 class="instr-h">📣 Уведомления менеджеру</h3>
+        <label><span class="small">Мессенджер для уведомлений</span>
+          <select id="ns_manager_channel"><option value="telegram">Telegram</option></select>
+        </label>
         <label><span class="small">Ваш Telegram chat_id (получите у @userinfobot)</span>
           <input id="ns_chat_id" type="text" inputmode="numeric" placeholder="561644215" />
+        </label>
+        <label id="ns_manager_chat_wrap" hidden><span class="small" id="ns_manager_chat_label">Ваш идентификатор в мессенджере</span>
+          <input id="ns_manager_chat" type="text" placeholder="" />
         </label>
         <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin:.5rem 0;">
           <button class="btn btn-secondary" id="ns_test_btn" type="button">Отправить тестовое сообщение</button>
@@ -1175,6 +1284,12 @@ function ensureNotifySettingsModal() {
         <label class="check"><input type="checkbox" id="ns_notify_checkin" /> Гость нажал «Я приехал»</label>
         <label class="check"><input type="checkbox" id="ns_notify_checkout" /> Гость нажал «Я уезжаю»</label>
         <label class="check"><input type="checkbox" id="ns_notify_complaint" /> Жалоба от гостя</label>
+
+        <h3 class="instr-h">💬 Мессенджер для гостей</h3>
+        <label><span class="small">В каком мессенджере приглашать гостей по умолчанию</span>
+          <select id="ns_guest_channel"><option value="telegram">Telegram</option></select>
+        </label>
+        <p class="small" id="ns_channels_hint" style="opacity:.7;margin:.25rem 0 .5rem;"></p>
 
         <h3 class="instr-h">📢 Канал для гостей</h3>
         <label><span class="small">Ссылка на Telegram-канал</span>
@@ -1205,8 +1320,19 @@ async function buildInviteText(booking, state) {
   const session = await ensureSessionForBooking(booking);
   const settings = await fetchManagerSettings() || {};
   const tpl = settings.guest_invite_template || DEFAULT_INVITE_TEMPLATE;
-  const botUsername = window.__GUEST_BOT_USERNAME__ || TELEGRAM_BOT_USERNAME_DEFAULT;
-  const link = buildGuestLink(session.secure_id, botUsername);
+  const channel = settings.guest_default_channel || 'telegram';
+
+  // Ссылку строит сервер — только он знает имя бота MAX и номер WhatsApp.
+  let link;
+  try {
+    link = await fetchGuestInvite(session.id, channel);
+  } catch (e) {
+    if (channel !== 'telegram') throw new Error(
+      `Не удалось собрать ссылку для ${CHANNEL_TITLE[channel] || channel}: ${e?.message || e}`);
+    // Запасной вариант для Telegram — собираем локально.
+    const botUsername = window.__GUEST_BOT_USERNAME__ || TELEGRAM_BOT_USERNAME_DEFAULT;
+    link = buildGuestLink(session.secure_id, botUsername);
+  }
 
   const apts = state?.apartments || [];
   const apt = apts.find(a => String(a.externalIds?.realtyCalendarUnitId || '') === String(booking.realty_id || ''));
@@ -1617,13 +1743,24 @@ export function bindGuestBotEvents(state) {
     document.getElementById('drawerBackdrop')?.classList.remove('open');
     await openNotifySettingsModal();
   });
+  // Смена мессенджера менеджера — показываем подходящее поле для адресата.
+  document.body.addEventListener('change', (e) => {
+    if (e.target?.id === 'ns_manager_channel') syncManagerChannelFields(e.target.value);
+  });
+
   document.body.addEventListener('click', async (e) => {
     if (e.target.closest('#closeNotifyModal')) { closeModal('notifySettingsModal'); return; }
     if (e.target.closest('#nsSaveBtn')) {
       try {
         const chatId = document.getElementById('ns_chat_id').value.trim();
+        const mgrChannel = document.getElementById('ns_manager_channel')?.value || 'telegram';
+        const mgrChat = document.getElementById('ns_manager_chat')?.value.trim() || '';
         const patch = {
           manager_tg_chat_id: chatId ? Number(chatId) : null,
+          manager_channel: mgrChannel,
+          // Для Telegram единый источник — поле chat_id выше, чтобы не держать два разных значения.
+          manager_channel_chat_id: mgrChannel === 'telegram' ? (chatId || null) : (mgrChat || null),
+          guest_default_channel: document.getElementById('ns_guest_channel')?.value || 'telegram',
           guest_channel_url:  document.getElementById('ns_channel_url').value.trim() || null,
           guest_invite_template: document.getElementById('ns_template').value || null,
           notify_on_inbound:   document.getElementById('ns_notify_inbound').checked,
@@ -1642,12 +1779,24 @@ export function bindGuestBotEvents(state) {
     }
     if (e.target.closest('#ns_test_btn')) {
       try {
-        // сначала сохраним chat_id, чтобы Edge Function знал куда писать
+        // Сначала сохраняем куда писать, иначе сервер не знает адресата.
+        const mgrChannel = document.getElementById('ns_manager_channel')?.value || 'telegram';
         const chatId = document.getElementById('ns_chat_id').value.trim();
-        if (!chatId) { alert('Сначала укажите ваш Telegram chat_id'); return; }
-        await saveManagerSettings({ manager_tg_chat_id: Number(chatId) });
+        const mgrChat = document.getElementById('ns_manager_chat')?.value.trim() || '';
+        const value = mgrChannel === 'telegram' ? chatId : mgrChat;
+        if (!value) {
+          alert(mgrChannel === 'telegram'
+            ? 'Сначала укажите ваш Telegram chat_id'
+            : `Сначала укажите ваш идентификатор в ${CHANNEL_TITLE[mgrChannel] || mgrChannel}`);
+          return;
+        }
+        await saveManagerSettings({
+          manager_channel: mgrChannel,
+          manager_channel_chat_id: value,
+          ...(mgrChannel === 'telegram' ? { manager_tg_chat_id: Number(chatId) } : {}),
+        });
         await sendTestNotificationToManager();
-        alert('Тестовое сообщение отправлено! Проверьте Telegram.');
+        alert(`Тестовое сообщение отправлено. Проверьте ${CHANNEL_TITLE[mgrChannel] || mgrChannel}.`);
       } catch (err) {
         alert('Не удалось: ' + (err?.message || err));
       }

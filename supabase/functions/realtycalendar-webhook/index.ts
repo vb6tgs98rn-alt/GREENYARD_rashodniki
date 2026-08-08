@@ -19,10 +19,17 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.2";
+import {
+  type Btn,
+  type ChannelId,
+  htmlEscape,
+  isChannel,
+  type Recipient,
+  sendMessage,
+} from "../_shared/channels.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") || "";
 
 const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
@@ -41,32 +48,28 @@ function ok(body: any = { ok: true }, status = 200) {
   });
 }
 
-// ─── Telegram helpers ────────────────────────────────────────────────────────
+// ─── Отправка сообщений (Telegram / MAX / WhatsApp) ──────────────────────────
 
-function htmlEscape(s: string): string {
-  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** Получатель-горничная: новый канал, с фолбэком на старое поле Telegram. */
+function maidRcpt(m: any): Recipient | null {
+  const channel = (isChannel(m?.channel) ? m.channel : "telegram") as ChannelId;
+  const chatId = m?.channel_chat_id
+    ?? (channel === "telegram" && m?.tg_chat_id != null ? String(m.tg_chat_id) : null);
+  return chatId ? { channel, chatId } : null;
 }
 
-async function tgSend(chatId: number | string, text: string, extra: any = {}) {
-  if (!BOT_TOKEN) return null;
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-        ...extra,
-      }),
-    });
-    const j = await res.json();
-    return j;
-  } catch (e) {
-    console.error("[rc-webhook] tgSend failed", e);
-    return null;
-  }
+/** Получатель-менеджер: новый канал, с фолбэком на старое поле Telegram. */
+function managerRcpt(s: any): Recipient | null {
+  const channel = (isChannel(s?.manager_channel) ? s.manager_channel : "telegram") as ChannelId;
+  const chatId = s?.manager_channel_chat_id
+    ?? (channel === "telegram" && s?.manager_tg_chat_id != null ? String(s.manager_tg_chat_id) : null);
+  return chatId ? { channel, chatId } : null;
+}
+
+/** Короткий псевдоним отправки. */
+async function send(to: Recipient | null, html: string, buttons?: Btn[][]) {
+  if (!to) return null;
+  return await sendMessage(to, html, { buttons });
 }
 
 // Формат даты дд.ММ.гггг
@@ -97,12 +100,12 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
   // Настройки менеджера
   const { data: ms } = await admin
     .from("manager_settings")
-    .select("cleaning_default_time, manager_tg_chat_id")
+    .select("cleaning_default_time, manager_tg_chat_id, manager_channel, manager_channel_chat_id")
     .eq("user_id", userId)
     .maybeSingle();
 
   const cleaningTime = (ms?.cleaning_default_time as string | undefined) || "12:00:00";
-  const managerChat = ms?.manager_tg_chat_id;
+  const managerTo = managerRcpt(ms);
 
   if (existing) {
     // Обновляем дату, если сдвинулась (например перенос выселения)
@@ -118,20 +121,16 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
       // Уведомляем горничную (если назначена) и менеджера
       if (existing.maid_id) {
         const { data: maid } = await admin
-          .from("maids").select("tg_chat_id, name").eq("id", existing.maid_id).maybeSingle();
-        if (maid?.tg_chat_id) {
-          await tgSend(
-            maid.tg_chat_id,
-            `⚠️ <b>Дата уборки изменилась</b>\n📍 ${htmlEscape(booking.apartment_title || "")}\n📅 Новая дата: ${fmtDate(booking.end_date)}, ${(cleaningTime as string).slice(0,5)}`
-          );
-        }
-      }
-      if (managerChat) {
-        await tgSend(
-          managerChat,
-          `📅 Дата уборки по брони <code>${bookingIdStr}</code> перенесена на ${fmtDate(booking.end_date)} (${htmlEscape(booking.apartment_title || "")}).`
+          .from("maids").select("tg_chat_id, channel, channel_chat_id, name").eq("id", existing.maid_id).maybeSingle();
+        await send(
+          maidRcpt(maid),
+          `⚠️ <b>Дата уборки изменилась</b>\n📍 ${htmlEscape(booking.apartment_title || "")}\n📅 Новая дата: ${fmtDate(booking.end_date)}, ${(cleaningTime as string).slice(0,5)}`
         );
       }
+      await send(
+        managerTo,
+        `📅 Дата уборки по брони <code>${bookingIdStr}</code> перенесена на ${fmtDate(booking.end_date)} (${htmlEscape(booking.apartment_title || "")}).`
+      );
     }
     return;
   }
@@ -169,43 +168,41 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
 
   if (maidIds.length === 0) {
     // Нет закреплённой горничной — уведомляем менеджера
-    if (managerChat) {
-      await tgSend(
-        managerChat,
-        `⚠️ Новая бронь <code>${bookingIdStr}</code> — <b>${htmlEscape(booking.apartment_title || "")}</b>, выселение ${fmtDate(booking.end_date)}.\nЗа этой квартирой не закреплена ни одна горничная. Назначьте вручную в приложении.`
-      );
-    }
+    await send(
+      managerTo,
+      `⚠️ Новая бронь <code>${bookingIdStr}</code> — <b>${htmlEscape(booking.apartment_title || "")}</b>, выселение ${fmtDate(booking.end_date)}.\nЗа этой квартирой не закреплена ни одна горничная. Назначьте вручную в приложении.`
+    );
     return;
   }
 
-  // Достаём tg_chat_id и имена
+  // Достаём контакты и имена
   const { data: maids } = await admin
     .from("maids")
-    .select("id, name, tg_chat_id")
+    .select("id, name, tg_chat_id, channel, channel_chat_id")
     .in("id", maidIds)
     .eq("active", true);
 
   const offered: string[] = [];
   for (const m of maids || []) {
-    if (!m.tg_chat_id) continue;
-    const kb = {
-      inline_keyboard: [
-        [
-          { text: "✅ Принять", callback_data: `maid_accept:${cleaningId}` },
-          { text: "❌ Отказаться", callback_data: `maid_decline:${cleaningId}` },
-        ],
-      ],
-    };
+    const to = maidRcpt(m);
+    if (!to) continue;
+    const kb: Btn[][] = [[
+      { text: "✅ Принять", data: `maid_accept:${cleaningId}` },
+      { text: "❌ Отказаться", data: `maid_decline:${cleaningId}` },
+    ]];
     const text = `Следующая уборка <b>${fmtDate(booking.end_date)}</b>\nАдрес: ${htmlEscape(booking.apartment_title || "?")}`;
-    const r = await tgSend(m.tg_chat_id, text, { reply_markup: kb });
-    if (r?.ok && r.result?.message_id) {
+    const r = await send(to, text, kb);
+    if (r?.ok) {
       offered.push(m.id);
-      // Если только одна горничная — сохраняем message_id для последующего edit
+      // Если только одна горничная — сохраняем id сообщения для последующего редактирования
       if ((maids?.length || 0) === 1) {
-        await admin
-          .from("cleanings")
-          .update({ tg_message_id: r.result.message_id, maid_id: m.id })
-          .eq("id", cleaningId);
+        const patch: Record<string, unknown> = {
+          maid_id: m.id,
+          channel: to.channel,
+          channel_message_id: r.messageId != null ? String(r.messageId) : null,
+        };
+        if (to.channel === "telegram" && r.messageId != null) patch.tg_message_id = Number(r.messageId);
+        await admin.from("cleanings").update(patch).eq("id", cleaningId);
       }
     }
   }
@@ -218,10 +215,10 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
   }
 
   // Уведомление менеджеру
-  if (managerChat) {
+  {
     const maidNames = (maids || []).map(m => m.name).join(", ");
-    await tgSend(
-      managerChat,
+    await send(
+      managerTo,
       `🧹 Уборка по брони <code>${bookingIdStr}</code> — <b>${htmlEscape(booking.apartment_title || "")}</b>, ${fmtDate(booking.end_date)}. Отправлено горничным: ${htmlEscape(maidNames)}.`
     );
   }
@@ -246,24 +243,23 @@ async function cancelCleaning(userId: string, bookingId: number) {
   // Уведомляем горничную
   if (cleaning.maid_id) {
     const { data: maid } = await admin
-      .from("maids").select("tg_chat_id, name").eq("id", cleaning.maid_id).maybeSingle();
-    if (maid?.tg_chat_id) {
-      await tgSend(
-        maid.tg_chat_id,
-        `❌ <b>Уборка отменена</b>\n📍 ${htmlEscape(cleaning.apartment_title || "")}\n📅 ${fmtDate(cleaning.scheduled_date)}\nБронь была отменена гостем/системой.`
-      );
-    }
+      .from("maids").select("tg_chat_id, channel, channel_chat_id, name").eq("id", cleaning.maid_id).maybeSingle();
+    await send(
+      maidRcpt(maid),
+      `❌ <b>Уборка отменена</b>\n📍 ${htmlEscape(cleaning.apartment_title || "")}\n📅 ${fmtDate(cleaning.scheduled_date)}\nБронь была отменена гостем/системой.`
+    );
   }
 
   // Менеджеру
   const { data: ms } = await admin
-    .from("manager_settings").select("manager_tg_chat_id").eq("user_id", userId).maybeSingle();
-  if (ms?.manager_tg_chat_id) {
-    await tgSend(
-      ms.manager_tg_chat_id,
-      `❌ Уборка по брони <code>${bookingIdStr}</code> отменена (${htmlEscape(cleaning.apartment_title || "")}, ${fmtDate(cleaning.scheduled_date)}).`
-    );
-  }
+    .from("manager_settings")
+    .select("manager_tg_chat_id, manager_channel, manager_channel_chat_id")
+    .eq("user_id", userId)
+    .maybeSingle();
+  await send(
+    managerRcpt(ms),
+    `❌ Уборка по брони <code>${bookingIdStr}</code> отменена (${htmlEscape(cleaning.apartment_title || "")}, ${fmtDate(cleaning.scheduled_date)}).`
+  );
 }
 
 // ---------------------------------------------------------------------------
