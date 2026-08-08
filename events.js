@@ -1,3 +1,12 @@
+/*!
+ * Green Yard / Расходники — проприетарное ПО.
+ * Copyright (c) 2026 Гусейнов Давид. Все права защищены.
+ *
+ * Копирование, распространение, переработка и обратная разработка
+ * (reverse engineering) запрещены без письменного разрешения правообладателя.
+ * Условия: см. файл LICENSE. Нарушение влечёт ответственность по ст. 1252,
+ * 1301 ГК РФ.
+ */
 import dom, { byId } from './dom.js';
 import { fetchRealtyCalendarBookings, fetchRealtyCalendarLog, fetchRealtyCalendarIntegration, saveRealtyCalendarIntegration, disconnectRealtyCalendar, buildFinanceWebhookExample, getWebhookUrl } from './api.js';
 import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport } from './finance.js';

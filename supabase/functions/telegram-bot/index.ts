@@ -1,3 +1,12 @@
+/*!
+ * Green Yard / Расходники — проприетарное ПО.
+ * Copyright (c) 2026 Гусейнов Давид. Все права защищены.
+ *
+ * Копирование, распространение, переработка и обратная разработка
+ * (reverse engineering) запрещены без письменного разрешения правообладателя.
+ * Условия: см. файл LICENSE. Нарушение влечёт ответственность по ст. 1252,
+ * 1301 ГК РФ.
+ */
 // Edge Function: telegram-bot (v12 — chats realtime, per-session AI toggle)
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";

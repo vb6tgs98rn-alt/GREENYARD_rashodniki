@@ -1,5 +1,14 @@
+/*!
+ * Green Yard / Расходники — проприетарное ПО.
+ * Copyright (c) 2026 Гусейнов Давид. Все права защищены.
+ *
+ * Копирование, распространение, переработка и обратная разработка
+ * (reverse engineering) запрещены без письменного разрешения правообладателя.
+ * Условия: см. файл LICENSE. Нарушение влечёт ответственность по ст. 1252,
+ * 1301 ГК РФ.
+ */
 import dom, { byId } from './dom.js';
-import { getFinanceSummary, monthKey, STATUS_LABELS, computeUnitEcoReport, advanceUnitEcoReportIfNeeded, REPORT_CADENCE_LABELS } from './finance.js';
+import { getFinanceSummary, monthKey, STATUS_LABELS, fetchUnitEcoReports, advanceUnitEcoReportIfNeeded, REPORT_CADENCE_LABELS } from './finance.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, statusBy } from './state.js';
 
 export function setStatus(text = 'Готово') { if (dom.saveStatus) dom.saveStatus.textContent = text; }
@@ -301,7 +310,8 @@ function renderFinance(state) {
   renderRcIntegration(state);
 
   // Юнит экономика (отдельная таблица внутри финансовой модалки)
-  renderUnitEconomics(state);
+  // Асинхронно: расчёт идёт на сервере, блок дорисуется сам.
+  void renderUnitEconomics(state);
 
   // Селекты квартир в модалках
   [dom.financeEntryApartment, dom.recurringApartment].forEach((el) => {
@@ -348,7 +358,11 @@ function renderUnitEntries(entries) {
   </tr></thead><tbody>${rows}</tbody></table>${entries.length > 200 ? '<div class="small muted" style="margin-top:.4rem;">Показаны первые 200 записей.</div>' : ''}</div>`;
 }
 
-function renderUnitEconomics(state) {
+// Счётчик запросов: рендер может быть вызван несколько раз подряд, и ответ
+// от старого запроса не должен затирать более свежий результат.
+let _unitEcoSeq = 0;
+
+async function renderUnitEconomics(state) {
   if (!dom.financeTabUnit) return;
   const filter = state.ui?.finance || {};
   const apts = state.apartments || [];
@@ -397,9 +411,48 @@ function renderUnitEconomics(state) {
   if (dom.unitActiveTitle) dom.unitActiveTitle.textContent = `Отчётный период · ${cadenceLabel}`;
   if (dom.unitActiveDates) dom.unitActiveDates.textContent = `${active.startDate} — ${active.endDate}`;
 
-  // 5) Фильтры: справочники категорий/источников за период
+  // 5) Один запрос на сервер: справочный срез, отчёт с фильтрами и вся история.
   const unitFilters = filter.unitFilters || { type: 'all', category: 'all', source: 'all', status: 'active' };
-  const allInPeriod = computeUnitEcoReport(aptId, { startDate: active.startDate, endDate: active.endDate }, { type: 'all', category: 'all', source: 'all', status: 'all' });
+  const history = apt?.unitEcoReports?.history || [];
+  const seq = ++_unitEcoSeq;
+
+  const periods = [
+    { key: 'all', startDate: active.startDate, endDate: active.endDate,
+      filters: { type: 'all', category: 'all', source: 'all', status: 'all' }, includeEntries: true },
+    { key: 'filtered', startDate: active.startDate, endDate: active.endDate,
+      filters: unitFilters, includeEntries: true },
+    ...history.map((h) => ({
+      key: `h:${h.id}`, startDate: h.startDate, endDate: h.endDate,
+      filters: { type: 'all', category: 'all', source: 'all', status: 'active' }, includeEntries: false,
+    })),
+  ];
+
+  let reports;
+  try {
+    reports = await fetchUnitEcoReports(aptId, periods);
+  } catch (err) {
+    console.warn('[unit-eco] расчёт недоступен:', err?.message || err);
+    if (seq !== _unitEcoSeq) return; // пришёл более свежий рендер
+    const msg = `<div class="empty" style="color:var(--color-error);">Не удалось получить расчёт: ${_escUnit(err?.message || 'нет связи с сервером')}</div>`;
+    if (dom.unitEcoSummary) dom.unitEcoSummary.innerHTML = msg;
+    if (dom.unitEcoTableWrap) dom.unitEcoTableWrap.innerHTML = '';
+    if (dom.unitCancelledBlock) dom.unitCancelledBlock.innerHTML = '';
+    if (dom.unitHistoryList) dom.unitHistoryList.innerHTML = '';
+    return;
+  }
+  if (seq !== _unitEcoSeq) return; // ответ устарел — рисует более свежий вызов
+
+  const allInPeriod = reports['all'];
+  const report = reports['filtered'];
+  if (!allInPeriod || !report) {
+    if (dom.unitEcoSummary) dom.unitEcoSummary.innerHTML = '<div class="empty">Нет данных за период.</div>';
+    if (dom.unitEcoTableWrap) dom.unitEcoTableWrap.innerHTML = '';
+    if (dom.unitCancelledBlock) dom.unitCancelledBlock.innerHTML = '';
+    if (dom.unitHistoryList) dom.unitHistoryList.innerHTML = '';
+    return;
+  }
+
+  // Справочники категорий/источников строим из полного среза за период.
   const categories = Array.from(new Set(allInPeriod.entries.map(e => e.category).filter(Boolean))).sort();
   const sources = Array.from(new Set(allInPeriod.entries.map(e => e.source).filter(Boolean))).sort();
 
@@ -414,8 +467,7 @@ function renderUnitEconomics(state) {
   if (dom.unitFilterType) dom.unitFilterType.value = unitFilters.type || 'all';
   if (dom.unitFilterStatus) dom.unitFilterStatus.value = unitFilters.status || 'active';
 
-  // 6) Расчёт с применёнными фильтрами
-  const report = computeUnitEcoReport(aptId, { startDate: active.startDate, endDate: active.endDate }, unitFilters);
+  // 6) Показатели за период (посчитаны на сервере)
   const s = report.stat;
   const profitColor = s.profit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
 
@@ -431,14 +483,14 @@ function renderUnitEconomics(state) {
   if (dom.unitCancelledBlock) dom.unitCancelledBlock.innerHTML = renderCancelledBlock(s);
   if (dom.unitEcoTableWrap) dom.unitEcoTableWrap.innerHTML = renderUnitEntries(report.entries);
 
-  // 7) История отчётов
-  const history = apt?.unitEcoReports?.history || [];
+  // 7) История отчётов — берём из того же ответа, без дополнительных запросов.
   if (dom.unitHistoryList) {
     if (!history.length) {
       dom.unitHistoryList.innerHTML = '';
     } else {
       const items = history.map(h => {
-        const hRep = computeUnitEcoReport(aptId, { startDate: h.startDate, endDate: h.endDate }, { type: 'all', category: 'all', source: 'all', status: 'active' });
+        const hRep = reports[`h:${h.id}`];
+        if (!hRep) return '';
         const hs = hRep.stat;
         const hc = hs.profit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
         const hLabel = REPORT_CADENCE_LABELS[h.cadence] || h.cadence;

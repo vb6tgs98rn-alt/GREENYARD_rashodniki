@@ -1,4 +1,15 @@
+/*!
+ * Green Yard / Расходники — проприетарное ПО.
+ * Copyright (c) 2026 Гусейнов Давид. Все права защищены.
+ *
+ * Копирование, распространение, переработка и обратная разработка
+ * (reverse engineering) запрещены без письменного разрешения правообладателя.
+ * Условия: см. файл LICENSE. Нарушение влечёт ответственность по ст. 1252,
+ * 1301 ГК РФ.
+ */
 import { currentApartment, findApartmentById, getDisplayApartmentName, getState, updateState } from './state.js';
+import { getSupabaseClient } from './supabase-client.js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 
 export const FINANCE_TYPES = { income: 'income', expense: 'expense' };
 
@@ -471,193 +482,46 @@ export function deleteUnitEcoHistoryReport(apartmentId, reportId) {
   });
 }
 
-export function computeUnitEcoReport(apartmentId, { startDate, endDate }, filters = {}) {
-  const state = getState();
-  const apt = (state.apartments || []).find((a) => a.id === apartmentId);
-  if (!apt || !startDate || !endDate) return null;
+// ═══════════════════════════════════════════════════════════════════════════
+// Юнит-экономика считается НА СЕРВЕРЕ (edge-функция unit-economics).
+//
+// Формулы (маржа, ROI, ADR, разбор комиссии площадки, категоризация расходов)
+// намеренно вынесены из браузера: раньше их можно было прочитать в DevTools.
+// Здесь остаётся только транспорт — отправить периоды, получить готовые числа.
+// ═══════════════════════════════════════════════════════════════════════════
 
-  const type = filters.type || 'all';
-  const category = filters.category || 'all';
-  const source = filters.source || 'all';
-  const status = filters.status || 'active';
+/**
+ * Запрашивает готовые отчёты по юнит-экономике одним запросом.
+ *
+ * @param {string} apartmentId
+ * @param {Array<{key:string,startDate:string,endDate:string,filters?:object,includeEntries?:boolean}>} periods
+ * @returns {Promise<Record<string, {stat:object,entries:Array,period:object,apartment:object}|null>>}
+ * @throws {Error} при сетевой ошибке или отказе сервера — вызывающий код показывает сообщение.
+ */
+export async function fetchUnitEcoReports(apartmentId, periods) {
+  if (!apartmentId || !Array.isArray(periods) || !periods.length) return {};
+  const supabase = getSupabaseClient();
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  if (!token) throw new Error('Нет активной сессии');
 
-  const ruleKindById = new Map();
-  (state.finance.recurringRules || []).forEach((r) => ruleKindById.set(r.id, r.kind || 'other'));
-
-  const stat = {
-    grossIncome: 0, platformTax: 0, netIncome: 0,
-    expense: 0, cleaning: 0, rent: 0, internet: 0, utilities: 0, subscription: 0, otherExpense: 0,
-    bookings: 0, nights: 0,
-    cancelledBookings: 0, cancelledAmount: 0,
-    plannedExpense: 0, confirmedExpense: 0,
-    profit: 0, roi: 0, adr: 0,
-  };
-  const entries = [];
-
-  (state.finance.entries || []).forEach((e) => {
-    if (e.apartmentId !== apartmentId) return;
-    const date = e.date || '';
-    if (!date || date < startDate || date > endDate) return;
-
-    if (e.status === 'cancelled') {
-      if (e.type === FINANCE_TYPES.income && e.source === 'realtycalendar' && !String(e.externalBookingId || '').endsWith(':cleaning')) {
-        stat.cancelledBookings += 1;
-        stat.cancelledAmount += Number(e.amount || 0);
-      }
-      if (status !== 'all' && status !== 'cancelled') return;
-    } else {
-      if (status !== 'active' && status !== 'all' && e.status !== status) return;
-    }
-
-    if (type !== 'all' && e.type !== type) return;
-    if (source !== 'all' && e.source !== source) return;
-
-    let expenseKind = 'other';
-    if (e.type === FINANCE_TYPES.expense) {
-      if (e.category === 'Уборка' || e.meta?.kind === 'cleaning') expenseKind = 'cleaning';
-      else if (e.source === 'recurring' && e.meta?.ruleId) expenseKind = ruleKindById.get(e.meta.ruleId) || 'other';
-    }
-    if (category !== 'all' && e.type === FINANCE_TYPES.expense && expenseKind !== category) return;
-
-    entries.push(e);
-    const gross = Number(e.amount || 0);
-    const net = Number(e.netAmount != null ? e.netAmount : gross);
-
-    if (e.type === FINANCE_TYPES.income) {
-      if (e.status !== 'cancelled') {
-        stat.grossIncome += gross;
-        stat.netIncome += net;
-        stat.platformTax += Math.max(0, gross - net);
-        if (e.source === 'realtycalendar' && !String(e.externalBookingId || '').endsWith(':cleaning')) {
-          stat.bookings += 1;
-          const bd = e.meta?.begin_date; const ed = e.meta?.end_date;
-          if (bd && ed) stat.nights += Math.max(0, Math.round((new Date(ed) - new Date(bd)) / 86400000));
-        }
-      }
-    } else if (e.type === FINANCE_TYPES.expense && e.status !== 'cancelled') {
-      stat.expense += gross;
-      if (expenseKind === 'cleaning') stat.cleaning += gross;
-      else if (expenseKind === 'rent') stat.rent += gross;
-      else if (expenseKind === 'internet') stat.internet += gross;
-      else if (expenseKind === 'utilities') stat.utilities += gross;
-      else if (expenseKind === 'subscription') stat.subscription += gross;
-      else stat.otherExpense += gross;
-      if (e.status === 'planned') stat.plannedExpense += gross;
-      else if (e.status === 'confirmed') stat.confirmedExpense += gross;
-    }
+  const resp = await fetch(`${SUPABASE_URL}/functions/v1/unit-economics`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+      'apikey': SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ action: 'reports', apartmentId, periods }),
   });
 
-  stat.profit = stat.netIncome - stat.expense;
-  stat.roi = stat.expense > 0 ? (stat.profit / stat.expense) * 100 : 0;
-  stat.adr = stat.nights > 0 ? stat.netIncome / stat.nights : 0;
-  return { stat, entries, period: { startDate, endDate }, apartment: { id: apt.id, name: getDisplayApartmentName(apt.name) } };
-}
-
-export function computeUnitEconomics({ dateFrom = '', dateTo = '' } = {}) {
-  const state = getState();
-  const apartments = state.apartments || [];
-  const entries = state.finance.entries || [];
-
-  const inRange = (date) => {
-    if (!date) return false;
-    if (dateFrom && date < dateFrom) return false;
-    if (dateTo && date > dateTo) return false;
-    return true;
-  };
-
-  const empty = () => ({
-    grossIncome: 0,
-    platformTax: 0,
-    netIncome: 0,
-    cleaning: 0,
-    rent: 0,
-    internet: 0,
-    utilities: 0,
-    subscription: 0,
-    otherExpense: 0,
-    expense: 0,
-    profit: 0,
-    roi: 0,
-    bookings: 0,
-    nights: 0,
-  });
-
-  // Карта правил → kind (для регулярных расходов).
-  const ruleKindById = new Map();
-  (state.finance.recurringRules || []).forEach((r) => ruleKindById.set(r.id, r.kind || 'other'));
-
-  const byApartment = new Map();
-  apartments.forEach((apt) => {
-    byApartment.set(apt.id, { id: apt.id, name: getDisplayApartmentName(apt.name), ...empty() });
-  });
-
-  entries.forEach((e) => {
-    if (!inRange(e.date)) return;
-    if (e.status === 'cancelled') return;
-    const apt = byApartment.get(e.apartmentId);
-    if (!apt) return;
-
-    const gross = Number(e.amount || 0);
-    const net = Number(e.netAmount != null ? e.netAmount : gross);
-
-    if (e.type === FINANCE_TYPES.income) {
-      apt.grossIncome += gross;
-      apt.netIncome += net;
-      apt.platformTax += Math.max(0, gross - net);
-      if (e.source === 'realtycalendar' && !String(e.externalBookingId || '').endsWith(':cleaning')) {
-        apt.bookings += 1;
-        const begin = e.meta?.begin_date;
-        const end = e.meta?.end_date;
-        if (begin && end) {
-          const d1 = new Date(begin); const d2 = new Date(end);
-          const n = Math.max(0, Math.round((d2 - d1) / 86400000));
-          apt.nights += n;
-        }
-      }
-    } else if (e.type === FINANCE_TYPES.expense) {
-      // Категоризация расходов
-      let kind = 'other';
-      if (e.category === 'Уборка' || e.meta?.kind === 'cleaning') kind = 'cleaning';
-      else if (e.source === 'recurring' && e.meta?.ruleId) {
-        kind = ruleKindById.get(e.meta.ruleId) || 'other';
-      }
-      apt.expense += gross;
-      if (kind === 'cleaning') apt.cleaning += gross;
-      else if (kind === 'rent') apt.rent += gross;
-      else if (kind === 'internet') apt.internet += gross;
-      else if (kind === 'utilities') apt.utilities += gross;
-      else if (kind === 'subscription') apt.subscription += gross;
-      else apt.otherExpense += gross;
-    }
-  });
-
-  const rows = Array.from(byApartment.values()).map((r) => {
-    r.profit = r.netIncome - r.expense;
-    r.roi = r.expense > 0 ? (r.profit / r.expense) * 100 : 0;
-    r.adr = r.nights > 0 ? r.netIncome / r.nights : 0;
-    return r;
-  }).sort((a, b) => b.profit - a.profit);
-
-  const totals = rows.reduce((acc, r) => {
-    acc.grossIncome += r.grossIncome;
-    acc.platformTax += r.platformTax;
-    acc.netIncome += r.netIncome;
-    acc.cleaning += r.cleaning;
-    acc.rent += r.rent;
-    acc.internet += r.internet;
-    acc.utilities += r.utilities;
-    acc.subscription += r.subscription;
-    acc.otherExpense += r.otherExpense;
-    acc.expense += r.expense;
-    acc.bookings += r.bookings;
-    acc.nights += r.nights;
-    return acc;
-  }, empty());
-  totals.profit = totals.netIncome - totals.expense;
-  totals.roi = totals.expense > 0 ? (totals.profit / totals.expense) * 100 : 0;
-  totals.adr = totals.nights > 0 ? totals.netIncome / totals.nights : 0;
-
-  return { rows, totals, period: { dateFrom, dateTo } };
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(`Расчёт недоступен (${resp.status})${text ? ': ' + text.slice(0, 200) : ''}`);
+  }
+  const json = await resp.json();
+  if (!json?.ok) throw new Error(json?.error || 'Расчёт не удался');
+  return json.reports || {};
 }
 
 export function getFilteredFinanceEntries() {
