@@ -149,16 +149,22 @@ function ensureModal() {
           </label>
         </div>
 
+        <!-- Авто-отправка живёт выше блока настроек: её нужно выключать
+             быстро и без ожидания проверки ключа. -->
+        <div style="margin-top:1rem;">
+          <label class="gy-toggle">
+            <input id="okidokiAutoSend" type="checkbox" />
+            <span class="gy-toggle-track" aria-hidden="true"><span class="gy-toggle-thumb"></span></span>
+            <span class="gy-toggle-label">Авто-отправка договора гостю</span>
+          </label>
+          <p class="small" style="margin:.4rem 0 0;opacity:.75;">Включено — гость получает ссылку на договор при первом заходе в бота. Выключено — договор не создаётся и не тратится: удобно, пока тестируете оплату. Ссылка на оплату уходит в любом случае. Сохраняется сразу.</p>
+          <div id="okidokiAutoSendStatus" class="small" style="margin-top:.3rem;opacity:.8;"></div>
+        </div>
+
         <div id="okidokiConfig" style="margin-top:1rem;display:none;">
           <label style="display:block;margin-bottom:.75rem;">
             <span class="small">Карточка подписанта (от чьего имени)</span>
             <select id="okidokiSigner" style="margin-top:.4rem;width:100%;"></select>
-          </label>
-
-          <label class="gy-toggle" style="margin-top:.75rem;">
-            <input id="okidokiAutoSend" type="checkbox" />
-            <span class="gy-toggle-track" aria-hidden="true"><span class="gy-toggle-thumb"></span></span>
-            <span class="gy-toggle-label">Автоматически отправлять ссылку на договор гостю при первом заходе в бот</span>
           </label>
 
           <div class="subsection-title" style="margin-top:1.5rem;margin-bottom:.5rem;">
@@ -420,6 +426,7 @@ export async function openOkidokiSettings() {
   const closeBtn   = document.getElementById('okidokiClose');
   const config     = document.getElementById('okidokiConfig');
   const autoSend   = document.getElementById('okidokiAutoSend');
+  const autoSendStatus = document.getElementById('okidokiAutoSendStatus');
   const saveBtn    = document.getElementById('okidokiSave');
   const disconnectBtn = document.getElementById('okidokiDisconnect');
 
@@ -435,6 +442,9 @@ export async function openOkidokiSettings() {
 
   keyInput.value = settings.okidoki_api_key || '';
   autoSend.checked = !!settings.okidoki_auto_send;
+  autoSendStatus.textContent = autoSend.checked
+    ? 'Сейчас: договор отправляется автоматически'
+    : 'Сейчас: договор не отправляется';
 
   if (settings.okidoki_api_key) {
     config.style.display = 'block';
@@ -456,6 +466,26 @@ export async function openOkidokiSettings() {
 
     keyToggle.addEventListener('click', () => {
       keyInput.type = keyInput.type === 'password' ? 'text' : 'password';
+    });
+
+    // Переключатель сохраняется сразу: его выключают перед тестом и закрывают окно,
+    // а забытая кнопка «Сохранить» стоила бы лишнего договора.
+    autoSend.addEventListener('change', async () => {
+      const on = autoSend.checked;
+      autoSendStatus.textContent = 'Сохраняем…';
+      autoSendStatus.style.color = '';
+      try {
+        await saveSettings({ okidoki_auto_send: on });
+        autoSendStatus.textContent = on
+          ? '✓ Сохранено: договор отправляется автоматически'
+          : '✓ Сохранено: договор не отправляется';
+        autoSendStatus.style.color = '#7fbf7f';
+        setStatus(on ? 'Авто-отправка договоров включена' : 'Авто-отправка договоров выключена', 'success');
+      } catch (err) {
+        autoSend.checked = !on;
+        autoSendStatus.textContent = '⚠ Не сохранилось: ' + err.message;
+        autoSendStatus.style.color = '#c66';
+      }
     });
 
     validateBtn.addEventListener('click', async () => {
