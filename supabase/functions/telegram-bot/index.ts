@@ -73,6 +73,19 @@ function userClient(authHeader: string) {
   });
 }
 
+// Telegram разрешает в secret_token только [A-Za-z0-9_-], а менеджер мог задать
+// произвольный секрет. Поэтому на провод отдаём детерминированный
+// SHA-256 от секрета (hex, всегда допустимый) и с ним же сравниваем
+// входящий заголовок. Сам секрет банк не покидает.
+let _tgWebhookToken: string | null = null;
+async function tgWebhookToken(): Promise<string> {
+  if (_tgWebhookToken !== null) return _tgWebhookToken;
+  if (!TG_SECRET) { _tgWebhookToken = ""; return ""; }
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(TG_SECRET));
+  _tgWebhookToken = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return _tgWebhookToken;
+}
+
 async function getUserIdFromJwt(req: Request): Promise<string | null> {
   const auth = req.headers.get("authorization") || req.headers.get("Authorization");
   if (!auth) return null;
@@ -1258,7 +1271,7 @@ async function handleEvent(ev: InboundEvent) {
 async function endpointTelegramWebhook(req: Request): Promise<Response> {
   if (TG_SECRET) {
     const got = req.headers.get("x-telegram-bot-api-secret-token");
-    if (got !== TG_SECRET) return json({ ok: false, error: "bad_secret" }, 401);
+    if (got !== await tgWebhookToken()) return json({ ok: false, error: "bad_secret" }, 401);
   }
   let update: any = null;
   try { update = await req.json(); }
@@ -1329,6 +1342,46 @@ async function endpointChannels(req: Request): Promise<Response> {
       invite_example: inviteLink(c, "КОД"),
     })),
   });
+}
+
+// Регистрирует вебхук Telegram с секретным токеном. Доступ — только менеджеру
+// (по JWT), сам токен бота и секрет читаются из окружения и в ответ не попадают.
+async function endpointSetupWebhook(req: Request): Promise<Response> {
+  const userId = await getUserIdFromJwt(req);
+  if (!userId) return json({ ok: false, error: "unauthorized" }, 401);
+  const token = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
+  if (!token)     return json({ ok: false, error: "no_bot_token" }, 500);
+  if (!TG_SECRET) return json({ ok: false, error: "no_webhook_secret" }, 500);
+  const hookUrl = `${SUPABASE_URL}/functions/v1/telegram-bot`;
+  try {
+    const resp = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: hookUrl,
+        secret_token: await tgWebhookToken(),
+        allowed_updates: ["message", "callback_query"],
+        drop_pending_updates: false,
+      }),
+    });
+    const data = await resp.json();
+    // Проверяем состояние вебхука (без секрета в ответе).
+    let info: any = null;
+    try {
+      const ir = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
+      const ij = await ir.json();
+      if (ij?.ok) info = {
+        url_set: Boolean(ij.result?.url),
+        pending: ij.result?.pending_update_count ?? null,
+        last_error: ij.result?.last_error_message ?? null,
+        has_secret: Boolean(ij.result?.has_custom_certificate) || undefined,
+      };
+    } catch { /* не критично */ }
+    return json({ ok: Boolean(data?.ok), webhook_url: hookUrl, description: data?.description ?? null, info });
+  } catch (e) {
+    console.error("[bot] setup_webhook error:", e);
+    return json({ ok: false, error: "telegram_request_failed" }, 502);
+  }
 }
 
 async function endpointSend(req: Request): Promise<Response> {
@@ -1538,6 +1591,7 @@ Deno.serve(async (req) => {
     if (req.method === "POST" && path === "/guest_invite")         return await endpointGuestInvite(req);
     if (req.method === "GET"  && path === "/channels")             return await endpointChannels(req);
     if (req.method === "POST" && path === "/cleaning_reminders")   return await endpointCleaningReminders(req);
+    if (req.method === "POST" && path === "/setup_webhook")        return await endpointSetupWebhook(req);
 
     if (req.method === "GET" && (path === "/" || path === "")) {
       return json({
@@ -1549,7 +1603,7 @@ Deno.serve(async (req) => {
           "POST /", "POST /max", "GET|POST /whatsapp",
           "POST /send", "POST /send_maid", "POST /test",
           "POST /maid_invite", "POST /guest_invite",
-          "GET /channels", "POST /cleaning_reminders",
+          "GET /channels", "POST /cleaning_reminders", "POST /setup_webhook",
         ],
       });
     }
