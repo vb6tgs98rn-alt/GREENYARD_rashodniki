@@ -14,7 +14,7 @@ import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatu
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, updateState } from './state.js';
 import { persistState, exportJson, importJson } from './storage.js';
 import { signInWithEmail, signUpWithEmail, signOutUser, changePassword, getCurrentUser } from './supabase-client.js';
-import { addApartment, addCustomItem, applyWriteoff, createPurchaseRequest, deleteApartment, deleteItem, newCheckin, renameCurrentApartment, resetAll, restockDefaults, toggleAutoRequest, toggleRequestDone, updateItemField, updateRequestItemCost } from './actions.js';
+import { addApartment, addCustomItem, applyWriteoff, applyLinenDamage, createPurchaseRequest, deleteApartment, deleteItem, newCheckin, renameCurrentApartment, resetAll, restockDefaults, toggleAutoRequest, toggleRequestDone, updateItemField, updateRequestItemCost } from './actions.js';
 import { bindGuestBotEvents } from './guestBot.js';
 import { bindMaidsEvents } from './maidsUI.js';
 import { openOkidokiSettings } from './okidoki.js';
@@ -104,6 +104,15 @@ function bindDrawerModals() {
   byId('openTochkaSettings')?.addEventListener('click', () => {
     closeDrawer();
     openTochkaSettings().catch((err) => setStatus('Ошибка Точки: ' + (err?.message || err)));
+  });
+
+  // RealtyCalendar — открываем финансовый модал сразу на настройках интеграции
+  byId('openRealtyIntegration')?.addEventListener('click', () => {
+    ensureFinanceGeneratedForCurrentMonth();
+    render();
+    openModal('financeModal');
+    openModal('financeSettingsModal');
+    closeDrawer();
   });
 
   // ─── Настройки аккаунта: смена пароля, политика ПДн, выход ────────────
@@ -275,6 +284,7 @@ function bindSettings() {
 
 // ─── Карточки расходников (делегирование) ──────────────────────────────────
 let writeoffContext = null;
+let linenDamageContext = null;
 
 function bindItemCards() {
   // Списать / Пополнить — открываем модал
@@ -301,9 +311,35 @@ function bindItemCards() {
       setTimeout(() => byId('writeoffModalQty')?.select(), 80);
       return;
     }
+    // Быстрое списание −1
+    const qw = e.target.closest('[data-action="quick-writeoff"]');
+    if (qw) {
+      applyWriteoff(qw.dataset.id, 1, 'writeoff');
+      rerender('Списано 1');
+      return;
+    }
+    // Быстрое пополнение +1
+    const qr = e.target.closest('[data-action="quick-restock"]');
+    if (qr) {
+      applyWriteoff(qr.dataset.id, 1, 'restock');
+      rerender('Добавлено 1');
+      return;
+    }
+    // Частичный брак белья — открываем модал
+    const dmg = e.target.closest('[data-action="linen-damage"]');
+    if (dmg) {
+      linenDamageContext = { itemId: dmg.dataset.id, name: dmg.dataset.name };
+      byId('linenDamageSub').textContent = dmg.dataset.name;
+      byId('linenDamageComponent').value = 'Наволочка';
+      byId('linenDamageCustomWrap').hidden = true;
+      byId('linenDamageCustom').value = '';
+      byId('linenDamageQty').value = '1';
+      openModal('linenDamageModal');
+      return;
+    }
     // Удалить расходник
     const del = e.target.closest('[data-delete-item]');
-    if (del && confirm(`Удалить «${del.dataset.deleteItem}»?`)) {
+    if (del && confirm(`Удалить «${del.dataset.deleteItemName || del.dataset.deleteItem}»?`)) {
       deleteItem(del.dataset.deleteItem);
       rerender('Позиция удалена');
       return;
@@ -406,6 +442,41 @@ function bindItemCards() {
       kbBtn.classList.add('active');
       return;
     }
+  });
+
+  // Inline-правка норм прямо в карточке (норма / расход на заезд / штук в комплекте)
+  document.addEventListener('change', (e) => {
+    const field = e.target.closest('[data-item-field]');
+    if (!field) return;
+    const value = Math.max(0, Number(field.value) || 0);
+    field.value = roundSmart(value);
+    updateItemField(field.dataset.id, field.dataset.itemField, value);
+    rerender('Норма обновлена');
+  });
+}
+
+// ─── Модал частичного брака белья ─────────────────────────
+function bindLinenDamageModal() {
+  const close = () => closeModal('linenDamageModal');
+  byId('linenDamageClose')?.addEventListener('click', close);
+  byId('linenDamageCancel')?.addEventListener('click', close);
+  byId('linenDamageModal')?.addEventListener('click', (e) => { if (e.target === byId('linenDamageModal')) close(); });
+  // Переключение на ручной ввод составляющей
+  byId('linenDamageComponent')?.addEventListener('change', (e) => {
+    const custom = e.target.value === '__custom';
+    byId('linenDamageCustomWrap').hidden = !custom;
+    if (custom) setTimeout(() => byId('linenDamageCustom')?.focus(), 60);
+  });
+  byId('linenDamageConfirm')?.addEventListener('click', async () => {
+    if (!linenDamageContext) return;
+    const sel = byId('linenDamageComponent').value;
+    const component = sel === '__custom' ? byId('linenDamageCustom').value.trim() : sel;
+    if (!component) { byId('linenDamageCustom')?.focus(); return; }
+    const qty = Math.max(1, Math.round(Number(byId('linenDamageQty')?.value) || 1));
+    applyLinenDamage(linenDamageContext.itemId, component, qty);
+    linenDamageContext = null;
+    close();
+    await rerender('Брак учтён, заявка создана');
   });
 }
 
@@ -1275,6 +1346,7 @@ export function bindEvents() {
   bindSettings();
   bindItemCards();
   bindWriteoffModal();
+  bindLinenDamageModal();
   bindDeleteApartment();
   bindAutoRequest();
   bindPurchaseModal();

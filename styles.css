@@ -388,6 +388,11 @@ body:has(.modal-backdrop.open) .auth-corner-btn{ display:none !important; }
 /* Скрываем кнопку Меню/Выход, когда открыт drawer (боковое меню) */
 body:has(.drawer.open) .auth-corner-btn{ display:none !important; }
 
+/* Блокируем прокрутку фона, когда открыта любая модалка или боковое меню.
+   Без этого при скролле внутри окна «протекала» главная страница под ним. */
+body:has(.modal-backdrop.open),
+body:has(.drawer.open){ overflow:hidden; }
+
 /* ═══════════════════════════════════════════════════════════════════
    ГОСТЕВОЙ БОТ — стили для разделов: Брони, Инструкции, Чаты,
    Настройки уведомлений.
@@ -940,3 +945,40 @@ body.is-guest .modal-backdrop{display:none !important}
 .gate-consent-check small,
 .authbar-consent-check em{opacity:.65;font-style:normal}
 .authbar-consent-check{font-size:.78rem;line-height:1.35;margin:.4rem 0}
+
+/* ═══════════════════════════════════════════════════════════════════
+   УЧЁТ РАСХОДНИКОВ — компактные карточки с быстрыми действиями.
+   Правая колонка (расход/комплекты/покрытие) убрана, поэтому список
+   занимает всю ширину и раскладывается в адаптивную сетку. */
+.workspace{grid-template-columns:1fr}
+#linenList .grid,#guestList .grid{grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:var(--space-4)}
+.item-card{gap:.7rem;padding:var(--space-4)}
+.item-head-right{display:flex;align-items:center;gap:.5rem;flex:0 0 auto}
+.item-del-btn{width:26px;height:26px;border-radius:8px;background:var(--color-surface-2);border:1px solid rgba(60,60,60,.12);color:var(--color-text-muted);font-size:.8rem;line-height:1;cursor:pointer;flex:0 0 auto}
+.item-del-btn:hover{color:var(--color-error);border-color:color-mix(in oklab,var(--color-error) 35%,transparent)}
+.item-qty-row{display:grid;grid-template-columns:46px 1fr 46px;gap:.5rem;align-items:stretch}
+.qbtn{border-radius:var(--radius-md);border:1px solid rgba(60,60,60,.12);background:var(--color-surface-2);font-size:1.4rem;font-weight:700;line-height:1;cursor:pointer;min-height:52px}
+.qbtn-minus{color:var(--color-error);background:color-mix(in oklab,var(--color-error) 9%,var(--color-surface-2));border-color:color-mix(in oklab,var(--color-error) 18%,transparent)}
+.qbtn-plus{color:var(--color-success);background:color-mix(in oklab,var(--color-success) 9%,var(--color-surface-2));border-color:color-mix(in oklab,var(--color-success) 18%,transparent)}
+.qbtn:active{transform:translateY(1px)}
+.item-qty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.05rem;border-radius:var(--radius-md);border:1px dashed rgba(60,60,60,.22);background:transparent;cursor:pointer;padding:.3rem}
+.item-qty strong{font-size:1.55rem;line-height:1;font-variant-numeric:tabular-nums lining-nums}
+.item-meta{display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap}
+.item-par{display:flex;align-items:center;gap:.4rem;margin:0}
+.item-par input{width:66px;padding:.35rem .5rem;border-radius:8px;border:1px solid rgba(60,60,60,.15);background:var(--color-surface-2);text-align:center;font-variant-numeric:tabular-nums}
+.item-hint{white-space:nowrap}
+.item-hint.is-low{color:var(--color-error)}
+.item-adv{border-top:1px dashed rgba(60,60,60,.12);padding-top:.35rem}
+.item-adv>summary{cursor:pointer;color:var(--color-text-muted);list-style:none;user-select:none}
+.item-adv>summary::-webkit-details-marker{display:none}
+.item-adv>summary::before{content:"⚙ ";opacity:.55}
+.item-adv-body{display:grid;gap:.55rem;margin-top:.55rem}
+.item-adv-field{display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin:0}
+.item-adv-field input{width:82px;padding:.35rem .5rem;border-radius:8px;border:1px solid rgba(60,60,60,.15);background:var(--color-surface-2);text-align:center}
+.item-adv-actions{display:flex;flex-wrap:wrap;gap:.4rem}
+.item-adv-actions .mini-btn{flex:1 1 auto;min-height:38px;padding:.5rem .5rem;font-size:.85rem}
+.item-damage-btn{flex:0 0 100%;color:var(--color-warning);background:color-mix(in oklab,var(--color-warning) 10%,var(--color-surface-2));border-color:color-mix(in oklab,var(--color-warning) 25%,transparent)}
+
+/* Подзаголовки-разделители в боковом меню (Основное / Чаты / Интеграции) */
+.drawer-section-label{margin:.6rem 0 -.15rem;padding:0 .25rem;font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.09em;color:var(--color-text-muted);font-weight:700}
+.drawer-section-label:first-child{margin-top:0}

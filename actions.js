@@ -112,6 +112,28 @@ export function applyWriteoff(itemId, qty, mode) {
   }
 }
 
+// Частичный брак комплекта белья: испорчена одна составляющая (например,
+// наволочка), но весь комплект использовать нельзя. Выводим из оборота
+// qty комплектов и сразу ставим заявку на закупку именно испорченной части.
+export function applyLinenDamage(itemId, component, qty) {
+  const apartment = currentApartment();
+  if (!apartment) return false;
+  const item = apartment.items.find(i => i.id === itemId);
+  if (!item) return false;
+  const amount = Math.max(1, Math.round(Number(qty || 1)));
+  const part = String(component || '').trim() || 'часть комплекта';
+  item.stock = Math.max(0, Number(item.stock) - amount);
+  addHistory('Брак белья', `${item.name}: испорчено «${part}», выведено ${amount} ${item.unit}`, 'writeoff');
+  // Заявка на докупку именно испорченной составляющей.
+  getState().purchaseRequests.unshift({
+    id: crypto.randomUUID(), apartmentId: apartment.id, apartmentName: getDisplayApartmentName(apartment.name),
+    auto: true, done: false, createdAt: new Date().toISOString(),
+    items: [{ itemId: item.id, name: `${item.name} — ${part}`, unit: 'шт', qty: amount, cost: '' }]
+  });
+  addHistory('Заявка на замену', `${item.name}: ${part} ×${amount}`, 'auto');
+  return true;
+}
+
 export function newCheckin() {
   const apartment = currentApartment();
   if (!apartment) return;

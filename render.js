@@ -15,6 +15,11 @@ export function setStatus(text = 'Готово') { if (dom.saveStatus) dom.saveS
 
 function fmt(n) { return Number(n || 0).toLocaleString('ru-RU', { maximumFractionDigits: 0 }); }
 
+// Экранирование пользовательских строк перед вставкой в HTML.
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function apartmentButton(apartment, activeApartmentId) {
   const low = apartment.items.filter((item) => statusBy(item).cls === 'low').length;
   const realtyId = apartment.externalIds?.realtyCalendarUnitId || '';
@@ -30,22 +35,49 @@ function apartmentButton(apartment, activeApartmentId) {
 
 function itemCard(item) {
   const status = statusBy(item);
-  const percent = item.par > 0 ? Math.max(0, Math.min(100, (item.stock / item.par) * 100)) : 0;
-  return `<article class="item-card ${status.cls === 'low' ? 'highlight' : ''}">
+  const isLinen = item.category === 'linen';
+  // Подсказка «когда докупить»: если остаток ниже нормы — сколько не хватает.
+  const deficit = Math.max(0, Number(item.par || 0) - Number(item.stock || 0));
+  const hint = deficit > 0
+    ? `Докупить: ${roundSmart(deficit)} ${esc(item.unit)}`
+    : 'Запаса достаточно';
+  // Поле тонкой настройки: для одноразовых — расход на заезд, для белья — штук в комплекте.
+  const advField = isLinen
+    ? `<label class="item-adv-field"><span class="small">В комплекте, шт</span><input type="number" min="0" step="1" value="${roundSmart(item.setAmount)}" data-item-field="setAmount" data-id="${item.id}"></label>`
+    : `<label class="item-adv-field"><span class="small">Расход на заезд</span><input type="number" min="0" step="1" value="${roundSmart(item.perCheckin)}" data-item-field="perCheckin" data-id="${item.id}"></label>`;
+  const damageBtn = isLinen
+    ? `<button class="mini-btn item-damage-btn" data-action="linen-damage" data-id="${item.id}" data-name="${esc(item.name)}">Брак</button>`
+    : '';
+  return `<article class="item-card ${status.cls === 'low' ? 'highlight' : ''}" data-item-id="${item.id}">
     <div class="item-head">
-      <div><div class="item-name">${item.name}</div><div class="small">${roundSmart(item.stock)} / ${roundSmart(item.par)} ${item.unit}</div></div>
-      <span class="badge ${status.cls}">${status.label}</span>
+      <div class="item-name">${esc(item.name)}</div>
+      <div class="item-head-right">
+        <span class="badge ${status.cls}">${status.label}</span>
+        <button class="item-del-btn" data-delete-item="${item.id}" data-delete-item-name="${esc(item.name)}" title="Удалить позицию" aria-label="Удалить позицию">✕</button>
+      </div>
     </div>
-    <div class="row">
-      <div><div class="small">Остаток</div><div class="qty">${roundSmart(item.stock)}</div></div>
-      <div><div class="small">Покрытие</div><div class="progress"><span style="width:${percent}%"></span></div></div>
+    <div class="item-qty-row">
+      <button class="qbtn qbtn-minus" data-action="quick-writeoff" data-id="${item.id}" title="Списать 1" aria-label="Списать 1">−</button>
+      <button class="item-qty" data-action="open-writeoff" data-id="${item.id}" data-name="${esc(item.name)}" data-unit="${esc(item.unit)}" data-category="${item.category}" title="Ввести точное количество">
+        <strong>${roundSmart(item.stock)}</strong><span class="small">${esc(item.unit)}</span>
+      </button>
+      <button class="qbtn qbtn-plus" data-action="quick-restock" data-id="${item.id}" title="Добавить 1" aria-label="Добавить 1">+</button>
     </div>
-    <div style="display:flex;gap:.45rem;margin-top:.6rem">
-      <button class="mini-btn" style="flex:1;background:color-mix(in oklab,var(--color-error) 10%,var(--color-surface-2));border-color:color-mix(in oklab,var(--color-error) 20%,transparent);color:var(--color-error)"
-        data-action="open-writeoff" data-id="${item.id}" data-name="${item.name}" data-unit="${item.unit}" data-category="${item.category}">Списать</button>
-      <button class="mini-btn" style="flex:1;background:color-mix(in oklab,var(--color-success) 10%,var(--color-surface-2));border-color:color-mix(in oklab,var(--color-success) 20%,transparent);color:var(--color-success)"
-        data-action="open-restock" data-id="${item.id}" data-name="${item.name}" data-unit="${item.unit}" data-category="${item.category}">Пополнить</button>
+    <div class="item-meta">
+      <label class="item-par"><span class="small">Норма</span><input type="number" min="0" step="1" value="${roundSmart(item.par)}" data-item-field="par" data-id="${item.id}"></label>
+      <span class="small item-hint ${deficit > 0 ? 'is-low' : ''}">${hint}</span>
     </div>
+    <details class="item-adv">
+      <summary class="small">Настройка</summary>
+      <div class="item-adv-body">
+        ${advField}
+        <div class="item-adv-actions">
+          <button class="mini-btn" data-action="open-writeoff" data-id="${item.id}" data-name="${esc(item.name)}" data-unit="${esc(item.unit)}" data-category="${item.category}">Списать…</button>
+          <button class="mini-btn" data-action="open-restock" data-id="${item.id}" data-name="${esc(item.name)}" data-unit="${esc(item.unit)}" data-category="${item.category}">Пополнить…</button>
+          ${damageBtn}
+        </div>
+      </div>
+    </details>
   </article>`;
 }
 
@@ -86,9 +118,8 @@ function renderInventory(state) {
   const warn = apartment.items.filter((i) => statusBy(i).cls === 'warn').length;
   const ok = apartment.items.filter((i) => statusBy(i).cls === 'ok').length;
   dom.statsGrid.innerHTML = `<article class="stat"><span>Всего позиций</span><strong>${total}</strong></article><article class="stat"><span>Низкий остаток</span><strong>${low}</strong></article><article class="stat"><span>В зоне внимания</span><strong>${warn}</strong></article><article class="stat"><span>В норме</span><strong>${ok}</strong></article>`;
-  dom.dailyUsage.innerHTML = guestItems.length ? guestItems.map((item) => `<div class="line"><span>${item.name}</span><strong>${roundSmart(item.perCheckin)} ${item.unit}</strong></div>`).join('') : '<div class="empty">Нет гостевых позиций.</div>';
-  dom.setUsage.innerHTML = linenItems.length ? linenItems.map((item) => `<div class="line"><span>${item.name}</span><strong>${roundSmart(item.setAmount)} ${item.unit}</strong></div>`).join('') : '<div class="empty">Нет белья.</div>';
-  dom.coverageList.innerHTML = apartment.items.map((item) => `<div class="line"><span>${item.name}</span><strong>${item.perCheckin > 0 ? Math.floor(item.stock / item.perCheckin) : item.setAmount > 0 ? Math.floor(item.stock / item.setAmount) : '—'}</strong></div>`).join('');
+  // Блоки «Ежедневный расход», «Комплекты» и «Покрытие запасов» убраны:
+  // расход на заезд и размер комплекта теперь правятся прямо в карточке позиции.
 }
 
 function sourceIcon(source) {

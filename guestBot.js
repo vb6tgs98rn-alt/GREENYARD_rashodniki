@@ -40,6 +40,22 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[c]));
 
+// Безопасный вывод тела сообщения: сначала экранируем всё,
+// потом возвращаем только белый список Telegram-тегов и переводы строк.
+const fmtBody = (s) => {
+  let h = esc(s);
+  h = h
+    .replace(/&lt;(\/?)b&gt;/g, '<$1b>')
+    .replace(/&lt;(\/?)strong&gt;/g, '<$1strong>')
+    .replace(/&lt;(\/?)i&gt;/g, '<$1i>')
+    .replace(/&lt;(\/?)em&gt;/g, '<$1em>')
+    .replace(/&lt;(\/?)u&gt;/g, '<$1u>')
+    .replace(/&lt;(\/?)s&gt;/g, '<$1s>')
+    .replace(/&lt;(\/?)code&gt;/g, '<$1code>')
+    .replace(/&lt;(\/?)pre&gt;/g, '<$1pre>');
+  return h.replace(/\n/g, '<br>');
+};
+
 const fmtDate = (s) => {
   if (!s) return '';
   try {
@@ -667,6 +683,135 @@ function ensureBookingsModal() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─── Ручная бронь ──────────────────────────────────────────────────
+function ensureManualBookingModal() {
+  if (document.getElementById('manualBookingModal')) return;
+  const html = `
+    <div class="modal-backdrop" id="manualBookingModal" aria-hidden="true">
+      <div class="modal" style="width:min(560px,100%);max-height:92dvh;overflow:auto;">
+        <div class="section-head">
+          <div>
+            <h2 class="modal-title">Новая бронь</h2>
+            <p class="muted">Заполните данные гостя и брони. После создания будут доступны чат и ссылка гостю.</p>
+          </div>
+          <button class="menu-toggle" id="closeManualBooking" type="button" aria-label="Закрыть">✕</button>
+        </div>
+        <div class="grid" style="gap:.75rem;">
+          <label><span class="small">Квартира</span><select id="mb_apartment"></select></label>
+          <div class="row">
+            <label><span class="small">Имя гостя</span><input id="mb_fio" type="text" placeholder="ФИО"></label>
+            <label><span class="small">Телефон</span><input id="mb_phone" type="tel" inputmode="tel" placeholder="+7…"></label>
+          </div>
+          <label><span class="small">Email гостя (для чека, необязательно)</span><input id="mb_email" type="email" placeholder="guest@example.com"></label>
+          <div class="row">
+            <label><span class="small">Заезд</span><input id="mb_begin" type="date"></label>
+            <label><span class="small">Выезд</span><input id="mb_end" type="date"></label>
+          </div>
+          <div class="row">
+            <label><span class="small">Сумма, ₽</span><input id="mb_amount" type="number" min="0" step="1" value="0"></label>
+            <label><span class="small">Предоплата, ₽</span><input id="mb_prepay" type="number" min="0" step="1" value="0"></label>
+          </div>
+          <label><span class="small">Источник</span><select id="mb_source">
+            <option value="manual">Вручную</option>
+            <option value="avito">Avito</option>
+            <option value="cian">ЦИАН</option>
+            <option value="sutochno">Суточно</option>
+            <option value="booking">Booking</option>
+            <option value="ostrovok">Ostrovok</option>
+            <option value="yandex">Яндекс</option>
+          </select></label>
+          <div id="mb_error" class="small" style="color:var(--color-error);" hidden></div>
+        </div>
+        <div style="display:flex;gap:.75rem;justify-content:flex-end;margin-top:1rem;">
+          <button class="btn btn-secondary" id="cancelManualBooking" type="button">Отмена</button>
+          <button class="btn btn-primary" id="saveManualBooking" type="button">Создать бронь</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function openManualBookingModal(state) {
+  ensureManualBookingModal();
+  const apts = state?.apartments || [];
+  const sel = document.getElementById('mb_apartment');
+  if (sel) {
+    sel.innerHTML = apts.length
+      ? apts.map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')
+      : '<option value="">Нет квартир</option>';
+  }
+  ['mb_fio', 'mb_phone', 'mb_email'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const amount = document.getElementById('mb_amount'); if (amount) amount.value = '0';
+  const prepay = document.getElementById('mb_prepay'); if (prepay) prepay.value = '0';
+  const src = document.getElementById('mb_source'); if (src) src.value = 'manual';
+  const errBox = document.getElementById('mb_error'); if (errBox) { errBox.hidden = true; errBox.textContent = ''; }
+  const today = new Date();
+  const tomorrow = new Date(today.getTime() + 86400000);
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const beg = document.getElementById('mb_begin'); if (beg) beg.value = iso(today);
+  const end = document.getElementById('mb_end'); if (end) end.value = iso(tomorrow);
+  openModal('manualBookingModal');
+}
+
+// Создание ручной брони — INSERT в rc_bookings.
+async function submitManualBooking(state) {
+  const errBox = document.getElementById('mb_error');
+  const showErr = (m) => { if (errBox) { errBox.textContent = m; errBox.hidden = false; } };
+  const aptId = document.getElementById('mb_apartment')?.value;
+  const apt = (state?.apartments || []).find(a => a.id === aptId);
+  if (!apt) { showErr('Выберите квартиру.'); return; }
+  const fio = (document.getElementById('mb_fio')?.value || '').trim();
+  const phone = (document.getElementById('mb_phone')?.value || '').trim();
+  const email = (document.getElementById('mb_email')?.value || '').trim();
+  const begin = document.getElementById('mb_begin')?.value;
+  const end = document.getElementById('mb_end')?.value;
+  const amount = Math.max(0, Number(document.getElementById('mb_amount')?.value) || 0);
+  const prepay = Math.max(0, Number(document.getElementById('mb_prepay')?.value) || 0);
+  const source = document.getElementById('mb_source')?.value || 'manual';
+  if (!fio) { showErr('Укажите имя гостя.'); return; }
+  if (!begin || !end) { showErr('Укажите даты заезда и выезда.'); return; }
+  if (end <= begin) { showErr('Дата выезда должна быть позже заезда.'); return; }
+  if (prepay > amount) { showErr('Предоплата не может превышать сумму.'); return; }
+  const supabase = getSupabaseClient();
+  if (!supabase) { showErr('Нет подключения к базе.'); return; }
+  const btn = document.getElementById('saveManualBooking');
+  if (btn) { btn.disabled = true; btn.textContent = 'Создаём…'; }
+  try {
+    await waitForAuthReady();
+    const { data: { session: _sess } } = await supabase.auth.getSession();
+    const user = _sess?.user ?? null;
+    if (!user) throw new Error('Сеанс не найден. Войдите заново.');
+    const realtyId = apt.externalIds?.realtyCalendarUnitId;
+    const nowIso = new Date().toISOString();
+    const row = {
+      booking_id: Date.now(),          // 13-значный id, не конфликтует с 9-значными RC
+      user_id: user.id,
+      agency_id: 0,                    // NOT NULL, для ручных — 0
+      realty_id: realtyId ? Number(realtyId) : null,
+      apartment_title: apt.name,
+      begin_date: begin,
+      end_date: end,
+      amount,
+      prepayment: prepay,
+      status: 'confirmed',
+      source,
+      client_fio: fio,
+      client_phone: phone || null,
+      client_email: email || null,
+      rc_created_at: nowIso,
+    };
+    const { error } = await supabase.from('rc_bookings').insert(row);
+    if (error) throw error;
+    closeModal('manualBookingModal');
+    setStatus('Бронь создана');
+    await reloadBookings(state);
+  } catch (err) {
+    showErr('Не удалось создать бронь: ' + (err?.message || err));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Создать бронь'; }
+  }
+}
+
 // 7) Раздел «Инструкции для гостей»
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1082,7 +1227,7 @@ async function renderActiveChat({ silent = false } = {}) {
                 : m.direction === 'system'  ? 'Событие'
                 : '🤖 Бот';
     const time = fmtTime(m.created_at);
-    return `<div class="chat-msg ${cls}"><div class="chat-msg-meta small">${esc(label)} · ${esc(time)}</div><div class="chat-msg-body">${esc(m.body || '')}</div></div>`;
+    return `<div class="chat-msg ${cls}"><div class="chat-msg-meta small">${esc(label)} · ${esc(time)}</div><div class="chat-msg-body">${fmtBody(m.body || '')}</div></div>`;
   }).join('');
   const nextHtml = html || `<div class="empty" style="padding:2rem;text-align:center;opacity:.6;">Сообщений пока нет (получено 0 строк).<br/>session_id: <code>${esc(sessionId)}</code></div>`;
 
@@ -1530,6 +1675,12 @@ export function bindGuestBotEvents(state) {
 
     const reload = e.target.closest('#bookingsReloadBtn');
     if (reload) { await reloadBookings(state); return; }
+
+    // ─── Ручная бронь ───
+    if (e.target.closest('#openManualBookingBtn')) { openManualBookingModal(state); return; }
+    if (e.target.closest('#closeManualBooking') || e.target.closest('#cancelManualBooking')) { closeModal('manualBookingModal'); return; }
+    if (e.target === document.getElementById('manualBookingModal')) { closeModal('manualBookingModal'); return; }
+    if (e.target.closest('#saveManualBooking')) { await submitManualBooking(state); return; }
 
     const saveCancelBtn = e.target.closest('[data-save-cancel-reason]');
     if (saveCancelBtn) {
