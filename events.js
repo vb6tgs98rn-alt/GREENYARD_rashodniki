@@ -106,6 +106,17 @@ function bindDrawerModals() {
     openTochkaSettings().catch((err) => setStatus('Ошибка Точки: ' + (err?.message || err)));
   });
 
+  // Уведомления Авито — отдельный бот, читающий письма Авито с почты
+  byId('openAvitoNotify')?.addEventListener('click', async () => {
+    closeDrawer();
+    try {
+      const { openAvitoNotifyModal } = await import('./avitoNotify.js?v=20260810-1');
+      await openAvitoNotifyModal();
+    } catch (err) {
+      setStatus('Ошибка открытия: ' + (err?.message || err));
+    }
+  });
+
   // RealtyCalendar — открываем финансовый модал сразу на настройках интеграции
   byId('openRealtyIntegration')?.addEventListener('click', () => {
     ensureFinanceGeneratedForCurrentMonth();
