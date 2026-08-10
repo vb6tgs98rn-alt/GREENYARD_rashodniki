@@ -89,16 +89,28 @@ export async function fetchRealtyCalendarIntegration() {
   if (!supabase) return null;
   const user = await requireUser();
   if (!user) return null;
-  const { data, error } = await supabase
-    .from('rc_integrations')
-    .select('agency_id, enabled, last_event_at, created_at, updated_at')
-    .eq('user_id', user.id)
-    .maybeSingle();
-  if (error) {
-    console.warn('[RC] fetchRealtyCalendarIntegration error:', error.message);
-    return null;
+  // Сразу после входа PostgREST-запрос иногда уходит раньше, чем supabase-js
+  // успевает прикрепить токен сессии к заголовкам. Тогда сервер отвечает 200,
+  // но пустым набором (RLS фильтрует по auth.uid()), и статус ошибочно
+  // сбрасывается в «Не подключено». Поэтому: если пришло пусто, но сессия
+  // живая — повторяем несколько раз с небольшой паузой.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const { data, error } = await supabase
+      .from('rc_integrations')
+      .select('agency_id, enabled, last_event_at, created_at, updated_at')
+      .eq('user_id', user.id)
+      .maybeSingle();
+    if (error) {
+      console.warn('[RC] fetchRealtyCalendarIntegration error:', error.message);
+      return null;
+    }
+    if (data) return data;
+    // Пусто. Проверяем, есть ли валидная сессия — если да, вероятна гонка, ретраим.
+    const { data: sess } = await supabase.auth.getSession();
+    if (!sess?.session?.access_token) return null; // сессии нет — пользователь и правда не подключён
+    if (attempt < 3) await new Promise((r) => setTimeout(r, 300));
   }
-  return data || null;
+  return null;
 }
 
 /**

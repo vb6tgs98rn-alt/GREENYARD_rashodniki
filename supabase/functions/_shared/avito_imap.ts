@@ -18,7 +18,9 @@ export interface SelectInfo {
 // ─── RFC 2047: декодирование =?charset?B/Q?...?= в заголовках ────────────────
 function decodeRfc2047(input: string): string {
   if (!input || input.indexOf("=?") === -1) return input;
-  return input.replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, (_m, charset, enc, text) => {
+  // Пробелы между соседними encoded-words по RFC 2047 удаляются (иначе слова рвутся).
+  const glued = input.replace(/\?=\s+=\?/g, "?==?");
+  return glued.replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, (_m, charset, enc, text) => {
     try {
       let bytes: Uint8Array;
       if (enc.toUpperCase() === "B") {
@@ -46,7 +48,7 @@ function decodeRfc2047(input: string): string {
     } catch {
       return text;
     }
-  }).replace(/\?=\s+=\?/g, "?==?"); // склейка соседних encoded-words
+  });
 }
 
 // Разбор блока заголовков (с разворачиванием переносов).
@@ -154,7 +156,12 @@ export class ImapClient {
   async login(user: string, pass: string): Promise<void> {
     const q = (s: string) => '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
     const r = await this.command(`LOGIN ${q(user)} ${q(pass)}`);
-    if (!r.ok) throw new Error("IMAP LOGIN отклонён (проверьте почту и пароль приложения)");
+    if (!r.ok) {
+      // Последняя (тегованная) строка часто содержит причину отказа.
+      const lines = r.text.split("\n");
+      const reason = (lines[lines.length - 1] || "").replace(/^\S+\s+(NO|BAD)\s*/i, "").trim();
+      throw new Error("IMAP LOGIN отклонён: " + (reason || "сервер не указал причину"));
+    }
   }
 
   async selectInbox(): Promise<SelectInfo> {
@@ -212,13 +219,14 @@ export class ImapClient {
 }
 
 // ─── Классификация письма по теме ────────────────────────────────────────────
-export type AvitoKind = "request" | "paid" | "message" | "other";
+export type AvitoKind = "request" | "paid" | "message" | "cancel" | "other";
 
 export function classifyAvito(subject: string): AvitoKind {
   const s = (subject || "").toLowerCase();
-  if (s.includes("мгновенн")) return "request";
-  if (s.includes("оплатил") || s.includes("оплачен")) return "paid";
-  if (s.includes("новое сообщение") || s.includes("сообщение")) return "message";
+  if (s.includes("отмен")) return "cancel";          // «Гость отменил бронь», «Бронирование отменено»
+  if (s.includes("мгновенн")) return "request";      // «У вас мгновенная бронь»
+  if (s.includes("оплат") || s.includes("оплачен")) return "paid"; // «Гость оплатил жильё»
+  if (s.includes("сообщени")) return "message";      // «Вам пришло новое сообщение»
   return "other";
 }
 
@@ -241,6 +249,8 @@ export function notifyText(kind: AvitoKind): string {
       return "✅ <b>Гость оплатил — бронь подтверждена</b> (Авито).";
     case "message":
       return "✉️ <b>Гость ждёт ответа — уже ~15 минут</b> (Авито).\nСообщение осталось без ответа 15 минут. Ответьте сейчас — быстрый ответ часто решает бронь.";
+    case "cancel":
+      return "❌ <b>Гость отменил бронь</b> (Авито).\nДаты снова свободны — проверьте календарь и при необходимости откройте их для новых броней.";
     default:
       return "🔔 <b>Новое уведомление от Авито</b>.";
   }
