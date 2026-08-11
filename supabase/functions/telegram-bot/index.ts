@@ -949,7 +949,7 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
   const secureId = (args || "").trim();
   const fromName = [from?.firstName, from?.lastName].filter(Boolean).join(" ") || from?.username || "";
   if (!secureId) {
-    await send(to, "Здравствуйте! Похоже, вы открыли бота без персональной ссылки.\n\nПожалуйста, используйте ссылку, которую прислал менеджер — она содержит данные вашего бронирования.");
+    await send(to, `Здравствуйте! Похоже, вы открыли бота без персональной ссылки.\n\nЕсли вы гость — откройте бота по ссылке от менеджера (в ней данные вашего бронирования).\n\nЕсли вы менеджер — ваш chat_id: <code>${to.chatId}</code>\nСкопируйте его в настройки уведомлений.`);
     return;
   }
   let session = await findSessionBySecureId(secureId);
@@ -1253,6 +1253,13 @@ async function handleEvent(ev: InboundEvent) {
     if (text.trim() || ev.photoUrl) {
       await handleMaidFreeText(maid, to, text, ev.messageId ?? null, ev.photoUrl ?? undefined);
     }
+    return;
+  }
+
+  // Команда /id (или просто «id»): бот сообщает chat_id — чтобы менеджер
+  // мог скопировать его в настройки уведомлений. Работает без сессии.
+  if (/^\/?id$/i.test(text.trim())) {
+    await send(to, `Ваш chat_id: <code>${to.chatId}</code>\n\nСкопируйте его в настройки уведомлений менеджеру.`);
     return;
   }
 
