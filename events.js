@@ -1249,6 +1249,32 @@ function bindApartmentRealtyId() {
     openApartmentSyncModal(btn.dataset.syncApartment);
   });
 
+  // Открытие модалки «Параметры объекта» по клику «Настроить» на карточке квартиры.
+  // Делаем эту квартиру активной (чтобы поля в модалке показывали её данные), затем открываем модалку.
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-configure-apartment]');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const targetId = btn.dataset.configureApartment;
+    // Переключаем активную квартиру, если нужно, и перерисовываем — это подтянет в модалку данные этой квартиры.
+    if (getState().activeApartmentId !== targetId) {
+      updateState((s) => { s.activeApartmentId = targetId; });
+      await rerender('Квартира переключена');
+    }
+    // Имя квартиры в подзаголовке модалки
+    const apt = currentApartment();
+    const sub = byId('apartmentParamsSub');
+    if (sub) sub.textContent = apt ? getDisplayApartmentName(apt.name) : 'Параметры квартиры';
+    openModal('apartmentParamsModal');
+  });
+
+  // Закрытие модалки «Параметры объекта».
+  byId('apartmentParamsClose')?.addEventListener('click', () => closeModal('apartmentParamsModal'));
+  byId('apartmentParamsModal')?.addEventListener('click', (e) => {
+    if (e.target === byId('apartmentParamsModal')) closeModal('apartmentParamsModal');
+  });
+
   // Закрытие
   byId('apartmentSyncClose')?.addEventListener('click', closeApartmentSyncModal);
   byId('apartmentSyncCancelBtn')?.addEventListener('click', closeApartmentSyncModal);

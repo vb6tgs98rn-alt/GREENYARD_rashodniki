@@ -15,7 +15,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Green Yard</title>
   <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./styles.css?v=20260811-3" />
+  <link rel="stylesheet" href="./styles.css?v=20260811-4" />
 </head>
 <body class="is-guest">
   <!-- ─── Экран входа для гостя (виден только при body.is-guest) ────────── -->
@@ -119,27 +119,6 @@
         <div class="accordion-body open static-block">
           <div class="section-head"><div style="flex:1"><input id="apartmentSearch" type="text" placeholder="Поиск квартиры" /></div><button class="pill" id="addApartment">+ Добавить</button></div>
           <div class="apartments" id="apartmentsList"></div>
-        </div>
-      </section>
-      <section class="panel">
-        <button class="accordion-trigger" type="button" data-toggle-target="apartmentParamsBody" aria-expanded="false"><span class="accordion-label"><h2>Параметры объекта</h2></span><span class="small">Название и добавление позиций</span></button>
-        <div class="accordion-body" id="apartmentParamsBody">
-          <div class="grid"><label><span class="small">Название квартиры</span><input id="apartmentName" type="text" placeholder="Например, Ленина 12" /></label></div>
-          <div class="grid" style="margin-top:.75rem;"><label><span class="small">ID объекта в RealtyCalendar (realty_id)</span><div style="display:flex;gap:.5rem;align-items:stretch;"><input id="apartmentRealtyId" type="text" inputmode="numeric" placeholder="Например, 208656" style="flex:1" /><button class="btn btn-secondary" id="saveApartmentRealtyId" type="button">Сохранить</button></div><span class="small" style="margin-top:.4rem;color:var(--color-text-muted)">Нужен для привязки бронирований из RC к этой квартире. Как узнать: откройте квартиру в RealtyCalendar — в адресной строке будет число вида /realties/208656.</span></label></div>
-          <div class="grid" style="margin-top:.75rem;"><label><span class="small">Цена уборки, ₽ (автоматический расход в день создания брони)</span><div style="display:flex;gap:.5rem;align-items:stretch;"><input id="apartmentCleaningPrice" type="number" min="0" step="50" placeholder="Например, 1500" style="flex:1" /><button class="btn btn-secondary" id="apartmentCleaningPriceEditBtn" type="button" hidden>Редактировать</button><button class="btn btn-primary" id="apartmentCleaningPriceSaveBtn" type="button">Сохранить</button></div><span class="small" style="margin-top:.4rem;color:var(--color-text-muted)">После сохранения цена закрепляется и доступна только для редактирования. Расход «Уборка» создаётся автоматически на дату создания брони. 0 или пусто — выключено.</span></label></div>
-          <div class="grid" style="margin-top:1rem;">
-            <div class="section-head" style="margin-bottom:0;"><h2 style="margin:0">Добавить расходник</h2></div>
-            <label><span class="small">Название</span><input id="newItemName" type="text" placeholder="Например, Губка" /></label>
-            <div class="row">
-              <label><span class="small">Единица</span><select id="newItemUnit"><option value="шт">шт</option><option value="компл">компл</option><option value="пара">пара</option><option value="бут">бут</option></select></label>
-              <label><span class="small">Категория</span><select id="newItemCategory"><option value="guest">Одноразовые</option><option value="linen">Не одноразовые</option></select></label>
-            </div>
-            <div class="row">
-              <label><span class="small">Остаток</span><input id="newItemStock" type="number" min="0" step="0.1" value="0" /></label>
-              <label><span class="small">Норма</span><input id="newItemPar" type="number" min="0" step="0.1" value="0" /></label>
-            </div>
-            <button class="btn btn-secondary" id="addCustomItem">Добавить позицию</button>
-          </div>
         </div>
       </section>
       <section class="panel">
@@ -350,6 +329,36 @@
   <div class="modal-backdrop" id="settingsModal" aria-hidden="true"><div class="modal"><div class="section-head"><div><h2 class="modal-title">Настройки расходников</h2><p class="muted">Настрой отдельно расход при «Новом заезде» и количество в одном комплекте белья/полотенец.</p></div><button class="btn btn-secondary" id="closeSettings">Закрыть</button></div><div class="subsection" style="margin-bottom:1.25rem;"><div class="subsection-title"><h3>Расход при заезде</h3><span class="small">Одноразовые позиции</span></div><div class="deduction-grid" id="deductionSettings"></div></div><div class="subsection"><div class="subsection-title"><h3>Количество в комплекте</h3><span class="small">Не одноразовые позиции</span></div><div class="deduction-grid" id="setSettings"></div></div></div></div>
   <div class="modal-backdrop" id="writeoffModal" aria-hidden="true"><div class="modal" style="width:min(400px,100%)"><div class="section-head"><h2 id="writeoffModalTitle" class="modal-title">Списание</h2><button class="menu-toggle" id="writeoffModalClose" aria-label="Закрыть">✕</button></div><div style="margin-bottom:1rem;"><div class="small" style="margin-bottom:.5rem;color:var(--color-text-muted);" id="writeoffModalSub"></div><label><span class="small" id="writeoffModalLabel">Количество</span><input id="writeoffModalQty" type="number" min="0.1" step="0.1" value="1" style="margin-top:.4rem;" /></label></div><div style="display:flex;gap:.75rem;justify-content:flex-end;"><button class="btn btn-secondary" id="writeoffModalCancel">Отмена</button><button class="btn btn-primary" id="writeoffModalConfirm">Подтвердить</button></div></div></div>
   <div class="modal-backdrop" id="linenDamageModal" aria-hidden="true"><div class="modal" style="width:min(440px,100%)"><div class="section-head"><div><h2 class="modal-title">Частичный брак</h2><p class="muted" id="linenDamageSub">Испорчена часть комплекта</p></div><button class="menu-toggle" id="linenDamageClose" type="button" aria-label="Закрыть">✕</button></div><div class="grid" style="margin-bottom:1rem;gap:.75rem;"><label><span class="small">Что испорчено</span><select id="linenDamageComponent"><option value="Наволочка">Наволочка</option><option value="Простыня">Простыня</option><option value="Пододеяльник">Пододеяльник</option><option value="Полотенце">Полотенце</option><option value="__custom">Другое…</option></select></label><label id="linenDamageCustomWrap" hidden><span class="small">Название составляющей</span><input id="linenDamageCustom" type="text" placeholder="Например, наматрасник"></label><label><span class="small">Сколько комплектов вывести</span><input id="linenDamageQty" type="number" min="1" step="1" value="1"></label><div class="small" style="color:var(--color-text-muted)">Комплект уйдёт из остатка, а на испорченную часть автоматически создастся заявка на закупку.</div></div><div style="display:flex;gap:.75rem;justify-content:flex-end;"><button class="btn btn-secondary" id="linenDamageCancel">Отмена</button><button class="btn btn-primary" id="linenDamageConfirm">Подтвердить</button></div></div></div>
+  <!-- Модалка «Параметры объекта»: открывается кнопкой «Настроить» на карточке квартиры. -->
+  <div class="modal-backdrop" id="apartmentParamsModal" aria-hidden="true">
+    <div class="modal" style="width:min(720px,100%);max-height:90dvh;overflow:auto;">
+      <div class="section-head" style="align-items:flex-start;">
+        <div style="flex:1">
+          <h2 class="modal-title">Параметры объекта</h2>
+          <p class="muted" id="apartmentParamsSub">Название и добавление позиций</p>
+        </div>
+        <button class="menu-toggle" id="apartmentParamsClose" type="button" aria-label="Закрыть">✕</button>
+      </div>
+      <div id="apartmentParamsBody">
+        <div class="grid"><label><span class="small">Название квартиры</span><input id="apartmentName" type="text" placeholder="Например, Ленина 12" /></label></div>
+        <div class="grid" style="margin-top:.75rem;"><label><span class="small">ID объекта в RealtyCalendar (realty_id)</span><div style="display:flex;gap:.5rem;align-items:stretch;"><input id="apartmentRealtyId" type="text" inputmode="numeric" placeholder="Например, 208656" style="flex:1" /><button class="btn btn-secondary" id="saveApartmentRealtyId" type="button">Сохранить</button></div></label></div>
+        <div class="grid" style="margin-top:.75rem;"><label><span class="small">Цена уборки, ₽ (автоматический расход в день создания брони)</span><div style="display:flex;gap:.5rem;align-items:stretch;"><input id="apartmentCleaningPrice" type="number" min="0" step="50" placeholder="Например, 1500" style="flex:1" /><button class="btn btn-secondary" id="apartmentCleaningPriceEditBtn" type="button" hidden>Редактировать</button><button class="btn btn-primary" id="apartmentCleaningPriceSaveBtn" type="button">Сохранить</button></div></label></div>
+        <div class="grid" style="margin-top:1rem;">
+          <div class="section-head" style="margin-bottom:0;"><h2 style="margin:0">Добавить расходник</h2></div>
+          <label><span class="small">Название</span><input id="newItemName" type="text" placeholder="Например, Губка" /></label>
+          <div class="row">
+            <label><span class="small">Единица</span><select id="newItemUnit"><option value="шт">шт</option><option value="компл">компл</option><option value="пара">пара</option><option value="бут">бут</option></select></label>
+            <label><span class="small">Категория</span><select id="newItemCategory"><option value="guest">Одноразовые</option><option value="linen">Не одноразовые</option></select></label>
+          </div>
+          <div class="row">
+            <label><span class="small">Остаток</span><input id="newItemStock" type="number" min="0" step="0.1" value="0" /></label>
+            <label><span class="small">Норма</span><input id="newItemPar" type="number" min="0" step="0.1" value="0" /></label>
+          </div>
+          <button class="btn btn-secondary" id="addCustomItem">Добавить позицию</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <div class="modal-backdrop" id="apartmentSyncModal" aria-hidden="true"><div class="modal" style="width:min(520px,100%)"><div class="section-head"><div><h2 class="modal-title" id="apartmentSyncTitle">Синхронизация квартиры</h2><p class="muted">Введите ID объекта из RealtyCalendar (realty_id). Его можно увидеть в адресной строке: /realties/<b>208656</b>.</p></div><button class="menu-toggle" id="apartmentSyncClose" type="button" aria-label="Закрыть">✕</button></div><div class="grid" style="margin-bottom:1rem;"><label><span class="small">ID объекта в RealtyCalendar</span><input id="apartmentSyncInput" type="text" inputmode="numeric" placeholder="Например, 208656" autocomplete="off" /></label><div id="apartmentSyncMsg" class="small" data-kind="" hidden></div></div><div class="actions" style="justify-content:flex-end;gap:.5rem;"><button class="btn btn-secondary" id="apartmentSyncCancelBtn" type="button">Отмена</button><button class="btn btn-primary" id="apartmentSyncSaveBtn" type="button">Сохранить</button></div></div></div>
   <div class="modal-backdrop" id="kbModal" aria-hidden="true"><div class="modal" style="width:min(860px,100%);max-height:90dvh;overflow:auto;display:flex;flex-direction:column;gap:0;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;margin-bottom:1rem;"><div><h2 class="modal-title">База знаний</h2><p class="muted" style="margin:0;">Полное руководство — читай при первом использовании</p></div><button class="menu-toggle" id="kbClose" aria-label="Закрыть">✕</button></div><div style="display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1.25rem;" id="kbNav"><button class="history-chip active" data-kb-target="kbs0">Введение</button><button class="history-chip" data-kb-target="kbs1">Квартиры</button><button class="history-chip" data-kb-target="kbs2">Расходники</button><button class="history-chip" data-kb-target="kbs3">Быстрые действия</button><button class="history-chip" data-kb-target="kbs4">История</button><button class="history-chip" data-kb-target="kbs5">Заявки</button><button class="history-chip" data-kb-target="kbs6">Сохранение</button><button class="history-chip" data-kb-target="kbs7">Настройки</button><button class="history-chip" data-kb-target="kbs8">Оплата</button></div><div id="kbBody"><div id="kbs0" class="kb-section active"><div class="hint"><strong>Green Yard</strong><p class="small">Приложение для учёта расходников по нескольким квартирам посуточной аренды. Видишь сколько чего осталось, когда пополнять и автоматически списываешь при каждом заезде.</p></div></div><div id="kbs1" class="kb-section"><div class="hint"><strong>Квартиры</strong><p class="small">Каждая квартира — отдельный объект со своими расходниками и историей.</p></div></div><div id="kbs2" class="kb-section"><div class="hint"><strong>Расходники</strong><p class="small">Два типа: <b>Одноразовые</b> и <b>Не одноразовые</b>. Для первых настраивается расход на заезд, для вторых — количество в комплекте.</p></div></div><div id="kbs3" class="kb-section"><div class="hint"><strong>Быстрые действия</strong><p class="small">Левая панель → раздел «Быстрые действия».</p></div></div><div id="kbs4" class="kb-section"><div class="hint"><strong>История</strong><p class="small">Все действия фиксируются автоматически. Открыть: ☰ → «История списаний».</p></div></div><div id="kbs5" class="kb-section"><div class="hint"><strong>Заявки на закупку</strong><p class="small">Список того что нужно купить. Открыть: ☰ → «Заявки на закупку».</p></div></div><div id="kbs6" class="kb-section"><div class="hint"><strong>Сохранение данных</strong><p class="small">Без входа данные хранятся в браузере. После входа через email — синхронизируются между устройствами автоматически при каждом сохранении.</p></div></div><div id="kbs7" class="kb-section"><div class="hint"><strong>Настройки</strong><p class="small">Персонализация приложения.</p></div></div><div id="kbs8" class="kb-section"><div class="hint"><strong>Оплата проживания (Точка Банк)</strong><p class="small">Открыть: ☰ → «Оплата (Точка Банк)». Гость получает ссылку на оплату остатка сразу за договором, деньги приходят на ваш счёт в Точке.</p><p class="small"><b>Как подключить.</b> Нажмите «Подключить счёт Точки» — откроется страница банка, там подтвердите доступ. Вернувшись, нажмите «Обновить данные»: приложение подтянет счёт и точку приёма платежей. Токены хранятся на сервере, в браузер не попадают.</p><p class="small"><b>Сколько платит гость.</b> Задолженность по брони: полная стоимость минус внесённая предоплата. Если долга нет, ссылка не создаётся и гостю ничего не приходит.</p><p class="small"><b>Почта для чека.</b> Если включён чек, банку нужен e-mail гостя ещё до создания платежа — на самой странице оплаты его ввести нельзя. Поэтому бот один раз спрашивает почту в чате и сразу после ответа присылает ссылку. Адрес сохраняется в брони, повторно его не спрашиваем. Если чек выключен, ссылка приходит сразу, без вопросов.</p><p class="small"><b>Способы оплаты.</b> «Платёжная ссылка» — СБП и карта, чек по 54-ФЗ уходит гостю на e-mail автоматически (нужен подключённый интернет-эквайринг Точки). «QR-код СБП» — комиссия ниже, но чек такой платёж не формирует. «Реквизиты» — банк не задействуется, бот присылает ваш текст, статус отмечаете сами.</p><p class="small"><b>Статусы.</b> Оплата отмечается автоматически по уведомлению банка. Если уведомление не дошло — кнопка «Сверить статусы» опросит банк вручную. Об оплате приходит сообщение в ваш мессенджер.</p></div></div></div></div></div>
   <!-- ─── Настройки аккаунта: пароль, политика ПДн, выход ────────────────── -->
@@ -402,6 +411,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="./app.js?v=20260811-3"></script>
+  <script type="module" src="./app.js?v=20260811-4"></script>
 </body>
 </html>
