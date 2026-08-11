@@ -81,15 +81,20 @@ export type InboundEvent = {
 // КОНФИГУРАЦИЯ (секреты только из окружения, никогда из БД и браузера)
 // ═══════════════════════════════════════════════════════════════════
 
-const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
+// Значения секретов обрезаем: панель Supabase может дописывать в конец
+// пробелы/переводы строки, а недопустимый символ в заголовке Authorization
+// или в URL приводит к падению fetch (и бот «молча» не отвечает).
+const env = (k: string, def = "") => (Deno.env.get(k) ?? def).trim();
+
+const TG_TOKEN = env("TELEGRAM_BOT_TOKEN");
 const TG_API = `https://api.telegram.org/bot${TG_TOKEN}`;
 
-const MAX_TOKEN = Deno.env.get("MAX_BOT_TOKEN") ?? "";
-const MAX_API = Deno.env.get("MAX_API_BASE") ?? "https://platform-api.max.ru";
+const MAX_TOKEN = env("MAX_BOT_TOKEN");
+const MAX_API = env("MAX_API_BASE", "https://platform-api.max.ru");
 
-const WA_TOKEN = Deno.env.get("WHATSAPP_TOKEN") ?? "";
-const WA_PHONE_ID = Deno.env.get("WHATSAPP_PHONE_ID") ?? "";
-const WA_VERSION = Deno.env.get("WHATSAPP_API_VERSION") ?? "v21.0";
+const WA_TOKEN = env("WHATSAPP_TOKEN");
+const WA_PHONE_ID = env("WHATSAPP_PHONE_ID");
+const WA_VERSION = env("WHATSAPP_API_VERSION", "v21.0");
 
 /** Канал считается включённым, если для него заданы все обязательные секреты. */
 export function channelEnabled(channel: ChannelId): boolean {
@@ -660,9 +665,9 @@ export async function parseWhatsappUpdate(body: any): Promise<InboundEvent[]> {
 // ССЫЛКИ-ПРИГЛАШЕНИЯ
 // ═══════════════════════════════════════════════════════════════════
 
-const TG_BOT_USERNAME = Deno.env.get("TELEGRAM_BOT_USERNAME") ?? "";
-const MAX_BOT_USERNAME = Deno.env.get("MAX_BOT_USERNAME") ?? "";
-const WA_PHONE_NUMBER = Deno.env.get("WHATSAPP_PHONE_NUMBER") ?? "";
+const TG_BOT_USERNAME = env("TELEGRAM_BOT_USERNAME");
+const MAX_BOT_USERNAME = env("MAX_BOT_USERNAME");
+const WA_PHONE_NUMBER = env("WHATSAPP_PHONE_NUMBER");
 
 /**
  * Ссылка, по которой гость или горничная попадёт в нужный бот
