@@ -1288,7 +1288,11 @@ async function endpointTelegramWebhook(req: Request): Promise<Response> {
  * .../telegram-bot/max?s=<MAX_WEBHOOK_SECRET>
  */
 async function endpointMaxWebhook(req: Request, url: URL): Promise<Response> {
-  if (MAX_SECRET && url.searchParams.get("s") !== MAX_SECRET) {
+  // Секрет сравниваем без хвостовых пробелов/переводов строки:
+  // панель Supabase может дописывать их в конец значения.
+  const expected = MAX_SECRET.trim();
+  const got = (url.searchParams.get("s") ?? "").trim();
+  if (expected && got !== expected) {
     return json({ ok: false, error: "bad_secret" }, 401);
   }
   let update: any = null;
