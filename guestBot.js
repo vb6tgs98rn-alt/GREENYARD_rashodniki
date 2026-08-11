@@ -507,6 +507,8 @@ export async function fillChannelOptions(selectEl, selectedId) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 let _bookingsState = { all: [], filter: { apt: '', status: '', source: '' } };
+// Мессенджеры, реально настроенные на сервере — для кнопок копирования ссылки гостю.
+let _bookingsChannels = [{ id: 'telegram', title: 'Telegram' }];
 
 export async function openBookingsModal(state) {
   ensureBookingsModal();
@@ -519,6 +521,8 @@ async function reloadBookings(state) {
   if (box) box.innerHTML = '<div class="small" style="padding:1rem;opacity:.6;">Загрузка...</div>';
   const all = await fetchRealtyCalendarBookings(500);
   _bookingsState.all = all || [];
+  // Подгружаем список мессенджеров один раз — чтобы кнопки рендерились синхронно (важно для iOS-копирования).
+  try { _bookingsChannels = await fetchChannels(); } catch { _bookingsChannels = [{ id: 'telegram', title: 'Telegram' }]; }
   renderBookingsList(state);
   renderBookingsFilters(state);
 }
@@ -601,13 +605,22 @@ function renderBookingsList(state) {
          </div>`
       : '';
 
+    // Кнопки копирования ссылки: если настроен один мессенджер — одна кнопка,
+    // если несколько — отдельная кнопка на каждый (гость выбирает, для какого копировать).
+    const channels = (_bookingsChannels && _bookingsChannels.length) ? _bookingsChannels : [{ id: 'telegram', title: 'Telegram' }];
+    const linkButtons = channels.length > 1
+      ? channels.map(c =>
+          `<button class="btn btn-primary bk-btn-link" data-link-booking="${esc(b.booking_id)}" data-channel="${esc(c.id)}" data-secure="${esc(secureId)}">
+             📋 ${esc(c.title || CHANNEL_TITLE[c.id] || c.id)}
+           </button>`).join('')
+      : `<button class="btn btn-primary bk-btn-link ${linkSent ? 'is-sent' : ''}" data-link-booking="${esc(b.booking_id)}" data-channel="${esc(channels[0].id)}" data-secure="${esc(secureId)}">
+           ${linkSent ? '✓ Ссылка скопирована' : '📋 Ссылка гостю'}
+         </button>`;
     const actions = isCancelled
       ? ''
       : `<div class="bk-card-actions">
           <button class="btn btn-secondary bk-btn-chat" data-session-booking="${esc(b.booking_id)}">💬 Чат</button>
-          <button class="btn btn-primary bk-btn-link ${linkSent ? 'is-sent' : ''}" data-link-booking="${esc(b.booking_id)}" data-secure="${esc(secureId)}">
-            ${linkSent ? '✓ Ссылка скопирована' : '📋 Ссылка гостю'}
-          </button>
+          ${linkButtons}
         </div>`;
 
     return `
@@ -1363,47 +1376,104 @@ function ensureChatsModal() {
 // 9) Раздел «Настройки уведомлений»
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Показываем только то поле, которое нужно выбранному мессенджеру:
- * для Telegram — числовой chat_id, для MAX — id чата, для WhatsApp — номер телефона.
- */
-function syncManagerChannelFields(channel) {
-  const tgWrap = document.getElementById('ns_chat_id')?.closest('label');
-  const wrap = document.getElementById('ns_manager_chat_wrap');
-  const label = document.getElementById('ns_manager_chat_label');
-  const input = document.getElementById('ns_manager_chat');
-  const isTg = channel === 'telegram';
-  // Атрибут hidden не работает: у label в стилях задан display — прячем через style.
-  if (tgWrap) tgWrap.style.display = isTg ? '' : 'none';
-  if (wrap) wrap.style.display = isTg ? 'none' : '';
-  if (!isTg && label && input) {
-    if (channel === 'whatsapp') {
-      label.textContent = 'Ваш номер WhatsApp в международном формате';
-      input.placeholder = '79001234567';
-    } else {
-      label.textContent = 'Ваш chat_id в MAX (напишите боту — он подскажет)';
-      input.placeholder = '1234567890';
-    }
+// Список мессенджеров для выпадающих списков в модалке настроек (кэшируется при открытии).
+let _notifyChannels = [{ id: 'telegram', title: 'Telegram' }];
+
+/** HTML <option>ов мессенджеров с выбранным значением. */
+function channelOptionsHtml(selected) {
+  const list = (_notifyChannels && _notifyChannels.length) ? _notifyChannels : [{ id: 'telegram', title: 'Telegram' }];
+  const cur = selected || 'telegram';
+  const rows = [...list];
+  if (!rows.some(c => c.id === cur)) rows.push({ id: cur, title: CHANNEL_TITLE[cur] || cur });
+  return rows.map(c => `<option value="${c.id}"${c.id === cur ? ' selected' : ''}>${c.title || CHANNEL_TITLE[c.id] || c.id}</option>`).join('');
+}
+
+/** Добавить строку получателя уведомлений (мессенджер + chat_id). */
+function addRecipientRow(channelId, chatId) {
+  const box = document.getElementById('ns_recipients');
+  if (!box) return;
+  const idVal = chatId != null ? String(chatId).replace(/"/g, '&quot;') : '';
+  const row = document.createElement('div');
+  row.className = 'ns-rcpt-row';
+  row.style.cssText = 'display:flex;gap:.5rem;align-items:flex-end;margin-bottom:.5rem;flex-wrap:wrap;';
+  row.innerHTML = `
+    <label style="flex:0 0 120px;"><span class="small">Мессенджер</span>
+      <select class="ns-rcpt-channel">${channelOptionsHtml(channelId)}</select>
+    </label>
+    <label style="flex:1 1 150px;"><span class="small">chat_id / номер</span>
+      <input class="ns-rcpt-chat" type="text" placeholder="561644215" value="${idVal}" />
+    </label>
+    <button class="btn btn-secondary ns-rcpt-del" type="button" title="Удалить" style="flex:0 0 auto;">✕</button>`;
+  box.appendChild(row);
+}
+
+/** Собрать получателей из формы (пустые chat_id пропускаем, дубли убираем). */
+function collectRecipients() {
+  const rows = [...document.querySelectorAll('#ns_recipients .ns-rcpt-row')];
+  const out = [];
+  const seen = new Set();
+  for (const r of rows) {
+    const channel = r.querySelector('.ns-rcpt-channel')?.value || 'telegram';
+    const chat_id = (r.querySelector('.ns-rcpt-chat')?.value || '').trim();
+    if (!chat_id) continue;
+    const key = `${channel}:${chat_id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ channel, chat_id });
   }
+  return out;
+}
+
+/** Собрать патч настроек из модалки. Легаси-поля синхроним с первым получателем. */
+function buildManagerSettingsPatch() {
+  const recipients = collectRecipients();
+  const first = recipients[0] || null;
+  const tgId = first && first.channel === 'telegram' && /^\d+$/.test(first.chat_id) ? Number(first.chat_id) : null;
+  return {
+    manager_recipients: recipients,
+    // Обратная совместимость: старые одиночные поля = первый получатель.
+    manager_channel: first?.channel || 'telegram',
+    manager_channel_chat_id: first?.chat_id || null,
+    manager_tg_chat_id: tgId,
+    guest_default_channel: document.getElementById('ns_guest_channel')?.value || 'telegram',
+    guest_channel_url: document.getElementById('ns_channel_url')?.value.trim() || null,
+    guest_invite_template: document.getElementById('ns_template')?.value || null,
+    notify_on_inbound: document.getElementById('ns_notify_inbound')?.checked,
+    notify_on_checkin: document.getElementById('ns_notify_checkin')?.checked,
+    notify_on_checkout: document.getElementById('ns_notify_checkout')?.checked,
+    notify_on_complaint: document.getElementById('ns_notify_complaint')?.checked,
+  };
 }
 
 export async function openNotifySettingsModal() {
   ensureNotifySettingsModal();
   openModal('notifySettingsModal');
   const s = await fetchManagerSettings() || {};
-  const mgrChannel = s.manager_channel || 'telegram';
-  await fillChannelOptions(document.getElementById('ns_manager_channel'), mgrChannel);
+  // Список мессенджеров — для выпадающих списков строк-получателей.
+  try { _notifyChannels = await fetchChannels(); } catch { _notifyChannels = [{ id: 'telegram', title: 'Telegram' }]; }
   await fillChannelOptions(document.getElementById('ns_guest_channel'), s.guest_default_channel || 'telegram');
-  setFieldVal('ns_manager_chat', s.manager_channel_chat_id ?? '');
-  syncManagerChannelFields(mgrChannel);
-  const chList = await fetchChannels();
+
+  // Получатели уведомлений: берём manager_recipients, иначе — легаси-поля (один адресат).
+  let recips = Array.isArray(s.manager_recipients) ? s.manager_recipients.filter(r => r && r.chat_id) : [];
+  if (recips.length === 0) {
+    const ch = s.manager_channel || 'telegram';
+    const id = s.manager_channel_chat_id ?? (ch === 'telegram' && s.manager_tg_chat_id != null ? String(s.manager_tg_chat_id) : '');
+    if (id) recips = [{ channel: ch, chat_id: String(id) }];
+  }
+  const box = document.getElementById('ns_recipients');
+  if (box) {
+    box.innerHTML = '';
+    if (recips.length === 0) addRecipientRow('telegram', '');
+    else recips.forEach(r => addRecipientRow(r.channel, r.chat_id));
+  }
+
+  const chList = _notifyChannels;
   const hint = document.getElementById('ns_channels_hint');
   if (hint) {
     hint.textContent = chList.length > 1
       ? `Настроены: ${chList.map(c => c.title).join(', ')}.`
       : 'Пока работает только Telegram. Остальные мессенджеры включатся, когда на сервер добавят их токены.';
   }
-  setFieldVal('ns_chat_id', s.manager_tg_chat_id ?? '');
   setFieldVal('ns_channel_url', s.guest_channel_url ?? 'https://t.me/Green_yard_apart');
   setFieldVal('ns_template', s.guest_invite_template || DEFAULT_INVITE_TEMPLATE);
   document.getElementById('ns_notify_inbound').checked   = s.notify_on_inbound   !== false;
@@ -1426,16 +1496,10 @@ function ensureNotifySettingsModal() {
         </div>
 
         <h3 class="instr-h">📣 Уведомления менеджеру</h3>
-        <label><span class="small">Мессенджер для уведомлений</span>
-          <select id="ns_manager_channel"><option value="telegram">Telegram</option></select>
-        </label>
-        <label><span class="small">Ваш Telegram chat_id (получите у @userinfobot)</span>
-          <input id="ns_chat_id" type="text" inputmode="numeric" placeholder="561644215" />
-        </label>
-        <label id="ns_manager_chat_wrap" style="display:none;"><span class="small" id="ns_manager_chat_label">Ваш идентификатор в мессенджере</span>
-          <input id="ns_manager_chat" type="text" placeholder="" />
-        </label>
+        <p class="small" style="opacity:.7;margin:.25rem 0 .5rem;">Бот пишет всем получателям сразу. Можно добавить несколько мессенджеров или аккаунтов. chat_id узнайте у бота командой <code>/id</code>.</p>
+        <div id="ns_recipients"></div>
         <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin:.5rem 0;">
+          <button class="btn btn-secondary" id="ns_add_recipient" type="button">+ Добавить получателя</button>
           <button class="btn btn-secondary" id="ns_test_btn" type="button">Отправить тестовое сообщение</button>
         </div>
         <label class="check"><input type="checkbox" id="ns_notify_inbound" /> Новое сообщение от гостя</label>
@@ -1474,11 +1538,12 @@ function ensureNotifySettingsModal() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Собираем текст приглашения (все сетевые вызовы внутри).
-async function buildInviteText(booking, state) {
+async function buildInviteText(booking, state, channelOverride) {
   const session = await ensureSessionForBooking(booking);
   const settings = await fetchManagerSettings() || {};
   const tpl = settings.guest_invite_template || DEFAULT_INVITE_TEMPLATE;
-  const channel = settings.guest_default_channel || 'telegram';
+  // Канал: явный выбор гостя (кнопка) имеет приоритет над умолчанием из настроек.
+  const channel = channelOverride || settings.guest_default_channel || 'telegram';
 
   // Ссылку строит сервер — только он знает имя бота MAX и номер WhatsApp.
   let link;
@@ -1521,9 +1586,9 @@ async function buildInviteText(booking, state) {
  * Возвращает { ok: true, text, link } если удалось положить в буфер.
  * Бросает исключение если оба способа не сработали (тогда UI должен показать fallback).
  */
-export function copyGuestInviteToClipboard(booking, state) {
+export function copyGuestInviteToClipboard(booking, state, channelOverride) {
   // Готовим Promise<Blob> заранее, ДО await — это ключ к работе на iOS.
-  const dataPromise = buildInviteText(booking, state);
+  const dataPromise = buildInviteText(booking, state, channelOverride);
   const blobPromise = dataPromise.then(({ text }) =>
     new Blob([text], { type: 'text/plain' })
   );
@@ -1718,11 +1783,13 @@ export function bindGuestBotEvents(state) {
     const linkBtn = e.target.closest('[data-link-booking]');
     if (linkBtn) {
       const bid = linkBtn.getAttribute('data-link-booking');
+      const channel = linkBtn.getAttribute('data-channel') || undefined;
       const b = _bookingsState.all.find(x => String(x.booking_id) === String(bid));
       if (!b) return;
+      const chTitle = channel ? (CHANNEL_TITLE[channel] || channel) : '';
       // ВАЖНО: вызываем СИНХРОННО, без await до этой строки — нужно для iOS.
-      copyGuestInviteToClipboard(b, state).then(() => {
-        linkBtn.textContent = '✓ Ссылка скопирована';
+      copyGuestInviteToClipboard(b, state, channel).then(() => {
+        linkBtn.textContent = chTitle ? `✓ Скопировано (${chTitle})` : '✓ Ссылка скопирована';
         linkBtn.classList.add('is-sent');
         setStatus('Текст приглашения в буфере');
       }).catch((err) => {
@@ -1907,32 +1974,16 @@ export function bindGuestBotEvents(state) {
     document.getElementById('drawerBackdrop')?.classList.remove('open');
     await openNotifySettingsModal();
   });
-  // Смена мессенджера менеджера — показываем подходящее поле для адресата.
-  document.body.addEventListener('change', (e) => {
-    if (e.target?.id === 'ns_manager_channel') syncManagerChannelFields(e.target.value);
-  });
-
   document.body.addEventListener('click', async (e) => {
     if (e.target.closest('#closeNotifyModal')) { closeModal('notifySettingsModal'); return; }
+    // Добавить получателя
+    if (e.target.closest('#ns_add_recipient')) { addRecipientRow('telegram', ''); return; }
+    // Удалить строку получателя
+    const delBtn = e.target.closest('.ns-rcpt-del');
+    if (delBtn) { delBtn.closest('.ns-rcpt-row')?.remove(); return; }
     if (e.target.closest('#nsSaveBtn')) {
       try {
-        const chatId = document.getElementById('ns_chat_id').value.trim();
-        const mgrChannel = document.getElementById('ns_manager_channel')?.value || 'telegram';
-        const mgrChat = document.getElementById('ns_manager_chat')?.value.trim() || '';
-        const patch = {
-          manager_tg_chat_id: chatId ? Number(chatId) : null,
-          manager_channel: mgrChannel,
-          // Для Telegram единый источник — поле chat_id выше, чтобы не держать два разных значения.
-          manager_channel_chat_id: mgrChannel === 'telegram' ? (chatId || null) : (mgrChat || null),
-          guest_default_channel: document.getElementById('ns_guest_channel')?.value || 'telegram',
-          guest_channel_url:  document.getElementById('ns_channel_url').value.trim() || null,
-          guest_invite_template: document.getElementById('ns_template').value || null,
-          notify_on_inbound:   document.getElementById('ns_notify_inbound').checked,
-          notify_on_checkin:   document.getElementById('ns_notify_checkin').checked,
-          notify_on_checkout:  document.getElementById('ns_notify_checkout').checked,
-          notify_on_complaint: document.getElementById('ns_notify_complaint').checked,
-        };
-        await saveManagerSettings(patch);
+        await saveManagerSettings(buildManagerSettingsPatch());
         const msg = document.getElementById('nsSaveMsg');
         if (msg) { msg.hidden = false; msg.textContent = '✓ Сохранено'; msg.style.color = 'var(--color-success,#1a7f37)'; }
       } catch (err) {
@@ -1943,24 +1994,16 @@ export function bindGuestBotEvents(state) {
     }
     if (e.target.closest('#ns_test_btn')) {
       try {
-        // Сначала сохраняем куда писать, иначе сервер не знает адресата.
-        const mgrChannel = document.getElementById('ns_manager_channel')?.value || 'telegram';
-        const chatId = document.getElementById('ns_chat_id').value.trim();
-        const mgrChat = document.getElementById('ns_manager_chat')?.value.trim() || '';
-        const value = mgrChannel === 'telegram' ? chatId : mgrChat;
-        if (!value) {
-          alert(mgrChannel === 'telegram'
-            ? 'Сначала укажите ваш Telegram chat_id'
-            : `Сначала укажите ваш идентификатор в ${CHANNEL_TITLE[mgrChannel] || mgrChannel}`);
+        // Сначала сохраняем получателей, иначе сервер не знает, куда писать.
+        const patch = buildManagerSettingsPatch();
+        if (!patch.manager_recipients.length) {
+          alert('Добавьте хотя бы одного получателя с указанным chat_id.');
           return;
         }
-        await saveManagerSettings({
-          manager_channel: mgrChannel,
-          manager_channel_chat_id: value,
-          ...(mgrChannel === 'telegram' ? { manager_tg_chat_id: Number(chatId) } : {}),
-        });
+        await saveManagerSettings(patch);
         await sendTestNotificationToManager();
-        alert(`Тестовое сообщение отправлено. Проверьте ${CHANNEL_TITLE[mgrChannel] || mgrChannel}.`);
+        const names = [...new Set(patch.manager_recipients.map(r => CHANNEL_TITLE[r.channel] || r.channel))].join(', ');
+        alert(`Тестовое сообщение отправлено всем получателям. Проверьте ${names}.`);
       } catch (err) {
         alert('Не удалось: ' + (err?.message || err));
       }

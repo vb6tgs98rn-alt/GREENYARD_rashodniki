@@ -281,9 +281,10 @@ type ManagerSettings = {
   guest_channel_url: string | null;
   guest_channel_invite: string | null;
   guest_invite_template: string | null;
+  manager_recipients: Array<{ channel: string; chat_id: string }> | null;
 };
 
-/** Куда писать менеджеру. Пока настройки не обновлены — это Telegram. */
+/** Куда писать менеджеру (старый одиночный адресат). Пока настройки не обновлены — это Telegram. */
 function managerRcpt(s: any): Recipient | null {
   const channel = (isChannel(s?.manager_channel) ? s.manager_channel : "telegram") as ChannelId;
   const chatId = s?.manager_channel_chat_id
@@ -291,18 +292,49 @@ function managerRcpt(s: any): Recipient | null {
   return chatId ? { channel, chatId } : null;
 }
 
+/**
+ * Список получателей уведомлений менеджеру. Если задан manager_recipients —
+ * берём его (рассылка сразу на несколько мессенджеров/аккаунтов).
+ * Иначе — обратная совместимость со старыми полями (один адресат).
+ * Дубликаты (один channel+chat_id) убираем.
+ */
+function managerRecipients(s: any): Recipient[] {
+  const raw = Array.isArray(s?.manager_recipients) ? s.manager_recipients : [];
+  const list: Recipient[] = [];
+  const seen = new Set<string>();
+  const push = (channel: any, chatId: any) => {
+    const ch = (isChannel(channel) ? channel : "telegram") as ChannelId;
+    const id = chatId == null ? "" : String(chatId).trim();
+    if (!id) return;
+    const key = `${ch}:${id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    list.push({ channel: ch, chatId: id });
+  };
+  for (const r of raw) push(r?.channel, r?.chat_id ?? r?.chatId);
+  if (list.length === 0) {
+    const legacy = managerRcpt(s);
+    if (legacy) push(legacy.channel, legacy.chatId);
+  }
+  return list;
+}
+
 async function notifyManager(userId: string, text: string, flag?: keyof ManagerSettings) {
   const settings = await loadManagerSettings(userId);
-  const to = managerRcpt(settings);
-  if (!to) {
-    console.log("[bot] notifyManager пропущено: чат менеджера не задан");
-    return;
-  }
   if (flag && (settings as any)?.[flag] === false) {
     console.log(`[bot] notifyManager пропущено по флагу ${String(flag)}`);
     return;
   }
-  await send(to, text);
+  const rcpts = managerRecipients(settings);
+  if (rcpts.length === 0) {
+    console.log("[bot] notifyManager пропущено: получатели не заданы");
+    return;
+  }
+  // Шлём всем параллельно; ошибка одного адресата не мешает остальным.
+  await Promise.all(rcpts.map(async (to) => {
+    try { await send(to, text); }
+    catch (e) { console.error(`[bot] notifyManager ошибка (${to.channel}:${to.chatId}):`, e); }
+  }));
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1438,15 +1470,19 @@ async function endpointTest(req: Request): Promise<Response> {
   const userId = await getUserIdFromJwt(req);
   if (!userId) return json({ ok: false, error: "unauthorized" }, 401);
   const settings = await loadManagerSettings(userId);
-  const to = managerRcpt(settings);
-  if (!to) return json({ ok: false, error: "manager_chat_id_not_set" }, 400);
-  const text = `✅ <b>Это тестовое сообщение от Green Yard.</b>\n\nКанал: <b>${CHANNEL_TITLE[to.channel]}</b>.\nЕсли вы видите его — уведомления настроены корректно и бот будет писать сюда о действиях гостей.`;
-  const r = await send(to, text);
-  if (!r.ok) {
-    console.error("[bot] endpointTest ошибка отправки:", r.error);
-    return json({ ok: false, error: "channel_error", channel: to.channel }, 502);
-  }
-  return json({ ok: true, channel: to.channel });
+  const rcpts = managerRecipients(settings);
+  if (rcpts.length === 0) return json({ ok: false, error: "manager_chat_id_not_set" }, 400);
+  // Шлём тест каждому получателю; собираем успешные/неудачные каналы.
+  const results = await Promise.all(rcpts.map(async (to) => {
+    const text = `✅ <b>Это тестовое сообщение от Green Yard.</b>\n\nКанал: <b>${CHANNEL_TITLE[to.channel]}</b>.\nЕсли вы видите его — уведомления настроены корректно и бот будет писать сюда о действиях гостей.`;
+    let ok = false;
+    try { ok = (await send(to, text)).ok; }
+    catch (e) { console.error(`[bot] endpointTest ошибка (${to.channel}:${to.chatId}):`, e); }
+    return { channel: to.channel, chat_id: to.chatId, ok };
+  }));
+  const okCount = results.filter((r) => r.ok).length;
+  if (okCount === 0) return json({ ok: false, error: "channel_error", results }, 502);
+  return json({ ok: true, sent: okCount, total: results.length, results });
 }
 
 /** Сообщение от менеджера горничной. */
