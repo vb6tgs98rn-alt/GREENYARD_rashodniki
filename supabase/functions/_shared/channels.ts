@@ -85,7 +85,7 @@ const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const TG_API = `https://api.telegram.org/bot${TG_TOKEN}`;
 
 const MAX_TOKEN = Deno.env.get("MAX_BOT_TOKEN") ?? "";
-const MAX_API = Deno.env.get("MAX_API_BASE") ?? "https://platform-api2.max.ru";
+const MAX_API = Deno.env.get("MAX_API_BASE") ?? "https://platform-api.max.ru";
 
 const WA_TOKEN = Deno.env.get("WHATSAPP_TOKEN") ?? "";
 const WA_PHONE_ID = Deno.env.get("WHATSAPP_PHONE_ID") ?? "";
