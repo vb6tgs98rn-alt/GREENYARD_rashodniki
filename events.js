@@ -621,6 +621,15 @@ function bindPurchaseModal() {
 
   dom.purchaseApartmentSelect?.addEventListener('change', () => renderNewPurchaseItems());
 
+  // Кнопка «+ Своя позиция» — добавляет пустую строку (название + кол-во).
+  byId('addCustomPurchaseRow')?.addEventListener('click', () => addCustomPurchaseRow());
+
+  // Делегированное удаление строки своей позиции.
+  byId('purchaseCustomList')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-remove-custom-row]');
+    if (btn) btn.closest('.purchase-custom-row')?.remove();
+  });
+
   byId('saveNewPurchaseRequest')?.addEventListener('click', async () => {
     const apartmentId = dom.purchaseApartmentSelect?.value;
     const checkboxes = document.querySelectorAll('.purchase-item-check:checked');
@@ -628,15 +637,20 @@ function bindPurchaseModal() {
       const qtyInput = document.querySelector(`[data-purchase-qty="${cb.dataset.itemId}"]`);
       return { itemId: cb.dataset.itemId, name: cb.dataset.itemName, unit: cb.dataset.itemUnit, qty: Number(qtyInput?.value || 1) };
     });
-    // Произвольная позиция (не из списка) — добавляется той же кнопкой, если заполнено название
-    const customName = (byId('purchaseCustomName')?.value || '').trim();
-    if (customName) {
-      const customUnit = (byId('purchaseCustomUnit')?.value || '').trim() || 'шт';
-      const customQty = Number(byId('purchaseCustomQty')?.value || 0);
-      if (!(customQty > 0)) { setStatus('У своей позиции количество должно быть больше 0'); byId('purchaseCustomQty')?.focus(); return; }
-      items.push({ itemId: '', name: customName, unit: customUnit, qty: customQty });
+    // Произвольные позиции (не из списка расходников) — все строки в #purchaseCustomList с непустым названием.
+    const customRows = document.querySelectorAll('#purchaseCustomList .purchase-custom-row');
+    for (const row of customRows) {
+      const name = (row.querySelector('.purchase-custom-name')?.value || '').trim();
+      if (!name) continue;
+      const qty = Number(row.querySelector('.purchase-custom-qty')?.value || 0);
+      if (!(qty > 0)) {
+        setStatus(`У позиции «${name}» количество должно быть больше 0`);
+        row.querySelector('.purchase-custom-qty')?.focus();
+        return;
+      }
+      items.push({ itemId: '', name, unit: 'шт', qty });
     }
-    if (!items.length) { setStatus('Отметь расходники или укажи свою позицию'); return; }
+    if (!items.length) { setStatus('Отметь расходники или добавь свою позицию'); return; }
     if (createPurchaseRequest(apartmentId, items)) {
       closeModal('newPurchaseRequestModal');
       renderPurchaseModal();
@@ -645,14 +659,28 @@ function bindPurchaseModal() {
   });
 }
 
+// Добавляет одну строку своей позиции в контейнер #purchaseCustomList.
+function addCustomPurchaseRow() {
+  const list = byId('purchaseCustomList');
+  if (!list) return;
+  const row = document.createElement('div');
+  row.className = 'purchase-custom-row';
+  row.innerHTML = `
+    <label style="flex:1;min-width:160px"><span class="small">Название</span><input type="text" class="purchase-custom-name" placeholder="Например, лампочка E27" /></label>
+    <label style="width:110px"><span class="small">Кол-во</span><input type="number" class="purchase-custom-qty" inputmode="numeric" min="0.1" step="0.1" value="1" /></label>
+    <button type="button" class="btn btn-secondary purchase-custom-remove" data-remove-custom-row aria-label="Удалить позицию">✕</button>
+  `;
+  list.appendChild(row);
+  row.querySelector('.purchase-custom-name')?.focus();
+}
+
 function renderNewPurchaseForm() {
   const state = getState();
   if (!dom.purchaseApartmentSelect) return;
   dom.purchaseApartmentSelect.innerHTML = state.apartments.map(a => `<option value="${a.id}">${getDisplayApartmentName(a.name)}</option>`).join('');
-  // Сброс полей произвольной позиции при открытии формы
-  const nameEl = byId('purchaseCustomName'); if (nameEl) nameEl.value = '';
-  const unitEl = byId('purchaseCustomUnit'); if (unitEl) unitEl.value = '';
-  const qtyEl = byId('purchaseCustomQty'); if (qtyEl) qtyEl.value = '1';
+  // Сброс списка своих позиций при открытии формы.
+  const customList = byId('purchaseCustomList');
+  if (customList) customList.innerHTML = '';
   renderNewPurchaseItems();
 }
 

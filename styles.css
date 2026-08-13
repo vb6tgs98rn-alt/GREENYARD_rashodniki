@@ -365,6 +365,18 @@ button,input,select{font:inherit} button{cursor:pointer;border:none;background:n
   height:16px;
   pointer-events:none;
 }
+/* Строка «Своя позиция» в модалке новой заявки на закупку. */
+.purchase-custom-row{
+  display:flex;
+  gap:.5rem;
+  flex-wrap:wrap;
+  align-items:flex-end;
+  margin-bottom:.5rem;
+}
+.purchase-custom-row .purchase-custom-remove{
+  padding:.4rem .7rem;
+  align-self:flex-end;
+}
 
 /* ─── Настройки аккаунта: сообщение под формой смены пароля ─────────── */
 #pwdMsg{
