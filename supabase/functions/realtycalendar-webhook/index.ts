@@ -194,6 +194,20 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
     const r = await send(to, text, kb);
     if (r?.ok) {
       offered.push(m.id);
+      // Логируем первое предложение в чат менеджер↔горничная, чтобы в UI приложения было видно приглашение.
+      // Текст без HTML-тегов — в базе храним чистый текст, как в остальных местах (см. logMaidMessage в telegram-bot).
+      const plainText = text.replace(/<[^>]+>/g, "");
+      await admin.from("maid_messages").insert({
+        user_id: userId,
+        maid_id: m.id,
+        tg_chat_id: to.channel === "telegram" ? Number(to.chatId) : null,
+        tg_message_id: to.channel === "telegram" && r.messageId != null ? Number(r.messageId) : null,
+        channel: to.channel,
+        channel_chat_id: to.chatId,
+        direction: "outbound",
+        sender: "bot",
+        text: plainText,
+      });
       // Если только одна горничная — сохраняем id сообщения для последующего редактирования
       if ((maids?.length || 0) === 1) {
         const patch: Record<string, unknown> = {
