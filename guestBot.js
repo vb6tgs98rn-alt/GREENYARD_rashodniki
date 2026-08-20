@@ -31,6 +31,8 @@ import { fetchRealtyCalendarBookings } from './api.js';
 // URL Edge Function бота (один webhook для всех пользователей).
 export const TELEGRAM_BOT_USERNAME_DEFAULT = 'greenyard_guests_bot';
 export const BOT_FUNCTION_URL = 'https://wpwuxcxmtvdxftqrrxuu.supabase.co/functions/v1/telegram-bot';
+// Отдельный бот для горничных (@A_smena_bot). Приглашения и сообщения горничным идут туда.
+export const MAID_BOT_FUNCTION_URL = 'https://wpwuxcxmtvdxftqrrxuu.supabase.co/functions/v1/maid-bot';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 0) Утилиты

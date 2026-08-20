@@ -17,13 +17,13 @@
 //   fetchMaids()            — список горничных с закреплёнными квартирами
 //   fetchMaidChats()        — список чатов горничных для раздела «Чаты»
 //
-// Требует: supabase-client.js, render.js, config (BOT_FUNCTION_URL)
+// Требует: supabase-client.js, render.js, guestBot (MAID_BOT_FUNCTION_URL)
 // ==================================================
 
 import { getSupabaseClient, waitForAuthReady, requireUser } from './supabase-client.js';
 import { openModal, closeModal, setStatus } from './render.js';
 import {
-  BOT_FUNCTION_URL,
+  MAID_BOT_FUNCTION_URL,
   CHANNEL_TITLE,
   botAuthHeaders,
   fillChannelOptions,
@@ -83,7 +83,7 @@ export async function fetchMaids() {
 
 /** Ссылка-приглашение для горничной в выбранном мессенджере. */
 async function fetchMaidInvite(maidId, channel) {
-  const r = await fetch(`${BOT_FUNCTION_URL}/maid_invite`, {
+  const r = await fetch(`${MAID_BOT_FUNCTION_URL}/maid_invite`, {
     method: 'POST',
     headers: await botAuthHeaders(),
     body: JSON.stringify({ maid_id: maidId, channel }),
@@ -230,7 +230,7 @@ export async function sendManagerMessageToMaid(maidId, text) {
   const { data: { session } } = await sb.auth.getSession();
   const token = session?.access_token;
   if (!token) throw new Error('unauthorized');
-  const r = await fetch(`${BOT_FUNCTION_URL}/send_maid`, {
+  const r = await fetch(`${MAID_BOT_FUNCTION_URL}/send_maid`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

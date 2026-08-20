@@ -88,27 +88,44 @@ export type InboundEvent = {
 // это токены, URL, логины и номера, внутренних пробелов в них не бывает.
 const env = (k: string, def = "") => (Deno.env.get(k) ?? def).replace(/\s+/g, "");
 
-const TG_TOKEN = env("TELEGRAM_BOT_TOKEN");
-const TG_API = `https://api.telegram.org/bot${TG_TOKEN}`;
+// Профиль бота: default — общий бот (гости + менеджер), maid — отдельный бот для горничных.
+// Каждый профиль читает свой набор секретов, всё остальное (форматирование, парсинг, лимиты) — общее.
+export type BotProfile = "default" | "maid";
 
+// Секреты общего бота
+const TG_TOKEN = env("TELEGRAM_BOT_TOKEN");
 const MAX_TOKEN = env("MAX_BOT_TOKEN");
+// Секреты бота горничных (создаём отдельно, чтобы у горничных был свой чат)
+const MAID_TG_TOKEN = env("MAID_TELEGRAM_BOT_TOKEN");
+const MAID_MAX_TOKEN = env("MAID_MAX_BOT_TOKEN");
+
 const MAX_API = env("MAX_API_BASE", "https://platform-api.max.ru");
 
 const WA_TOKEN = env("WHATSAPP_TOKEN");
 const WA_PHONE_ID = env("WHATSAPP_PHONE_ID");
 const WA_VERSION = env("WHATSAPP_API_VERSION", "v21.0");
 
+/** Токен Telegram-бота для указанного профиля. */
+export function tgTokenFor(profile: BotProfile = "default"): string {
+  return profile === "maid" ? MAID_TG_TOKEN : TG_TOKEN;
+}
+
+/** Токен MAX-бота для указанного профиля. */
+export function maxTokenFor(profile: BotProfile = "default"): string {
+  return profile === "maid" ? MAID_MAX_TOKEN : MAX_TOKEN;
+}
+
 /** Канал считается включённым, если для него заданы все обязательные секреты. */
-export function channelEnabled(channel: ChannelId): boolean {
-  if (channel === "telegram") return !!TG_TOKEN;
-  if (channel === "max") return !!MAX_TOKEN;
+export function channelEnabled(channel: ChannelId, profile: BotProfile = "default"): boolean {
+  if (channel === "telegram") return !!tgTokenFor(profile);
+  if (channel === "max") return !!maxTokenFor(profile);
   if (channel === "whatsapp") return !!WA_TOKEN && !!WA_PHONE_ID;
   return false;
 }
 
 /** Список включённых каналов — для отдачи во фронтенд. */
-export function enabledChannels(): ChannelId[] {
-  return CHANNELS.filter(channelEnabled);
+export function enabledChannels(profile: BotProfile = "default"): ChannelId[] {
+  return CHANNELS.filter((c) => channelEnabled(c, profile));
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -206,7 +223,8 @@ function tgKeyboard(buttons?: Btn[][]): any {
   return rows.length ? { inline_keyboard: rows } : undefined;
 }
 
-async function tgSend(chatId: string, html: string, opts: SendOpts): Promise<SendResult> {
+async function tgSend(chatId: string, html: string, opts: SendOpts, profile: BotProfile): Promise<SendResult> {
+  const token = tgTokenFor(profile);
   const payload: Record<string, any> = {
     chat_id: chatId,
     text: clamp(html, TEXT_LIMIT.telegram),
@@ -216,7 +234,7 @@ async function tgSend(chatId: string, html: string, opts: SendOpts): Promise<Sen
   const kb = tgKeyboard(opts.buttons);
   if (kb) payload.reply_markup = kb;
 
-  const r = await fetch(`${TG_API}/sendMessage`, {
+  const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -229,8 +247,9 @@ async function tgSend(chatId: string, html: string, opts: SendOpts): Promise<Sen
   return { ok: true, messageId: data?.result?.message_id != null ? String(data.result.message_id) : null };
 }
 
-async function tgAnswerCallback(callbackId: string, text: string): Promise<void> {
-  await fetch(`${TG_API}/answerCallbackQuery`, {
+async function tgAnswerCallback(callbackId: string, text: string, profile: BotProfile): Promise<void> {
+  const token = tgTokenFor(profile);
+  await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ callback_query_id: callbackId, text }),
@@ -238,16 +257,17 @@ async function tgAnswerCallback(callbackId: string, text: string): Promise<void>
 }
 
 /** Достаём прямую ссылку на самое крупное фото из апдейта Telegram. */
-async function tgPhotoUrl(msg: any): Promise<string | null> {
+async function tgPhotoUrl(msg: any, profile: BotProfile = "default"): Promise<string | null> {
   const photos = msg?.photo;
   if (!Array.isArray(photos) || photos.length === 0) return null;
   const fileId = photos[photos.length - 1]?.file_id;
   if (!fileId) return null;
+  const token = tgTokenFor(profile);
   try {
-    const r = await fetch(`${TG_API}/getFile?file_id=${encodeURIComponent(fileId)}`);
+    const r = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`);
     const j = await r.json();
     const path = j?.result?.file_path;
-    return path ? `https://api.telegram.org/file/bot${TG_TOKEN}/${path}` : null;
+    return path ? `https://api.telegram.org/file/bot${token}/${path}` : null;
   } catch {
     return null;
   }
@@ -277,7 +297,8 @@ function maxKeyboard(buttons?: Btn[][]): any[] | undefined {
   return [{ type: "inline_keyboard", payload: { buttons: rows } }];
 }
 
-async function maxSend(chatId: string, html: string, opts: SendOpts): Promise<SendResult> {
+async function maxSend(chatId: string, html: string, opts: SendOpts, profile: BotProfile): Promise<SendResult> {
+  const token = maxTokenFor(profile);
   const url = new URL("/messages", MAX_API);
   url.searchParams.set("chat_id", chatId);
   if (!opts.preview) url.searchParams.set("disable_link_preview", "true");
@@ -289,7 +310,7 @@ async function maxSend(chatId: string, html: string, opts: SendOpts): Promise<Se
 
   const r = await fetch(url.href, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: MAX_TOKEN },
+    headers: { "Content-Type": "application/json", Authorization: token },
     body: JSON.stringify(body),
   });
   const data = await r.json().catch(() => ({}));
@@ -300,12 +321,13 @@ async function maxSend(chatId: string, html: string, opts: SendOpts): Promise<Se
   return { ok: true, messageId: data?.message?.body?.mid ? String(data.message.body.mid) : null };
 }
 
-async function maxAnswerCallback(callbackId: string, text: string): Promise<void> {
+async function maxAnswerCallback(callbackId: string, text: string, profile: BotProfile): Promise<void> {
+  const token = maxTokenFor(profile);
   const url = new URL("/answers", MAX_API);
   url.searchParams.set("callback_id", callbackId);
   await fetch(url.href, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: MAX_TOKEN },
+    headers: { "Content-Type": "application/json", Authorization: token },
     body: JSON.stringify(text ? { notification: text } : {}),
   }).catch(() => {});
 }
@@ -408,19 +430,23 @@ async function waMediaUrl(mediaId: string): Promise<string | null> {
 // ЕДИНЫЙ ИНТЕРФЕЙС ОТПРАВКИ
 // ═══════════════════════════════════════════════════════════════════
 
+export type SendMessageOpts = SendOpts & { botProfile?: BotProfile };
+
 /**
  * Отправить сообщение в любой канал.
  * Текст всегда передаётся в HTML — адаптер сам приведёт его к своему формату.
+ * Параметр botProfile выбирает набор токенов: "default" — общий бот, "maid" — бот горничных.
  */
-export async function sendMessage(to: Recipient, html: string, opts: SendOpts = {}): Promise<SendResult> {
+export async function sendMessage(to: Recipient, html: string, opts: SendMessageOpts = {}): Promise<SendResult> {
+  const profile: BotProfile = opts.botProfile ?? "default";
   if (!to?.chatId) return { ok: false, messageId: null, error: "no_chat_id" };
-  if (!channelEnabled(to.channel)) {
-    console.error(`[channels] канал ${to.channel} не настроен, сообщение не отправлено`);
+  if (!channelEnabled(to.channel, profile)) {
+    console.error(`[channels] канал ${to.channel} (профиль ${profile}) не настроен, сообщение не отправлено`);
     return { ok: false, messageId: null, error: "channel_disabled" };
   }
   try {
-    if (to.channel === "telegram") return await tgSend(to.chatId, html, opts);
-    if (to.channel === "max") return await maxSend(to.chatId, html, opts);
+    if (to.channel === "telegram") return await tgSend(to.chatId, html, opts, profile);
+    if (to.channel === "max") return await maxSend(to.chatId, html, opts, profile);
     if (to.channel === "whatsapp") return await waSend(to.chatId, html, opts);
     return { ok: false, messageId: null, error: "unknown_channel" };
   } catch (e) {
@@ -431,18 +457,18 @@ export async function sendMessage(to: Recipient, html: string, opts: SendOpts = 
 }
 
 /** Погасить индикатор загрузки на нажатой кнопке. Для WhatsApp не требуется. */
-export async function answerCallback(channel: ChannelId, callbackId: string, text = ""): Promise<void> {
+export async function answerCallback(channel: ChannelId, callbackId: string, text = "", profile: BotProfile = "default"): Promise<void> {
   if (!callbackId) return;
-  if (channel === "telegram") return await tgAnswerCallback(callbackId, text);
-  if (channel === "max") return await maxAnswerCallback(callbackId, text);
+  if (channel === "telegram") return await tgAnswerCallback(callbackId, text, profile);
+  if (channel === "max") return await maxAnswerCallback(callbackId, text, profile);
 }
 
 // ═══════════════════════════════════════════════════════════════════
 // РАЗБОР ВХОДЯЩИХ СОБЫТИЙ
 // ═══════════════════════════════════════════════════════════════════
 
-/** Telegram: update → нормализованное событие. */
-export async function parseTelegramUpdate(update: any): Promise<InboundEvent | null> {
+/** Telegram: update → нормализованное событие. Профиль нужен для получения фото по botProfile-токену. */
+export async function parseTelegramUpdate(update: any, profile: BotProfile = "default"): Promise<InboundEvent | null> {
   if (update?.callback_query) {
     const cq = update.callback_query;
     const chatId = cq?.message?.chat?.id;
@@ -496,7 +522,7 @@ export async function parseTelegramUpdate(update: any): Promise<InboundEvent | n
     text: rawText,
     messageId: msg.message_id != null ? String(msg.message_id) : null,
     from,
-    photoUrl: await tgPhotoUrl(msg),
+    photoUrl: await tgPhotoUrl(msg, profile),
   };
 }
 
@@ -670,6 +696,17 @@ export async function parseWhatsappUpdate(body: any): Promise<InboundEvent[]> {
 const TG_BOT_USERNAME = env("TELEGRAM_BOT_USERNAME");
 const MAX_BOT_USERNAME = env("MAX_BOT_USERNAME");
 const WA_PHONE_NUMBER = env("WHATSAPP_PHONE_NUMBER");
+// Юзернеймы бота горничных
+const MAID_TG_BOT_USERNAME = env("MAID_TELEGRAM_BOT_USERNAME");
+const MAID_MAX_BOT_USERNAME = env("MAID_MAX_BOT_USERNAME");
+
+function tgBotUsernameFor(profile: BotProfile): string {
+  return profile === "maid" ? MAID_TG_BOT_USERNAME : TG_BOT_USERNAME;
+}
+
+function maxBotUsernameFor(profile: BotProfile): string {
+  return profile === "maid" ? MAID_MAX_BOT_USERNAME : MAX_BOT_USERNAME;
+}
 
 /**
  * Ссылка, по которой гость или горничная попадёт в нужный бот
@@ -678,12 +715,14 @@ const WA_PHONE_NUMBER = env("WHATSAPP_PHONE_NUMBER");
  * В WhatsApp диплинков к боту нет, поэтому подставляем текст «/start <код>»
  * в поле ввода: собеседнику остаётся нажать «отправить».
  */
-export function inviteLink(channel: ChannelId, payload: string): string | null {
+export function inviteLink(channel: ChannelId, payload: string, profile: BotProfile = "default"): string | null {
   if (channel === "telegram") {
-    return TG_BOT_USERNAME ? `https://t.me/${TG_BOT_USERNAME}?start=${encodeURIComponent(payload)}` : null;
+    const u = tgBotUsernameFor(profile);
+    return u ? `https://t.me/${u}?start=${encodeURIComponent(payload)}` : null;
   }
   if (channel === "max") {
-    return MAX_BOT_USERNAME ? `https://max.ru/${MAX_BOT_USERNAME}?start=${encodeURIComponent(payload)}` : null;
+    const u = maxBotUsernameFor(profile);
+    return u ? `https://max.ru/${u}?start=${encodeURIComponent(payload)}` : null;
   }
   if (channel === "whatsapp") {
     const phone = waPhone(WA_PHONE_NUMBER);

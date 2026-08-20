@@ -66,10 +66,16 @@ function managerRcpt(s: any): Recipient | null {
   return chatId ? { channel, chatId } : null;
 }
 
-/** Короткий псевдоним отправки. */
-async function send(to: Recipient | null, html: string, buttons?: Btn[][]) {
+/** Отправка горничной — через бот горничных (@A_smena_bot). */
+async function sendMaid(to: Recipient | null, html: string, buttons?: Btn[][]) {
   if (!to) return null;
-  return await sendMessage(to, html, { buttons });
+  return await sendMessage(to, html, { buttons, botProfile: "maid" });
+}
+
+/** Отправка менеджеру — через общий бот (где он сидит). */
+async function sendManager(to: Recipient | null, html: string, buttons?: Btn[][]) {
+  if (!to) return null;
+  return await sendMessage(to, html, { buttons, botProfile: "default" });
 }
 
 // Формат даты дд.ММ.гггг
@@ -122,12 +128,12 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
       if (existing.maid_id) {
         const { data: maid } = await admin
           .from("maids").select("tg_chat_id, channel, channel_chat_id, name").eq("id", existing.maid_id).maybeSingle();
-        await send(
+        await sendMaid(
           maidRcpt(maid),
           `⚠️ <b>Дата уборки изменилась</b>\n📍 ${htmlEscape(booking.apartment_title || "")}\n📅 Новая дата: ${fmtDate(booking.end_date)}, ${(cleaningTime as string).slice(0,5)}`
         );
       }
-      await send(
+      await sendManager(
         managerTo,
         `📅 Дата уборки по брони <code>${bookingIdStr}</code> перенесена на ${fmtDate(booking.end_date)} (${htmlEscape(booking.apartment_title || "")}).`
       );
@@ -168,7 +174,7 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
 
   if (maidIds.length === 0) {
     // Нет закреплённой горничной — уведомляем менеджера
-    await send(
+    await sendManager(
       managerTo,
       `⚠️ Новая бронь <code>${bookingIdStr}</code> — <b>${htmlEscape(booking.apartment_title || "")}</b>, выселение ${fmtDate(booking.end_date)}.\nЗа этой квартирой не закреплена ни одна горничная. Назначьте вручную в приложении.`
     );
@@ -191,7 +197,7 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
       { text: "❌ Отказаться", data: `maid_decline:${cleaningId}` },
     ]];
     const text = `Следующая уборка <b>${fmtDate(booking.end_date)}</b>\nАдрес: ${htmlEscape(booking.apartment_title || "?")}`;
-    const r = await send(to, text, kb);
+    const r = await sendMaid(to, text, kb);
     if (r?.ok) {
       offered.push(m.id);
       // Логируем первое предложение в чат менеджер↔горничная, чтобы в UI приложения было видно приглашение.
@@ -231,7 +237,7 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
   // Уведомление менеджеру
   {
     const maidNames = (maids || []).map(m => m.name).join(", ");
-    await send(
+    await sendManager(
       managerTo,
       `🧹 Уборка по брони <code>${bookingIdStr}</code> — <b>${htmlEscape(booking.apartment_title || "")}</b>, ${fmtDate(booking.end_date)}. Отправлено горничным: ${htmlEscape(maidNames)}.`
     );
@@ -258,7 +264,7 @@ async function cancelCleaning(userId: string, bookingId: number) {
   if (cleaning.maid_id) {
     const { data: maid } = await admin
       .from("maids").select("tg_chat_id, channel, channel_chat_id, name").eq("id", cleaning.maid_id).maybeSingle();
-    await send(
+    await sendMaid(
       maidRcpt(maid),
       `❌ <b>Уборка отменена</b>\n📍 ${htmlEscape(cleaning.apartment_title || "")}\n📅 ${fmtDate(cleaning.scheduled_date)}\nБронь была отменена гостем/системой.`
     );
@@ -270,7 +276,7 @@ async function cancelCleaning(userId: string, bookingId: number) {
     .select("manager_tg_chat_id, manager_channel, manager_channel_chat_id")
     .eq("user_id", userId)
     .maybeSingle();
-  await send(
+  await sendManager(
     managerRcpt(ms),
     `❌ Уборка по брони <code>${bookingIdStr}</code> отменена (${htmlEscape(cleaning.apartment_title || "")}, ${fmtDate(cleaning.scheduled_date)}).`
   );
