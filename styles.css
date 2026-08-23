@@ -518,6 +518,44 @@ body:has(.drawer.open){ overflow:hidden; }
   color:var(--color-success, #1a7f37);
 }
 
+/* Статусные бейджи в карточке брони (оплата, договор). */
+.bk-badge{
+  display:inline-block;
+  padding:.15rem .45rem;
+  border-radius:.5rem;
+  font-size:.72rem;
+  background:var(--color-surface-2);
+  color:var(--color-text);
+  white-space:nowrap;
+}
+.bk-badge-ok{
+  background:color-mix(in oklab, var(--color-success, #1a7f37) 18%, var(--color-surface-2));
+  color:var(--color-success, #1a7f37);
+}
+.bk-badge-warn{
+  background:color-mix(in oklab, #d97706 18%, var(--color-surface-2));
+  color:#d97706;
+}
+.bk-badge-mute{ opacity:.6; }
+
+/* Копируемый телефон в карточке брони. */
+.bk-phone{
+  display:inline-flex;
+  align-items:center;
+  gap:.25rem;
+  background:transparent;
+  border:none;
+  padding:.15rem 0;
+  margin:0;
+  color:var(--color-text);
+  opacity:.85;
+  font:inherit;
+  font-size:.85rem;
+  cursor:pointer;
+  text-align:left;
+}
+.bk-phone:hover{ opacity:1; text-decoration:underline; }
+
 /* ── Инструкции и настройки бота ─────────────────────────────────── */
 #guestInstructionsModal label,
 #notifySettingsModal label{

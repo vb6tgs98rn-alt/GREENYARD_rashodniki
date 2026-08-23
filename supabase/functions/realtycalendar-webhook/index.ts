@@ -27,6 +27,7 @@ import {
   type Recipient,
   sendMessage,
 } from "../_shared/channels.ts";
+import { ensureBookingPayment, paymentMessage } from "../_shared/tochka_booking.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -304,6 +305,60 @@ interface RcBookingNormalized {
   rc_updated_at: string | null;
 }
 
+/**
+ * Продление после оплаты: если end_date вырос по сравнению с прежним,
+ * и по брони уже есть оплата (tochka_payments.status="paid"), — создаём
+ * новую ссылку на доплату и шлём гостю в его канал.
+ */
+async function handleExtensionAfterPayment(
+  sb: any,
+  userId: string,
+  booking: any,
+  oldEnd: string | null,
+): Promise<void> {
+  if (!oldEnd) return; // Новая бронь — не продление.
+  const newEnd = booking?.end_date;
+  if (!newEnd) return;
+  if (new Date(newEnd).getTime() <= new Date(oldEnd).getTime()) return;
+
+  // Гость уже оплатил?
+  const { data: paid } = await sb
+    .from("tochka_payments")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("booking_id", booking.booking_id)
+    .eq("status", "paid")
+    .limit(1)
+    .maybeSingle();
+  if (!paid) return; // Не платил — ссылку пришлёт обычный поток.
+
+  // Активная сессия гостя — куда шлём.
+  const { data: gs } = await sb
+    .from("guest_sessions")
+    .select("channel, channel_chat_id, tg_chat_id")
+    .eq("user_id", userId)
+    .eq("booking_id", booking.booking_id)
+    .order("last_message_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+  if (!gs) return;
+  const channel = (isChannel(gs.channel) ? gs.channel : "telegram") as ChannelId;
+  const chatId = gs.channel_chat_id
+    ?? (channel === "telegram" && gs.tg_chat_id != null ? String(gs.tg_chat_id) : null);
+  if (!chatId) return;
+
+  const res = await ensureBookingPayment(sb, userId, booking.booking_id, { force: true });
+  if (res.kind !== "ok" && res.kind !== "requisites") return;
+  const payMsg = paymentMessage(res, htmlEscape);
+  if (!payMsg) return;
+
+  const newEndHuman = fmtDate(newEnd);
+  const html = "📅 Ваша бронь продлена. Высылаем ссылку на оплату проживания.\n\n"
+    + payMsg
+    + "\n\nВаша дата выезда: <b>" + htmlEscape(newEndHuman) + "</b>";
+  await sendMessage({ channel, chatId }, html, { botProfile: "default" });
+}
+
 function normalize(payload: any): { action: string; status: string; booking: RcBookingNormalized } | null {
   if (!payload || typeof payload !== "object") return null;
   const action = String(payload.action || "");
@@ -410,6 +465,15 @@ serve(async (req) => {
     return ok({ ok: true, note: "skipped_request_status" });
   }
 
+  // Сохраняем старую end_date до upsert-а — сравним после, чтобы понять: продление?
+  const { data: prevBk } = await admin
+    .from("rc_bookings")
+    .select("end_date")
+    .eq("user_id", userId)
+    .eq("booking_id", booking.booking_id)
+    .maybeSingle();
+  const oldEnd = prevBk?.end_date || null;
+
   // Upsert в rc_bookings
   const row = {
     user_id: userId, booking_id: booking.booking_id, agency_id: booking.agency_id,
@@ -448,6 +512,14 @@ serve(async (req) => {
     }
   } catch (e) {
     console.error("[rc-webhook] cleaning processing failed:", e);
+  }
+
+  // ─── Продление после оплаты ───────────────────────
+  // Если end_date вырос и гость уже оплатил — вышлем новую ссылку на доплату.
+  try {
+    await handleExtensionAfterPayment(admin, userId, booking, oldEnd);
+  } catch (e) {
+    console.error("[rc-webhook] extension-after-payment failed:", e);
   }
 
   await admin.from("rc_webhook_log").insert({

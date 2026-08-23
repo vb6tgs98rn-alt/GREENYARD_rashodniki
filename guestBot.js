@@ -76,6 +76,20 @@ const fmtDateShort = (s) => {
   } catch { return String(s); }
 };
 
+// Формат даты в списке броней: «24 авг»; год добавляется, если бронь в прошлом году.
+const fmtBookingDate = (s) => {
+  if (!s) return '';
+  try {
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return String(s);
+    const now = new Date();
+    if (d.getFullYear() < now.getFullYear()) {
+      return d.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short', year: 'numeric' });
+    }
+    return d.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' });
+  } catch { return String(s); }
+};
+
 const fmtTime = (s) => {
   if (!s) return '';
   try {
@@ -508,7 +522,7 @@ export async function fillChannelOptions(selectEl, selectedId) {
 // 6) Рендер раздела «Брони»
 // ─────────────────────────────────────────────────────────────────────────────
 
-let _bookingsState = { all: [], filter: { apt: '', status: '', source: '' } };
+let _bookingsState = { all: [], filter: { apt: '', status: '', source: '' }, payments: new Map() };
 // Мессенджеры, реально настроенные на сервере — для кнопок копирования ссылки гостю.
 let _bookingsChannels = [{ id: 'telegram', title: 'Telegram' }];
 
@@ -525,6 +539,22 @@ async function reloadBookings(state) {
   _bookingsState.all = all || [];
   // Подгружаем список мессенджеров один раз — чтобы кнопки рендерились синхронно (важно для iOS-копирования).
   try { _bookingsChannels = await fetchChannels(); } catch { _bookingsChannels = [{ id: 'telegram', title: 'Telegram' }]; }
+  // Платежи по броням: берём только те, что в текущем списке; берём самый актуальный по updated_at.
+  _bookingsState.payments = new Map();
+  try {
+    const supabase = getSupabaseClient();
+    const ids = (_bookingsState.all || []).map(b => b.booking_id).filter(x => x != null);
+    if (supabase && ids.length) {
+      const { data: pays } = await supabase
+        .from('tochka_payments')
+        .select('booking_id, status, method, amount, paid_at, updated_at')
+        .in('booking_id', ids)
+        .order('updated_at', { ascending: false });
+      for (const p of (pays || [])) {
+        if (!_bookingsState.payments.has(p.booking_id)) _bookingsState.payments.set(p.booking_id, p);
+      }
+    }
+  } catch (e) { console.warn('[bookings] fetch payments failed:', e?.message); }
   renderBookingsList(state);
   renderBookingsFilters(state);
 }
@@ -588,9 +618,35 @@ function renderBookingsList(state) {
     const secureId = b.raw_payload?.data?.booking?.secure_id || String(b.booking_id || '');
     const linkSent = !!b.guest_link_sent_at;
     const aptName = apt?.name || b.apartment_title || `realty_id=${b.realty_id}`;
-    const phone = b.client_phone ? `<span class="small" style="opacity:.7;">${esc(b.client_phone)}</span>` : '';
+    const phoneRaw = b.client_phone || '';
+    const phone = phoneRaw
+      ? `<button type="button" class="bk-phone" data-copy-phone="${esc(phoneRaw)}" title="Скопировать номер">📞 ${esc(phoneRaw)}</button>`
+      : '';
     const guestName = b.client_fio || 'Без имени';
-    const dates = `${fmtDate(b.begin_date)} → ${fmtDate(b.end_date)}`;
+    const dates = `${fmtBookingDate(b.begin_date)} → ${fmtBookingDate(b.end_date)}`;
+
+    // Статус оплаты (Точка) — по брони.
+    const pay = _bookingsState.payments.get(b.booking_id) || null;
+    const payBadge = pay
+      ? (pay.status === 'paid'
+          ? '<span class="bk-badge bk-badge-ok">💳 Оплачено</span>'
+          : (pay.status === 'created'
+              ? '<span class="bk-badge bk-badge-warn">💳 Ожидает оплаты</span>'
+              : `<span class="bk-badge">💳 ${esc(pay.status)}</span>`))
+      : '<span class="bk-badge bk-badge-mute">💳 Ссылка не выслана</span>';
+
+    // Статус договора (ОкиДоки). 0 черновик, 1 выставлен, 2 подписан, 4 ожидает проверки.
+    const cs = b.contract_status_internal;
+    const contractBadge = b.okidoki_contract_id
+      ? (cs === 2
+          ? '<span class="bk-badge bk-badge-ok">📄 Подписан</span>'
+          : (cs === 1
+              ? '<span class="bk-badge bk-badge-warn">📄 Ждём подписания</span>'
+              : (cs === 4
+                  ? '<span class="bk-badge bk-badge-warn">📄 Проверка</span>'
+                  : `<span class="bk-badge">📄 ${esc(b.contract_status || 'Черновик')}</span>`)))
+      : '<span class="bk-badge bk-badge-mute">📄 Договор не создан</span>';
+    const statusRow = `<div class="bk-status" style="display:flex;gap:.35rem;flex-wrap:wrap;margin-top:.25rem;">${payBadge}${contractBadge}</div>`;
     const sourceMap = { manual: 'Вручную', 'sutochno.ru': 'Суточно', 'ostrovok.ru': 'Ostrovok', 'YandexTravel': 'Яндекс Путешествия', widget: 'Виджет' };
     const sourceTag = b.source ? `<span class="bk-tag">${esc(sourceMap[b.source] || b.source)}</span>` : '';
     const isCancelled = detectBookingStatus(b) === 'cancelled';
@@ -621,10 +677,7 @@ function renderBookingsList(state) {
          </button>`;
     const actions = isCancelled
       ? ''
-      : `<div class="bk-card-actions">
-          <button class="btn btn-secondary bk-btn-chat" data-session-booking="${esc(b.booking_id)}">💬 Чат</button>
-          ${linkButtons}
-        </div>`;
+      : `<div class="bk-card-actions">${linkButtons}</div>`;
 
     return `
       <div class="bk-card${isCancelled ? ' bk-cancelled' : ''}" data-booking="${esc(b.booking_id)}" style="${isCancelled ? 'opacity:.75;' : ''}">
@@ -639,6 +692,7 @@ function renderBookingsList(state) {
           <div class="bk-dates">${esc(dates)} · ${nights} ноч.</div>
           <div class="bk-amount">${fmtMoney(gross)} ${sourceTag}</div>
           ${taxLine}
+          ${statusRow}
         </div>
         ${cancelBlock}
         ${actions}
@@ -1781,6 +1835,29 @@ export function bindGuestBotEvents(state) {
         setTimeout(() => { if (saveCancelBtn) saveCancelBtn.textContent = 'Сохранить'; }, 1500);
       } catch (err) {
         alert('Не удалось сохранить причину: ' + (err?.message || err));
+      }
+      return;
+    }
+
+    // Копирование телефона гостя — одним нажатием.
+    const phoneBtn = e.target.closest('[data-copy-phone]');
+    if (phoneBtn) {
+      const raw = phoneBtn.getAttribute('data-copy-phone') || '';
+      const orig = phoneBtn.innerHTML;
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(raw);
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = raw; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        phoneBtn.innerHTML = '✓ Скопировано';
+        setTimeout(() => { if (phoneBtn) phoneBtn.innerHTML = orig; }, 1200);
+      } catch (err) {
+        alert('Не удалось скопировать: ' + (err?.message || err));
       }
       return;
     }
