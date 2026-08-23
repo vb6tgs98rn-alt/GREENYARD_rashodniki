@@ -591,7 +591,8 @@ function renderBookingsList(state) {
     const phone = b.client_phone ? `<span class="small" style="opacity:.7;">${esc(b.client_phone)}</span>` : '';
     const guestName = b.client_fio || 'Без имени';
     const dates = `${fmtDate(b.begin_date)} → ${fmtDate(b.end_date)}`;
-    const sourceTag = b.source ? `<span class="bk-tag">${esc(b.source)}</span>` : '';
+    const sourceMap = { manual: 'Вручную', 'sutochno.ru': 'Суточно', 'ostrovok.ru': 'Ostrovok', 'YandexTravel': 'Яндекс Путешествия', widget: 'Виджет' };
+    const sourceTag = b.source ? `<span class="bk-tag">${esc(sourceMap[b.source] || b.source)}</span>` : '';
     const isCancelled = detectBookingStatus(b) === 'cancelled';
     const taxLine = tax > 0
       ? `<div class="small" style="opacity:.7;">Комиссия: ${fmtMoney(tax)} · Чистый: <b>${fmtMoney(net)}</b></div>`
@@ -681,13 +682,15 @@ function ensureBookingsModal() {
           </select>
           <select id="bookingFilterSource" class="bk-filter">
             <option value="">Все источники</option>
-            <option value="manual">Manual</option>
-            <option value="avito">Avito</option>
-            <option value="cian">ЦИАН</option>
-            <option value="sutochno">Суточно</option>
-            <option value="booking">Booking</option>
-            <option value="ostrovok">Ostrovok</option>
-            <option value="yandex">Яндекс</option>
+            <option value="manual">Вручную</option>
+            <option value="Avito">Avito</option>
+            <option value="Cian">ЦИАН</option>
+            <option value="sutochno.ru">Суточно</option>
+            <option value="ostrovok.ru">Ostrovok</option>
+            <option value="YandexTravel">Яндекс Путешествия</option>
+            <option value="Bronevik">Броневик</option>
+            <option value="Otello">Otello</option>
+            <option value="widget">Виджет</option>
           </select>
           <button class="btn btn-secondary" id="bookingsReloadBtn" type="button">↻ Обновить</button>
         </div>

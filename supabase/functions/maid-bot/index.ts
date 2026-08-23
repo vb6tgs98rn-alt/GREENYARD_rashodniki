@@ -94,8 +94,56 @@ async function getUserIdFromJwt(req: Request): Promise<string | null> {
 
 // ─── Отправка ─────────────────────────────────────────────────────────
 
-/** Горничной: всегда через bot-профиль "maid". */
+/** Надпись на постоянной reply-клавиатуре в чате горничной. */
+const MAID_KB_LABEL = "🧹 Мои уборки";
+
+/**
+ * Отправка в Telegram-чат горничной с постоянной reply-клавиатурой.
+ * Если указаны inline-кнопки — шлём их (inline_keyboard); клавиатура снизу
+ * при этом всё равно остаётся, потому что мы её ставим с is_persistent.
+ * Если inline-кнопок нет — шлём reply-клавиатуру с одной кнопкой «Мои уборки».
+ */
+async function sendMaidTg(chatId: string, html: string, inlineButtons?: Btn[][]) {
+  const token = (Deno.env.get("MAID_TELEGRAM_BOT_TOKEN") ?? "").replace(/\s/g, "");
+  if (!token) return { ok: false, messageId: null, error: "no_token" } as const;
+
+  const payload: Record<string, any> = {
+    chat_id: chatId,
+    text: html,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+  };
+
+  if (inlineButtons?.length) {
+    payload.reply_markup = {
+      inline_keyboard: inlineButtons.map((row) =>
+        row.map((b) => (b.url ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.data ?? "" }))
+      ),
+    };
+  } else {
+    payload.reply_markup = {
+      keyboard: [[{ text: MAID_KB_LABEL }]],
+      resize_keyboard: true,
+      is_persistent: true,
+    };
+  }
+
+  const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!data?.ok) {
+    console.error("[maid-bot] sendMaidTg:", JSON.stringify(data).slice(0, 500));
+    return { ok: false, messageId: null, error: "tg_send_failed" } as const;
+  }
+  return { ok: true, messageId: data?.result?.message_id != null ? String(data.result.message_id) : null } as const;
+}
+
+/** Горничной: через bot-профиль "maid". В Telegram — с постоянной клавиатурой. */
 async function sendMaid(to: Recipient, html: string, buttons?: Btn[][]) {
+  if (to.channel === "telegram") return await sendMaidTg(to.chatId, html, buttons);
   return await sendMessage(to, html, { buttons, botProfile: MAID_PROFILE });
 }
 
@@ -244,6 +292,32 @@ async function logMaidMessage(
   });
 }
 
+/**
+ * Уведомить гостя, что квартира готова. Канал берём из guest_sessions:
+ * если гость писал — шлём в его канал (channel + channel_chat_id).
+ * Никаких кнопок. Шлём через общий гостиный бот (профиль "default").
+ */
+async function notifyGuestCleaningDone(userId: string, bookingId: string | null) {
+  if (!bookingId) return;
+  const sb = svc();
+  const { data: gs } = await sb
+    .from("guest_sessions")
+    .select("channel, channel_chat_id, tg_chat_id")
+    .eq("user_id", userId)
+    .eq("booking_id", bookingId)
+    .order("last_message_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+  if (!gs) return;
+  const channel = (isChannel(gs.channel) ? gs.channel : "telegram") as ChannelId;
+  const chatId = gs.channel_chat_id
+    ?? (channel === "telegram" && gs.tg_chat_id != null ? String(gs.tg_chat_id) : null);
+  if (!chatId) return;
+
+  const html = "🏠 Ваша квартира готова к заселению. Приятного проживания!\n\nПожалуйста, сообщите, всё ли хорошо, когда заселитесь.";
+  await sendMessage({ channel, chatId }, html, { botProfile: "default" });
+}
+
 /** Обработка нажатий кнопок горничной. */
 async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messageId: string | null): Promise<boolean> {
   const sb = svc();
@@ -347,6 +421,10 @@ async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messa
 
     await sendMaid(to, `✅ Спасибо! Уборка отмечена как завершённая.\n📍 ${htmlEscape(cleaning.apartment_title || "")}`);
     await notifyManager(maid.user_id, `✅ Горничная <b>${htmlEscape(maid.name)}</b> завершила уборку: ${htmlEscape(cleaning.apartment_title || "")} (${fmtDateShort(cleaning.scheduled_date)}).`, "notify_on_cleaning_response");
+
+    // Уведомление гостю: квартира готова. Не ломаем уборку, если не вышло.
+    try { await notifyGuestCleaningDone(cleaning.user_id, cleaning.booking_id); }
+    catch (e) { console.error("[maid-bot] notifyGuestCleaningDone:", e); }
     return true;
   }
 
@@ -386,14 +464,96 @@ async function handleMaidStart(to: Recipient, token: string, from: InboundEvent[
 
   const bound: Maid = { ...maid, channel: to.channel, channel_chat_id: to.chatId };
   const displayName = maid.name || [from?.firstName, from?.lastName].filter(Boolean).join(" ") || "";
-  const welcome = `Здравствуйте, <b>${htmlEscape(displayName)}</b>.\n\nКогда появится новая уборка, вы получите сообщение с двумя кнопками: <b>Принять</b> или <b>Отказаться</b>.\n\nНапишите любое сообщение в этот чат — менеджер его увидит и ответит.`;
+  const welcome = `Здравствуйте, <b>${htmlEscape(displayName)}</b>.\n\nКогда появится новая уборка, вы получите сообщение с двумя кнопками: <b>Принять</b> или <b>Отказаться</b>.\n\nВнизу чата есть кнопка <b>🧹 Мои уборки</b> — там всегда актуальный список ваших уборок.\n\nНапишите любое сообщение в этот чат — менеджер его увидит и ответит.`;
   await sendMaid(to, welcome);
   await logMaidMessage(bound, "outbound", "bot", welcome);
 
   await notifyManager(maid.user_id, `👋 Горничная <b>${htmlEscape(displayName)}</b> подключилась через ${CHANNEL_TITLE[to.channel]}.`);
 }
 
+/** Нормализация текста кнопки «Мои уборки» (без эмодзи, в нижнем регистре). */
+function isMyCleaningsCmd(text: string): boolean {
+  const t = (text || "").toLowerCase().replace(/[^а-яё\s]/gi, "").trim();
+  return t === "мои уборки" || t === "моиуборки";
+}
+
+/** Показывает список предстоящих уборок горничной:
+ *  — принятые (accepted / on_site) — чьи точно
+ *  — предложенные, но ещё никем не принятые (pending_response и горничная в offered_to)
+ * Завершённые и отменённые не показываем. Чужие (кто-то уже взял) — тоже не. */
+async function showMyCleanings(maid: Maid, to: Recipient) {
+  const sb = svc();
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const todayIso = today.toISOString().slice(0, 10);
+
+  // Квартиры, закреплённые за горничной сейчас (могут взять любую без приглашения).
+  const { data: myApts } = await sb
+    .from("maid_apartments")
+    .select("realty_id")
+    .eq("user_id", maid.user_id)
+    .eq("maid_id", maid.id);
+  const myRealtyIds = new Set<number>((myApts || []).map((x: any) => x.realty_id));
+
+  const { data: rows } = await sb
+    .from("cleanings")
+    .select("id, apartment_title, scheduled_date, scheduled_time, status, maid_id, offered_to, realty_id")
+    .eq("user_id", maid.user_id)
+    .gte("scheduled_date", todayIso)
+    .in("status", ["pending_response", "accepted", "on_site"])
+    .order("scheduled_date", { ascending: true });
+
+  const mine = (rows || []).filter((c: any) => {
+    if (c.maid_id === maid.id) return true;
+    if (!c.maid_id && c.status === "pending_response") {
+      const offered: string[] = Array.isArray(c.offered_to) ? c.offered_to : [];
+      // Видим все свободные уборки: или нам предложили конкретно, или мы закреплены
+      // за квартирой (при согласии уборка всё равно уйдёт к нам).
+      return offered.includes(maid.id) || myRealtyIds.has(c.realty_id);
+    }
+    return false;
+  });
+
+  if (mine.length === 0) {
+    await sendMaid(to, "На ближайшее время у вас нет запланированных уборок.");
+    return;
+  }
+
+  await sendMaid(to, `<b>Ваши предстоящие уборки (${mine.length}):</b>`);
+
+  for (const c of mine as any[]) {
+    const time = (c.scheduled_time || "").slice(0, 5);
+    const marker = c.status === "accepted" ? "✅"
+      : c.status === "on_site" ? "🏠"
+      : "❓";
+    const statusText = c.status === "pending_response" ? " — <i>ожидает ответа</i>"
+      : c.status === "on_site" ? " — <i>вы на месте</i>"
+      : "";
+    const body = `${marker} <b>${fmtDateShort(c.scheduled_date)}${time ? ", " + time : ""}</b>\n     ${htmlEscape(c.apartment_title || "?")}${statusText}`;
+
+    let kb: Btn[][] | undefined;
+    if (c.status === "pending_response") {
+      kb = [[
+        { text: "✅ Принять", data: `maid_accept:${c.id}` },
+        { text: "❌ Отказаться", data: `maid_decline:${c.id}` },
+      ]];
+    } else if (c.status === "accepted") {
+      kb = [[{ text: "🧹 Приступила к уборке", data: `maid_on_site:${c.id}` }]];
+    } else if (c.status === "on_site") {
+      kb = [[{ text: "✅ Уборка завершена", data: `maid_completed:${c.id}` }]];
+    }
+
+    await sendMaid(to, body, kb);
+  }
+}
+
 async function handleMaidFreeText(maid: Maid, to: Recipient, text: string, messageId: string | null, photoUrl?: string) {
+  // Кнопка «Мои уборки» — отдаём список, не трогаем менеджера.
+  if (!photoUrl && isMyCleaningsCmd(text)) {
+    await showMyCleanings(maid, to);
+    return;
+  }
+
   const sb = svc();
 
   const { data: sysMsg } = await sb
