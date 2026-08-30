@@ -11,8 +11,8 @@ import dom, { byId } from './dom.js';
 import { fetchRealtyCalendarBookings, fetchRealtyCalendarLog, fetchRealtyCalendarIntegration, saveRealtyCalendarIntegration, disconnectRealtyCalendar, buildFinanceWebhookExample, getWebhookUrl } from './api.js';
 import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport, dedupeFinanceEntriesByExternalId } from './finance.js';
 import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus, setAuthMsg } from './render.js';
-import { currentApartment, getDisplayApartmentName, getState, roundSmart, updateState } from './state.js';
-import { persistState, exportJson, importJson } from './storage.js';
+import { currentApartment, getDisplayApartmentName, getState, roundSmart, setState, updateState } from './state.js';
+import { persistState, exportJson, importJson, fetchCloudState } from './storage.js';
 import { signInWithEmail, signUpWithEmail, signOutUser, changePassword, getCurrentUser } from './supabase-client.js';
 import { addApartment, addCustomItem, applyWriteoff, applyLinenDamage, createPurchaseRequest, deleteApartment, deleteItem, newCheckin, renameCurrentApartment, resetAll, restockDefaults, toggleAutoRequest, toggleRequestDone, updateItemField, updateRequestItemCost } from './actions.js';
 import { bindGuestBotEvents } from './guestBot.js';
@@ -55,21 +55,32 @@ function bindSectionNav() {
       closeDrawer();
     });
   });
-  // Кнопка финансов в drawer — открываем модальное окно + авто-синк с RealtyCalendar
+  // Кнопка финансов в drawer — открываем модальное окно + свежая загрузка облака + авто-синк
   dom.financeDrawerButton?.addEventListener('click', async () => {
     ensureFinanceGeneratedForCurrentMonth();
     render();
     openModal('financeModal');
     closeDrawer();
-    // Фоново подтягиваем свежие брони — чтобы цифры в отчётах были актуальными.
+    // 1) Принудительно перечитываем облако — на случай если локальный in-memory state
+    //    отстал (после долгой сессии, background reload и т.п.).
+    try {
+      const res = await fetchCloudState(setStatus);
+      if (res?.ok && res.found && res.state) {
+        setState(res.state);
+      }
+    } catch (e) { console.warn('[finance] cloud reload:', e?.message || e); }
+    // 2) Чистим дубликаты в entries (если вдруг остались).
+    try { dedupeFinanceEntriesByExternalId(); } catch (e) { console.warn('[finance] dedupe:', e?.message || e); }
+    // 3) Подтягиваем свежие брони из RealtyCalendar.
     try {
       const bookings = await fetchRealtyCalendarBookings(500);
       const result = applyRealtyCalendarBookings(bookings) || { added: 0, updated: 0 };
-      if ((result.added || 0) + (result.updated || 0) + (result.removed || 0) > 0) {
+      const changed = (result.added || 0) + (result.updated || 0) + (result.removed || 0);
+      if (changed > 0) {
         await persistState(setStatus, true);
-        render();
       }
     } catch (e) { console.warn('[finance] auto-sync:', e?.message || e); }
+    render();
   });
 }
 
