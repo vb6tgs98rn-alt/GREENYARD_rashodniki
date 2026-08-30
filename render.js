@@ -319,6 +319,7 @@ function renderFinance(state) {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
+      const BUILD_VERSION = 'v.2026-08-31.2';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       const rowsHtml = apt.rows.map((r) => `
         <tr>
@@ -335,7 +336,7 @@ function renderFinance(state) {
       `).join('');
       const t = apt.totals;
       dom.financeByApartment.innerHTML = `
-        <div class="fin-tbl-period small muted" style="margin-bottom:.5rem;">Период: ${periodLabel}</div>
+        <div class="fin-tbl-period small muted" style="margin-bottom:.5rem;display:flex;justify-content:space-between;gap:.5rem;flex-wrap:wrap;"><span>Период: ${periodLabel}</span><span style="opacity:.6">${BUILD_VERSION}</span></div>
         <div class="fin-tbl-wrap">
           <table class="fin-tbl">
             <thead>
