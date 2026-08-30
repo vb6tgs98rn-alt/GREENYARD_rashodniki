@@ -581,9 +581,27 @@ function _nightsBetween(fromIso, toIso) {
   return Math.round((b - a) / 86400000);
 }
 
+// Пересечение отрезка [aFrom, aTo) с периодом [bFrom, bTo] (обе границы включительно).
+// Для броней: aFrom=begin_date (день заезда), aTo=end_date (день выезда, в этот день ночи нет).
+// Возвращает количество ночей, входящих в выбранный период [bFrom, bTo] (включительно).
+function _bookingNightsInPeriod(beginDate, endDate, periodFrom, periodTo) {
+  if (!beginDate || !endDate || !periodFrom || !periodTo) return 0;
+  const day = 86400000;
+  const a1 = new Date(beginDate + 'T00:00:00Z').getTime();
+  const a2 = new Date(endDate + 'T00:00:00Z').getTime();
+  const b1 = new Date(periodFrom + 'T00:00:00Z').getTime();
+  // Период включительно → сдвигаем верхнюю границу на сутки вперёд (ночь с 30 на 31 — это ещё 30 авг).
+  const b2 = new Date(periodTo + 'T00:00:00Z').getTime() + day;
+  if (!Number.isFinite(a1) || !Number.isFinite(a2) || a2 <= a1) return 0;
+  const lo = Math.max(a1, b1);
+  const hi = Math.min(a2, b2);
+  if (hi <= lo) return 0;
+  return Math.round((hi - lo) / day);
+}
+
 // Возвращает границы периода (from, to) для расчёта загрузки, среднесуточного и т.п.
-// Приоритет: явный dateFrom/dateTo → месяц → крайние даты в отфильтрованных проводках.
-function _resolvePeriodBounds(filter, entries) {
+// Приоритет: явный dateFrom/dateTo → месяц → крайние даты в проводках.
+function _resolvePeriodBounds(filter, allEntries) {
   let from = filter.dateFrom || '';
   let to = filter.dateTo || '';
   if ((!from || !to) && filter.month) {
@@ -592,8 +610,7 @@ function _resolvePeriodBounds(filter, entries) {
     to = to || r.to;
   }
   if (!from || !to) {
-    // Берём min/max из дат проводок (если ничего не задано)
-    const dates = entries.map((e) => e.date).filter(Boolean).sort();
+    const dates = allEntries.map((e) => e.date).filter(Boolean).sort();
     if (dates.length) {
       from = from || dates[0];
       to = to || dates[dates.length - 1];
@@ -602,73 +619,116 @@ function _resolvePeriodBounds(filter, entries) {
   return { from, to };
 }
 
+// Итоги по квартирам для таблицы в референсе «Реалти».
+// Логика:
+//   • Период = filter.dateFrom – filter.dateTo (включительно).
+//   • Для брони берём ТОЛЬКО ночи, попавшие в период.
+//     → income и platformCommission берутся ПРОПОРЦИОНАЛЬНО (nightsInPeriod / totalNights).
+//   • Если у брони нет begin/end — fallback: включаем целиком, если entry.date внутри периода
+//     (ручные доходы), ночи не считаются.
+//   • Расходы — по entry.date внутри периода (т.е. когда расход был совершён).
+//   • Итоговая прибыль = доход (чистый) − все расходы (вкл. уборку, аренду и т.п.).
+//   • Загрузка = проданных ночей в периоде / длина периода.
+//   • ADR = чистый доход / проданные ночи.
+//   • Среднесуточный доход = чистый доход / длина периода.
+//   • Средняя длит. проживания — по ЦЕЛЫМ броням, чьи ночи попали в период,
+//     как total_nights / число_броней — чтобы отражать реальную длину бронирований.
 export function getFinanceApartmentSummary() {
   const state = getState();
   const filter = state.ui?.finance || {};
-  const entries = getFilteredFinanceEntries();
-  const { from, to } = _resolvePeriodBounds(filter, entries);
-  // +1 день — период включительно (23 авг…30 авг = 8 суток, как в референсе)
+  const allEntries = state.finance?.entries || [];
+  const { from, to } = _resolvePeriodBounds(filter, allEntries);
   const periodDays = from && to ? Math.max(1, _nightsBetween(from, to) + 1) : 0;
 
-  // Готовим строки по всем квартирам, которые есть в state (даже если 0 записей)
   const rows = new Map();
   const ensureRow = (id, name) => {
     if (!rows.has(id)) {
       rows.set(id, {
         apartmentId: id,
         name: name || '—',
-        income: 0,
-        platformCommission: 0,
-        expense: 0,
-        soldNights: 0,
-        bookings: 0,
+        income: 0,               // чистый доход в периоде (валовый − комиссия площадки)
+        grossIncome: 0,          // валовый доход в периоде (опорно для ADR/среднесуточного если что)
+        platformCommission: 0,   // комиссия площадки в периоде (пропорционально)
+        expense: 0,              // все расходы в периоде (уборка, аренда и т.п.)
+        soldNights: 0,           // проданные ночи в периоде
+        bookings: 0,             // броней в периоде (чьи ночи частично/полностью попадают)
+        totalNightsForStayAvg: 0,// полные ночи этих броней (для средней длит. проживания)
       });
     }
     return rows.get(id);
   };
 
-  // Если фильтр по конкретной квартире — только её, иначе все квартиры (кроме архивных)
-  const apts = (state.apartments || []).filter((a) => !a.archived);
+  // Статус фильтра по квартире — если выбрана одна, остальные в таблице не показываем.
   const aptFilter = filter.apartmentFilter && filter.apartmentFilter !== 'all' ? filter.apartmentFilter : '';
-  apts.forEach((a) => {
+  // Сначала добавляем ВСЕ (не архивные) квартиры — чтобы квартиры без броней тоже попадали в таблицу.
+  (state.apartments || []).forEach((a) => {
+    if (a.archived) return;
     if (aptFilter && a.id !== aptFilter) return;
-    ensureRow(a.id, a.name);
+    ensureRow(a.id, getDisplayApartmentName(a.name));
   });
 
-  // Складываем показатели по отфильтрованным проводкам
-  entries.forEach((e) => {
+  // Теперь идём по ВСЕМ записям финучёта (без фильтра по дате в проводке) — для броней
+  // мы сами вычислим пересечение ночей с периодом.
+  allEntries.forEach((e) => {
     if (!e.apartmentId) return;
     if (aptFilter && e.apartmentId !== aptFilter) return;
+
+    // Мелкий фильтр по типу (если пользователь выбрал «только доходы» или «только расходы»).
+    const typeFilter = filter.typeFilter && filter.typeFilter !== 'all' ? filter.typeFilter : '';
+    if (typeFilter && e.type !== typeFilter) return;
+
+    // Исключаем отменённые/удалённые брони (не считаются как доход).
+    if (e.status === 'cancelled') return;
+
     const row = ensureRow(e.apartmentId, e.apartmentName);
-    const amount = Number(e.amount || 0);
+    const gross = Number(e.amount || 0);
+    const tax = Number(e.meta?.platform_tax || 0);
+    const net = Number(e.netAmount != null ? e.netAmount : Math.max(0, gross - tax));
+
     if (e.type === FINANCE_TYPES.income) {
-      row.income += amount;
-      const tax = Number(e.meta?.platform_tax || 0);
-      row.platformCommission += tax;
-      // Считаем ночи только для реальных броней (у них есть begin_date/end_date)
       const bd = e.meta?.begin_date;
       const ed = e.meta?.end_date;
-      const n = _nightsBetween(bd, ed);
-      if (n > 0) {
-        row.soldNights += n;
+      const totalNights = _nightsBetween(bd, ed);
+      if (totalNights > 0) {
+        // Реальная бронь: берём пересечение с периодом.
+        const nightsIn = _bookingNightsInPeriod(bd, ed, from, to);
+        if (nightsIn <= 0) return;
+        const share = nightsIn / totalNights;
+        row.grossIncome += gross * share;
+        row.platformCommission += tax * share;
+        row.income += net * share;
+        row.soldNights += nightsIn;
         row.bookings += 1;
+        row.totalNightsForStayAvg += totalNights;
+      } else {
+        // Ручная запись без дат заезда/выезда — считаем по entry.date.
+        if (from && to && e.date && (e.date < from || e.date > to)) return;
+        row.grossIncome += gross;
+        row.platformCommission += tax;
+        row.income += net;
       }
     } else if (e.type === FINANCE_TYPES.expense) {
-      row.expense += amount;
+      if (from && to && e.date && (e.date < from || e.date > to)) return;
+      row.expense += gross;
     }
   });
 
   const list = Array.from(rows.values()).map((r) => {
-    const netIncome = Math.max(0, r.income - r.platformCommission);
-    const profit = netIncome - r.expense;
-    const availableNights = periodDays; // 1 квартира = 1 ночь/сутки
-    const occupancy = availableNights > 0 ? (r.soldNights / availableNights) * 100 : 0;
+    const profit = r.income - r.expense; // Прибыль = чистый доход − все расходы
+    const availableNights = periodDays; // 1 квартира × дней периода
+    const occupancy = availableNights > 0 ? Math.min(100, (r.soldNights / availableNights) * 100) : 0;
     const adr = r.soldNights > 0 ? r.income / r.soldNights : 0;
     const avgDaily = periodDays > 0 ? r.income / periodDays : 0;
-    const avgStay = r.bookings > 0 ? r.soldNights / r.bookings : 0;
+    const avgStay = r.bookings > 0 ? r.totalNightsForStayAvg / r.bookings : 0;
     return {
-      ...r,
-      netIncome,
+      apartmentId: r.apartmentId,
+      name: r.name,
+      income: r.income,
+      grossIncome: r.grossIncome,
+      platformCommission: r.platformCommission,
+      expense: r.expense,
+      soldNights: r.soldNights,
+      bookings: r.bookings,
       profit,
       availableNights,
       occupancy,
@@ -678,25 +738,27 @@ export function getFinanceApartmentSummary() {
     };
   });
 
-  // Итоги
+  // Итоги: суммы + агрегатные показатели.
   const totals = list.reduce(
     (acc, r) => {
       acc.income += r.income;
+      acc.grossIncome += r.grossIncome;
       acc.platformCommission += r.platformCommission;
       acc.expense += r.expense;
-      acc.netIncome += r.netIncome;
       acc.profit += r.profit;
       acc.soldNights += r.soldNights;
       acc.bookings += r.bookings;
-      acc.availableNights += r.availableNights;
       return acc;
     },
-    { income: 0, platformCommission: 0, expense: 0, netIncome: 0, profit: 0, soldNights: 0, bookings: 0, availableNights: 0 },
+    { income: 0, grossIncome: 0, platformCommission: 0, expense: 0, profit: 0, soldNights: 0, bookings: 0 },
   );
-  totals.occupancy = totals.availableNights > 0 ? (totals.soldNights / totals.availableNights) * 100 : 0;
+  const totalAvailable = periodDays * list.length;
+  totals.availableNights = totalAvailable;
+  totals.occupancy = totalAvailable > 0 ? Math.min(100, (totals.soldNights / totalAvailable) * 100) : 0;
   totals.adr = totals.soldNights > 0 ? totals.income / totals.soldNights : 0;
-  totals.avgDaily = periodDays > 0 && list.length > 0 ? totals.income / (periodDays * list.length) : 0;
-  totals.avgStay = totals.bookings > 0 ? totals.soldNights / totals.bookings : 0;
+  totals.avgDaily = totalAvailable > 0 ? totals.income / totalAvailable : 0;
+  const totalStayNights = list.reduce((s, r) => s + (r.avgStay * r.bookings), 0);
+  totals.avgStay = totals.bookings > 0 ? totalStayNights / totals.bookings : 0;
 
   return { rows: list, totals, period: { from, to, days: periodDays } };
 }
