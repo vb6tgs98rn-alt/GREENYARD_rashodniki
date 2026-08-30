@@ -636,7 +636,18 @@ function _resolvePeriodBounds(filter, allEntries) {
 export function getFinanceApartmentSummary() {
   const state = getState();
   const filter = state.ui?.finance || {};
-  const allEntries = state.finance?.entries || [];
+  const rawEntries = state.finance?.entries || [];
+  // Защита от дублей: отбрасываем повторные realtycalendar-проводки с одинаковым externalBookingId.
+  const _seenExt = new Set();
+  const allEntries = [];
+  for (const e of rawEntries) {
+    if (e?.source === 'realtycalendar' && e?.externalBookingId) {
+      const key = String(e.externalBookingId);
+      if (_seenExt.has(key)) continue;
+      _seenExt.add(key);
+    }
+    allEntries.push(e);
+  }
   const { from, to } = _resolvePeriodBounds(filter, allEntries);
   const periodDays = from && to ? Math.max(1, _nightsBetween(from, to) + 1) : 0;
 

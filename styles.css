@@ -1068,3 +1068,12 @@ body.is-guest .modal-backdrop{display:none !important}
 .fin-tbl tbody tr:last-child td{border-bottom:none}
 .fin-tbl .fin-tbl-name{font-weight:600;white-space:nowrap}
 .fin-tbl tfoot .fin-tbl-total td{padding:.7rem;font-weight:700;background:var(--color-surface-2);border-top:2px solid var(--color-border)}
+
+/* ==== Блок выбора периода в «Итогах по квартирам» ==== */
+.summary-period{display:flex;flex-direction:column;gap:.6rem;margin-bottom:1rem;padding:.75rem;border-radius:var(--radius-lg);background:var(--color-surface-2)}
+.summary-period-row{display:flex;flex-wrap:wrap;gap:.5rem}
+.summary-period-field{display:flex;flex-direction:column;gap:.25rem;flex:1 1 140px;min-width:0}
+.summary-period-field .small{color:var(--color-text-muted)}
+.summary-period-field input[type="date"]{display:block;width:100%;box-sizing:border-box;min-height:2.4rem;padding:.45rem .6rem;border-radius:var(--radius-md);border:1px solid var(--color-border);background:var(--color-surface-1);color:var(--color-text);font:inherit;-webkit-appearance:none;appearance:none}
+.summary-period-presets{display:flex;flex-wrap:wrap;gap:.4rem}
+.summary-period-btn{padding:.4rem .7rem;font-size:.85rem;flex:0 1 auto}

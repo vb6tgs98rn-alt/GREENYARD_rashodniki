@@ -9,7 +9,7 @@
  */
 import dom, { byId } from './dom.js';
 import { fetchRealtyCalendarBookings, fetchRealtyCalendarLog, fetchRealtyCalendarIntegration, saveRealtyCalendarIntegration, disconnectRealtyCalendar, buildFinanceWebhookExample, getWebhookUrl } from './api.js';
-import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport } from './finance.js';
+import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport, dedupeFinanceEntriesByExternalId } from './finance.js';
 import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus, setAuthMsg } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, updateState } from './state.js';
 import { persistState, exportJson, importJson } from './storage.js';
@@ -750,7 +750,9 @@ function bindFinanceFilters() {
   };
   const onSummaryDatesInput = () => applySummaryPeriod(summaryFrom?.value || '', summaryTo?.value || '');
   summaryFrom?.addEventListener('input', onSummaryDatesInput);
+  summaryFrom?.addEventListener('change', onSummaryDatesInput);
   summaryTo?.addEventListener('input', onSummaryDatesInput);
+  summaryTo?.addEventListener('change', onSummaryDatesInput);
   summaryReset?.addEventListener('click', () => applySummaryPeriod('', ''));
 
   // Пресеты
@@ -1471,6 +1473,11 @@ export function bindEvents() {
   bindDeleteApartment();
   bindAutoRequest();
   bindPurchaseModal();
+  // Самолечение: чистим возможные дубли realtycalendar-записей при старте.
+  try {
+    const removed = dedupeFinanceEntriesByExternalId();
+    if (removed > 0) { persistState(setStatus, true); }
+  } catch (e) { console.warn('[events] dedupe on init:', e?.message || e); }
   bindFinanceFilters();
   bindUnitEconomicsTab();
   bindFinanceModals();

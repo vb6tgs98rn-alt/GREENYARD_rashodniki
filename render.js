@@ -324,7 +324,7 @@ function renderFinance(state) {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-08-31.4';
+      const BUILD_VERSION = 'v.2026-08-31.5';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       const rowsHtml = apt.rows.map((r) => `
         <tr>
