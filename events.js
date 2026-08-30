@@ -55,12 +55,21 @@ function bindSectionNav() {
       closeDrawer();
     });
   });
-  // Кнопка финансов в drawer — открываем модальное окно
+  // Кнопка финансов в drawer — открываем модальное окно + авто-синк с RealtyCalendar
   dom.financeDrawerButton?.addEventListener('click', async () => {
     ensureFinanceGeneratedForCurrentMonth();
     render();
     openModal('financeModal');
     closeDrawer();
+    // Фоново подтягиваем свежие брони — чтобы цифры в отчётах были актуальными.
+    try {
+      const bookings = await fetchRealtyCalendarBookings(500);
+      const result = applyRealtyCalendarBookings(bookings) || { added: 0, updated: 0 };
+      if ((result.added || 0) + (result.updated || 0) + (result.removed || 0) > 0) {
+        await persistState(setStatus, true);
+        render();
+      }
+    } catch (e) { console.warn('[finance] auto-sync:', e?.message || e); }
   });
 }
 
