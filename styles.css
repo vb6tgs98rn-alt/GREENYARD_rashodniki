@@ -1058,3 +1058,13 @@ body.is-guest .modal-backdrop{display:none !important}
 /* Подзаголовки-разделители в боковом меню (Основное / Чаты / Интеграции) */
 .drawer-section-label{margin:.6rem 0 -.15rem;padding:0 .25rem;font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.09em;color:var(--color-text-muted);font-weight:700}
 .drawer-section-label:first-child{margin-top:0}
+
+/* ==== Таблица «Итоги по квартирам» (референс — приложение «Реалти») ==== */
+.fin-tbl-wrap{width:100%;overflow-x:auto;border-radius:var(--radius-lg);border:1px solid var(--color-border);background:var(--color-surface-1)}
+.fin-tbl{width:100%;border-collapse:collapse;font-size:var(--text-sm);font-variant-numeric:tabular-nums lining-nums;min-width:820px}
+.fin-tbl thead th{position:sticky;top:0;background:var(--color-surface-2);color:var(--color-text-muted);font-weight:600;text-align:left;padding:.6rem .7rem;border-bottom:1px solid var(--color-border);white-space:normal;vertical-align:bottom;line-height:1.2}
+.fin-tbl th.num,.fin-tbl td.num{text-align:right}
+.fin-tbl tbody td{padding:.6rem .7rem;border-bottom:1px solid var(--color-border)}
+.fin-tbl tbody tr:last-child td{border-bottom:none}
+.fin-tbl .fin-tbl-name{font-weight:600;white-space:nowrap}
+.fin-tbl tfoot .fin-tbl-total td{padding:.7rem;font-weight:700;background:var(--color-surface-2);border-top:2px solid var(--color-border)}

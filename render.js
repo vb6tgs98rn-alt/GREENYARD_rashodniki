@@ -8,7 +8,7 @@
  * 1301 ГК РФ.
  */
 import dom, { byId } from './dom.js';
-import { getFinanceSummary, monthKey, STATUS_LABELS, fetchUnitEcoReports, advanceUnitEcoReportIfNeeded, REPORT_CADENCE_LABELS } from './finance.js';
+import { getFinanceSummary, getFinanceApartmentSummary, monthKey, STATUS_LABELS, fetchUnitEcoReports, advanceUnitEcoReportIfNeeded, REPORT_CADENCE_LABELS } from './finance.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, statusBy } from './state.js';
 
 export function setStatus(text = 'Готово') { if (dom.saveStatus) dom.saveStatus.textContent = text; }
@@ -306,27 +306,69 @@ function renderFinance(state) {
     </article>
   `;
 
-  // По квартирам (мини-блок) — чистая прибыль в приоритете
-  const aptEntries = Object.values(summary.byApartment);
+  // По квартирам — таблица как в референсе «Реалти»
   if (dom.financeByApartment) {
-    dom.financeByApartment.innerHTML = aptEntries.length
-      ? aptEntries.map((apt) => {
-          const netIncome = Number(apt.netIncome != null ? apt.netIncome : apt.income || 0);
-          const grossIncome = Number(apt.income || 0);
-          const expense = Number(apt.expense || 0);
-          const netProfit = netIncome - expense;
-          const pc = netProfit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
-          const hasGross = grossIncome !== netIncome;
-          return `<div class="apt-finance-row">
-            <div class="apt-finance-name">${apt.name}</div>
-            <div class="apt-finance-nums">
-              <span style="color:var(--color-success)" title="Чистый доход">+${fmt(netIncome)}${hasGross ? ` <span class="small" style="color:var(--color-text-muted)">(вал. ${fmt(grossIncome)})</span>` : ''}</span>
-              <span style="color:var(--color-error)">−${fmt(expense)}</span>
-              <span style="color:${pc};font-weight:700">${netProfit >= 0 ? '+' : ''}${fmt(netProfit)} ₽</span>
-            </div>
-          </div>`;
-        }).join('')
-      : '<div class="empty">Нет данных.</div>';
+    const apt = getFinanceApartmentSummary();
+    if (!apt.rows.length) {
+      dom.financeByApartment.innerHTML = '<div class="empty">Нет данных.</div>';
+    } else {
+      const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
+      const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const money = (n) => `${fmt2(n)} ₽`;
+      const periodLabel = apt.period.from && apt.period.to
+        ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
+        : 'без периода';
+      const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
+      const rowsHtml = apt.rows.map((r) => `
+        <tr>
+          <td class="fin-tbl-name">${r.name}</td>
+          <td class="num" style="color:${profitColor(r.profit)};font-weight:600">${r.profit >= 0 ? '' : '−'}${money(Math.abs(r.profit))}</td>
+          <td class="num">${money(r.income)}</td>
+          <td class="num">${money(r.expense)}</td>
+          <td class="num">${money(r.platformCommission)}</td>
+          <td class="num">${money(r.avgDaily)}</td>
+          <td class="num">${money(r.adr)}</td>
+          <td class="num">${pct(r.occupancy)}</td>
+          <td class="num">${stay(r.avgStay)}</td>
+        </tr>
+      `).join('');
+      const t = apt.totals;
+      dom.financeByApartment.innerHTML = `
+        <div class="fin-tbl-period small muted" style="margin-bottom:.5rem;">Период: ${periodLabel}</div>
+        <div class="fin-tbl-wrap">
+          <table class="fin-tbl">
+            <thead>
+              <tr>
+                <th>Объект</th>
+                <th class="num">Прибыль</th>
+                <th class="num">Доходы</th>
+                <th class="num">Расходы</th>
+                <th class="num">Комиссии площадок</th>
+                <th class="num">Среднесуточный доход</th>
+                <th class="num">ADR (средняя цена проданной ночи)</th>
+                <th class="num">Загрузка</th>
+                <th class="num">Средняя длит. проживания</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+            <tfoot>
+              <tr class="fin-tbl-total">
+                <td>Итого:</td>
+                <td class="num" style="color:${profitColor(t.profit)}">${t.profit >= 0 ? '' : '−'}${money(Math.abs(t.profit))}</td>
+                <td class="num">${money(t.income)}</td>
+                <td class="num">${money(t.expense)}</td>
+                <td class="num">${money(t.platformCommission)}</td>
+                <td class="num">${money(t.avgDaily)}</td>
+                <td class="num">${money(t.adr)}</td>
+                <td class="num">${pct(t.occupancy)}</td>
+                <td class="num">${stay(t.avgStay)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      `;
+    }
   }
 
   // Список проводок

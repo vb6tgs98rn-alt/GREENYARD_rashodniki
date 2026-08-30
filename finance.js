@@ -556,6 +556,151 @@ export function monthToDateRange(monthIso) {
   return { from: `${monthIso}-01`, to: lastDateOfMonthIso(monthIso) };
 }
 
+// Итоги «по квартирам» для табличного вида на вкладке «Итоги по квартирам».
+// Расчёты идут ЛОКАЛЬНО из state.finance.entries с учётом активных фильтров
+// (квартира, тип, диапазон дат) — чтобы данные согласовывались со списком проводок.
+//
+// По каждой квартире считаем:
+//   income            — валовые доходы (сумма amount по entry.type=income)
+//   platformCommission — комиссии площадок (сумма meta.platform_tax по entry.type=income)
+//   netIncome         — чистый доход (income − platformCommission)
+//   expense           — прочие расходы (сумма amount по entry.type=expense)
+//   profit            — прибыль (netIncome − expense)  ← как в референсе «Реалти»
+//   soldNights        — проданных ночей (сумма ночей по бронированиям в периоде)
+//   bookings          — количество броней в периоде
+//   availableNights   — доступных ночей = длина периода (или число активных дней)
+//   avgDaily          — среднесуточный доход = income / periodDays
+//   adr               — средняя цена проданной ночи = income / soldNights
+//   occupancy         — загрузка, % = soldNights / availableNights
+//   avgStay           — средняя длит. проживания = soldNights / bookings
+function _nightsBetween(fromIso, toIso) {
+  if (!fromIso || !toIso) return 0;
+  const a = new Date(fromIso + 'T00:00:00Z').getTime();
+  const b = new Date(toIso + 'T00:00:00Z').getTime();
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return 0;
+  return Math.round((b - a) / 86400000);
+}
+
+// Возвращает границы периода (from, to) для расчёта загрузки, среднесуточного и т.п.
+// Приоритет: явный dateFrom/dateTo → месяц → крайние даты в отфильтрованных проводках.
+function _resolvePeriodBounds(filter, entries) {
+  let from = filter.dateFrom || '';
+  let to = filter.dateTo || '';
+  if ((!from || !to) && filter.month) {
+    const r = monthToDateRange(filter.month);
+    from = from || r.from;
+    to = to || r.to;
+  }
+  if (!from || !to) {
+    // Берём min/max из дат проводок (если ничего не задано)
+    const dates = entries.map((e) => e.date).filter(Boolean).sort();
+    if (dates.length) {
+      from = from || dates[0];
+      to = to || dates[dates.length - 1];
+    }
+  }
+  return { from, to };
+}
+
+export function getFinanceApartmentSummary() {
+  const state = getState();
+  const filter = state.ui?.finance || {};
+  const entries = getFilteredFinanceEntries();
+  const { from, to } = _resolvePeriodBounds(filter, entries);
+  // +1 день — период включительно (23 авг…30 авг = 8 суток, как в референсе)
+  const periodDays = from && to ? Math.max(1, _nightsBetween(from, to) + 1) : 0;
+
+  // Готовим строки по всем квартирам, которые есть в state (даже если 0 записей)
+  const rows = new Map();
+  const ensureRow = (id, name) => {
+    if (!rows.has(id)) {
+      rows.set(id, {
+        apartmentId: id,
+        name: name || '—',
+        income: 0,
+        platformCommission: 0,
+        expense: 0,
+        soldNights: 0,
+        bookings: 0,
+      });
+    }
+    return rows.get(id);
+  };
+
+  // Если фильтр по конкретной квартире — только её, иначе все квартиры (кроме архивных)
+  const apts = (state.apartments || []).filter((a) => !a.archived);
+  const aptFilter = filter.apartmentFilter && filter.apartmentFilter !== 'all' ? filter.apartmentFilter : '';
+  apts.forEach((a) => {
+    if (aptFilter && a.id !== aptFilter) return;
+    ensureRow(a.id, a.name);
+  });
+
+  // Складываем показатели по отфильтрованным проводкам
+  entries.forEach((e) => {
+    if (!e.apartmentId) return;
+    if (aptFilter && e.apartmentId !== aptFilter) return;
+    const row = ensureRow(e.apartmentId, e.apartmentName);
+    const amount = Number(e.amount || 0);
+    if (e.type === FINANCE_TYPES.income) {
+      row.income += amount;
+      const tax = Number(e.meta?.platform_tax || 0);
+      row.platformCommission += tax;
+      // Считаем ночи только для реальных броней (у них есть begin_date/end_date)
+      const bd = e.meta?.begin_date;
+      const ed = e.meta?.end_date;
+      const n = _nightsBetween(bd, ed);
+      if (n > 0) {
+        row.soldNights += n;
+        row.bookings += 1;
+      }
+    } else if (e.type === FINANCE_TYPES.expense) {
+      row.expense += amount;
+    }
+  });
+
+  const list = Array.from(rows.values()).map((r) => {
+    const netIncome = Math.max(0, r.income - r.platformCommission);
+    const profit = netIncome - r.expense;
+    const availableNights = periodDays; // 1 квартира = 1 ночь/сутки
+    const occupancy = availableNights > 0 ? (r.soldNights / availableNights) * 100 : 0;
+    const adr = r.soldNights > 0 ? r.income / r.soldNights : 0;
+    const avgDaily = periodDays > 0 ? r.income / periodDays : 0;
+    const avgStay = r.bookings > 0 ? r.soldNights / r.bookings : 0;
+    return {
+      ...r,
+      netIncome,
+      profit,
+      availableNights,
+      occupancy,
+      adr,
+      avgDaily,
+      avgStay,
+    };
+  });
+
+  // Итоги
+  const totals = list.reduce(
+    (acc, r) => {
+      acc.income += r.income;
+      acc.platformCommission += r.platformCommission;
+      acc.expense += r.expense;
+      acc.netIncome += r.netIncome;
+      acc.profit += r.profit;
+      acc.soldNights += r.soldNights;
+      acc.bookings += r.bookings;
+      acc.availableNights += r.availableNights;
+      return acc;
+    },
+    { income: 0, platformCommission: 0, expense: 0, netIncome: 0, profit: 0, soldNights: 0, bookings: 0, availableNights: 0 },
+  );
+  totals.occupancy = totals.availableNights > 0 ? (totals.soldNights / totals.availableNights) * 100 : 0;
+  totals.adr = totals.soldNights > 0 ? totals.income / totals.soldNights : 0;
+  totals.avgDaily = periodDays > 0 && list.length > 0 ? totals.income / (periodDays * list.length) : 0;
+  totals.avgStay = totals.bookings > 0 ? totals.soldNights / totals.bookings : 0;
+
+  return { rows: list, totals, period: { from, to, days: periodDays } };
+}
+
 export function getFinanceSummary() {
   const entries = getFilteredFinanceEntries();
   const totals = entries.reduce(
