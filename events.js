@@ -55,32 +55,14 @@ function bindSectionNav() {
       closeDrawer();
     });
   });
-  // Кнопка финансов в drawer — открываем модальное окно + свежая загрузка облака + авто-синк
+  // Кнопка финансов в drawer — открываем модальное окно.
+  // Сводка «Итоги по квартирам» сама читает rc_bookings напрямую —
+  // автосинк с записью в state.finance.entries больше не нужен.
   dom.financeDrawerButton?.addEventListener('click', async () => {
     ensureFinanceGeneratedForCurrentMonth();
     render();
     openModal('financeModal');
     closeDrawer();
-    // 1) Принудительно перечитываем облако — на случай если локальный in-memory state
-    //    отстал (после долгой сессии, background reload и т.п.).
-    try {
-      const res = await fetchCloudState(setStatus);
-      if (res?.ok && res.found && res.state) {
-        setState(res.state);
-      }
-    } catch (e) { console.warn('[finance] cloud reload:', e?.message || e); }
-    // 2) Чистим дубликаты в entries (если вдруг остались).
-    try { dedupeFinanceEntriesByExternalId(); } catch (e) { console.warn('[finance] dedupe:', e?.message || e); }
-    // 3) Подтягиваем свежие брони из RealtyCalendar.
-    try {
-      const bookings = await fetchRealtyCalendarBookings(500);
-      const result = applyRealtyCalendarBookings(bookings) || { added: 0, updated: 0 };
-      const changed = (result.added || 0) + (result.updated || 0) + (result.removed || 0);
-      if (changed > 0) {
-        await persistState(setStatus, true);
-      }
-    } catch (e) { console.warn('[finance] auto-sync:', e?.message || e); }
-    render();
   });
 }
 

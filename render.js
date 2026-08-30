@@ -8,7 +8,7 @@
  * 1301 ГК РФ.
  */
 import dom, { byId } from './dom.js';
-import { getFinanceSummary, getFinanceApartmentSummary, monthKey, STATUS_LABELS, fetchUnitEcoReports, advanceUnitEcoReportIfNeeded, REPORT_CADENCE_LABELS } from './finance.js';
+import { getFinanceSummary, getFinanceApartmentSummary, getFinanceApartmentSummaryAsync, monthKey, STATUS_LABELS, fetchUnitEcoReports, advanceUnitEcoReportIfNeeded, REPORT_CADENCE_LABELS } from './finance.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, statusBy } from './state.js';
 
 export function setStatus(text = 'Готово') { if (dom.saveStatus) dom.saveStatus.textContent = text; }
@@ -313,18 +313,47 @@ function renderFinance(state) {
   if (summaryFromEl) summaryFromEl.value = filter.dateFrom || '';
   if (summaryToEl) summaryToEl.value = filter.dateTo || '';
   if (dom.financeByApartment) {
-    const apt = getFinanceApartmentSummary();
-    if (!apt.rows.length) {
-      dom.financeByApartment.innerHTML = '<div class="empty">Нет данных.</div>';
-    } else {
-      const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    dom.financeByApartment.innerHTML = '<div class="empty">Загрузка…</div>';
+    _renderFinanceByApartmentAsync().catch((e) => {
+      console.warn('[finance] apt summary async error:', e);
+      dom.financeByApartment.innerHTML = '<div class="empty">Ошибка загрузки.</div>';
+    });
+  }
+
+  // Список проводок
+  dom.financeEntriesList.innerHTML = entries.length
+    ? entries.map(financeEntryCard).join('')
+    : '<div class="empty">Нет записей по фильтрам.</div>';
+
+  // Регулярные расходы
+  dom.recurringExpensesList.innerHTML = state.finance.recurringRules.length
+    ? state.finance.recurringRules.map(recurringRuleCard).join('')
+    : '<div class="empty">Регулярные расходы ещё не настроены.</div>';
+
+  renderRcIntegration(state);
+  renderUnitEconomicsSection(state);
+}
+
+// Отдельный async-рендер таблицы «Итоги по квартирам» — читает rc_bookings.
+let _financeAptSummaryToken = 0;
+async function _renderFinanceByApartmentAsync() {
+  const myToken = ++_financeAptSummaryToken;
+  const apt = await getFinanceApartmentSummaryAsync();
+  // Устаревший вызов — выходим.
+  if (myToken !== _financeAptSummaryToken) return;
+  if (!dom.financeByApartment) return;
+  if (!apt.rows.length) {
+    dom.financeByApartment.innerHTML = '<div class="empty">Нет данных.</div>';
+    return;
+  }
+  const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
       const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       const money = (n) => `${fmt2(n)} ₽`;
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-08-31.7';
+      const BUILD_VERSION = 'v.2026-08-31.8';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       const rowsHtml = apt.rows.map((r) => `
         <tr>
@@ -374,24 +403,10 @@ function renderFinance(state) {
           </table>
         </div>
       `;
-    }
-  }
+}
 
-  // Список проводок
-  dom.financeEntriesList.innerHTML = entries.length
-    ? entries.map(financeEntryCard).join('')
-    : '<div class="empty">Нет записей по фильтрам.</div>';
-
-  // Регулярные расходы
-  dom.recurringExpensesList.innerHTML = state.finance.recurringRules.length
-    ? state.finance.recurringRules.map(recurringRuleCard).join('')
-    : '<div class="empty">Регулярные расходы ещё не настроены.</div>';
-
-  // RealtyCalendar интеграция — статус + журнал в financeSettingsModal
-  renderRcIntegration(state);
-
-  // Юнит экономика (отдельная таблица внутри финансовой модалки)
-  // Асинхронно: расчёт идёт на сервере, блок дорисуется сам.
+// Заглушки-остатки от старого renderFinance — вынесены в renderUnitEconomicsSection.
+function renderUnitEconomicsSection(state) {
   void renderUnitEconomics(state);
 
   // Селекты квартир в модалках

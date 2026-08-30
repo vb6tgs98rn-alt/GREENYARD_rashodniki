@@ -8,7 +8,7 @@
  * 1301 ГК РФ.
  */
 import { currentApartment, findApartmentById, getDisplayApartmentName, getState, updateState } from './state.js';
-import { getSupabaseClient } from './supabase-client.js';
+import { getSupabaseClient, requireUser } from './supabase-client.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 
 export const FINANCE_TYPES = { income: 'income', expense: 'expense' };
@@ -633,6 +633,144 @@ function _resolvePeriodBounds(filter, allEntries) {
 //   • Среднесуточный доход = чистый доход / длина периода.
 //   • Средняя длит. проживания — по ЦЕЛЫМ броням, чьи ночи попали в период,
 //     как total_nights / число_броней — чтобы отражать реальную длину бронирований.
+
+// =============================================================================
+// АСИНХРОННАЯ версия: читает брони НАПРЯМУЮ из rc_bookings
+// в Supabase, минуя кешированный state.finance.entries.
+// Это единственный надёжный способ — локальный синк в прошлом терял
+// брони и делал дубли. Расходы по-прежнему берём из state.finance.entries.
+// =============================================================================
+export async function getFinanceApartmentSummaryAsync() {
+  const state = getState();
+  const filter = state.ui?.finance || {};
+  const supabase = getSupabaseClient();
+  const user = supabase ? await requireUser() : null;
+
+  // 1) Определяем период (так же как в синхронной версии).
+  const rawEntries = state.finance?.entries || [];
+  const { from, to } = _resolvePeriodBounds(filter, rawEntries);
+  const periodDays = from && to ? Math.max(1, _nightsBetween(from, to) + 1) : 0;
+
+  // 2) Загружаем брони из rc_bookings напрямую.
+  let bookings = [];
+  if (supabase && user) {
+    const { data, error } = await supabase
+      .from('rc_bookings')
+      .select('booking_id, realty_id, apartment_title, begin_date, end_date, amount, status, raw_payload, platform_tax')
+      .eq('user_id', user.id)
+      .not('status', 'in', '(canceled,deleted)')
+      .limit(2000);
+    if (error) console.warn('[finance] rc_bookings fetch error:', error.message);
+    else bookings = data || [];
+  }
+
+  // 3) Строим строки по квартирам.
+  const rows = new Map();
+  const ensureRow = (id, name) => {
+    if (!rows.has(id)) {
+      rows.set(id, {
+        apartmentId: id, name: name || '—',
+        income: 0, grossIncome: 0, platformCommission: 0, expense: 0,
+        soldNights: 0, bookings: 0, totalNightsForStayAvg: 0,
+      });
+    }
+    return rows.get(id);
+  };
+
+  const aptFilter = filter.apartmentFilter && filter.apartmentFilter !== 'all' ? filter.apartmentFilter : '';
+  // Карта realty_id → apartment.
+  const rcMap = new Map();
+  (state.apartments || []).forEach((a) => {
+    if (a.archived) return;
+    if (aptFilter && a.id !== aptFilter) return;
+    ensureRow(a.id, getDisplayApartmentName(a.name));
+    const rc = a.externalIds?.realtyCalendarUnitId;
+    if (rc) rcMap.set(String(rc), a);
+  });
+
+  // 4) Доход от броней — из rc_bookings.
+  bookings.forEach((b) => {
+    const apt = rcMap.get(String(b.realty_id));
+    if (!apt) return;
+    if (aptFilter && apt.id !== aptFilter) return;
+    const bd = b.begin_date;
+    const ed = b.end_date;
+    const totalNights = _nightsBetween(bd, ed);
+    if (totalNights <= 0) return;
+    const nightsIn = _bookingNightsInPeriod(bd, ed, from, to);
+    if (nightsIn <= 0) return;
+    const gross = Number(b.amount || 0);
+    const tax = Number(b.raw_payload?.data?.booking?.platform_tax ?? b.platform_tax ?? 0);
+    const net = Math.max(0, gross - tax);
+    const share = nightsIn / totalNights;
+    const row = ensureRow(apt.id, getDisplayApartmentName(apt.name));
+    row.grossIncome += gross * share;
+    row.platformCommission += tax * share;
+    row.income += net * share;
+    row.soldNights += nightsIn;
+    row.bookings += 1;
+    row.totalNightsForStayAvg += totalNights;
+  });
+
+  // 5) Расходы и ручные доходы — из state.finance.entries.
+  rawEntries.forEach((e) => {
+    if (!e.apartmentId) return;
+    if (aptFilter && e.apartmentId !== aptFilter) return;
+    if (e.status === 'cancelled') return;
+    // Брони realtycalendar уже взяты из rc_bookings — пропускаем их здесь.
+    if (e.source === 'realtycalendar' && e.type === FINANCE_TYPES.income) return;
+    const gross = Number(e.amount || 0);
+    const tax = Number(e.meta?.platform_tax || 0);
+    const net = Number(e.netAmount != null ? e.netAmount : Math.max(0, gross - tax));
+    const row = ensureRow(e.apartmentId, e.apartmentName);
+    if (e.type === FINANCE_TYPES.income) {
+      // Ручной доход без дат заезда.
+      if (from && to && e.date && (e.date < from || e.date > to)) return;
+      row.grossIncome += gross;
+      row.platformCommission += tax;
+      row.income += net;
+    } else if (e.type === FINANCE_TYPES.expense) {
+      if (from && to && e.date && (e.date < from || e.date > to)) return;
+      row.expense += gross;
+    }
+  });
+
+  // 6) Формируем вывод (тот же шейп, что в синхронной версии).
+  const list = Array.from(rows.values()).map((r) => {
+    const profit = r.income - r.expense;
+    const availableNights = periodDays;
+    const occupancy = availableNights > 0 ? Math.min(100, (r.soldNights / availableNights) * 100) : 0;
+    const adr = r.soldNights > 0 ? r.income / r.soldNights : 0;
+    const avgDaily = periodDays > 0 ? r.income / periodDays : 0;
+    const avgStay = r.bookings > 0 ? r.totalNightsForStayAvg / r.bookings : 0;
+    return {
+      apartmentId: r.apartmentId, name: r.name,
+      income: r.income, grossIncome: r.grossIncome, platformCommission: r.platformCommission,
+      expense: r.expense, soldNights: r.soldNights, bookings: r.bookings,
+      profit, availableNights, occupancy, adr, avgDaily, avgStay,
+    };
+  });
+
+  const totals = list.reduce(
+    (acc, r) => {
+      acc.income += r.income; acc.grossIncome += r.grossIncome; acc.platformCommission += r.platformCommission;
+      acc.expense += r.expense; acc.profit += r.profit;
+      acc.soldNights += r.soldNights; acc.bookings += r.bookings;
+      return acc;
+    },
+    { income: 0, grossIncome: 0, platformCommission: 0, expense: 0, profit: 0, soldNights: 0, bookings: 0 },
+  );
+  const totalAvailable = periodDays * list.length;
+  totals.availableNights = totalAvailable;
+  totals.occupancy = totalAvailable > 0 ? Math.min(100, (totals.soldNights / totalAvailable) * 100) : 0;
+  totals.adr = totals.soldNights > 0 ? totals.income / totals.soldNights : 0;
+  totals.avgDaily = totalAvailable > 0 ? totals.income / totalAvailable : 0;
+  const totalStayNights = list.reduce((s, r) => s + (r.avgStay * r.bookings), 0);
+  totals.avgStay = totals.bookings > 0 ? totalStayNights / totals.bookings : 0;
+
+  return { rows: list, totals, period: { from, to, days: periodDays } };
+}
+
 export function getFinanceApartmentSummary() {
   const state = getState();
   const filter = state.ui?.finance || {};
