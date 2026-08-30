@@ -104,6 +104,15 @@ function renderInventory(state) {
       if (dom.apartmentCleaningPriceSaveBtn) dom.apartmentCleaningPriceSaveBtn.hidden = false;
     }
   }
+  // Система учёта: субаренда / доверительное управление.
+  if (dom.apartmentBusinessModel) {
+    const model = apartment.businessModel === 'trust' ? 'trust' : 'sublease';
+    dom.apartmentBusinessModel.value = model;
+    if (dom.apartmentTrustShareRow) dom.apartmentTrustShareRow.hidden = (model !== 'trust');
+    if (dom.apartmentTrustShare) {
+      dom.apartmentTrustShare.value = Number(apartment.trustShare || 0) > 0 ? String(apartment.trustShare) : '';
+    }
+  }
   dom.apartmentSearch.value = state.ui.apartmentSearch || '';
   const filteredApartments = state.apartments.filter((a) =>
     getDisplayApartmentName(a.name).toLowerCase().includes((state.ui.apartmentSearch || '').toLowerCase())
@@ -353,12 +362,18 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-08-31.8';
+      const BUILD_VERSION = 'v.2026-08-31.9';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
+      // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
+      const payoutCell = (r) => {
+        if (r.businessModel !== 'trust' || r.ownerPayout == null) return '<td class="num muted">—</td>';
+        return `<td class="num">${money(r.ownerPayout)}</td>`;
+      };
       const rowsHtml = apt.rows.map((r) => `
         <tr>
           <td class="fin-tbl-name">${r.name}</td>
           <td class="num" style="color:${profitColor(r.profit)};font-weight:600">${r.profit >= 0 ? '' : '−'}${money(Math.abs(r.profit))}</td>
+          ${payoutCell(r)}
           <td class="num">${money(r.income)}</td>
           <td class="num">${money(r.expense)}</td>
           <td class="num">${money(r.platformCommission)}</td>
@@ -377,6 +392,7 @@ async function _renderFinanceByApartmentAsync() {
               <tr>
                 <th>Объект</th>
                 <th class="num">Прибыль</th>
+                <th class="num">Выплата собственнику</th>
                 <th class="num">Доходы</th>
                 <th class="num">Расходы</th>
                 <th class="num">Комиссии площадок</th>
@@ -391,6 +407,7 @@ async function _renderFinanceByApartmentAsync() {
               <tr class="fin-tbl-total">
                 <td>Итого:</td>
                 <td class="num" style="color:${profitColor(t.profit)}">${t.profit >= 0 ? '' : '−'}${money(Math.abs(t.profit))}</td>
+                <td class="num">${(t.ownerPayout && t.ownerPayout > 0) ? money(t.ownerPayout) : '<span class="muted">—</span>'}</td>
                 <td class="num">${money(t.income)}</td>
                 <td class="num">${money(t.expense)}</td>
                 <td class="num">${money(t.platformCommission)}</td>

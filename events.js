@@ -1315,6 +1315,39 @@ function bindApartmentRealtyId() {
     if (dom.apartmentCleaningPriceSaveBtn) dom.apartmentCleaningPriceSaveBtn.hidden = false;
   });
 
+  // Система учёта: субаренда или доверительное управление.
+  dom.apartmentBusinessModel?.addEventListener('change', async () => {
+    const apt = currentApartment();
+    if (!apt) return;
+    const model = dom.apartmentBusinessModel.value === 'trust' ? 'trust' : 'sublease';
+    // Показываем/прячем инпут доли УК сразу.
+    if (dom.apartmentTrustShareRow) dom.apartmentTrustShareRow.hidden = (model !== 'trust');
+    updateState((state) => {
+      const a = (state.apartments || []).find((x) => x.id === apt.id);
+      if (!a) return;
+      a.businessModel = model;
+      if (model === 'sublease') a.trustShare = 0;
+    });
+    await rerender(model === 'trust' ? 'Система: доверительное управление' : 'Система: субаренда');
+  });
+
+  // Сохранить долю УК в ДУ.
+  const saveTrustShare = async () => {
+    const apt = currentApartment();
+    if (!apt) return;
+    const raw = Number(dom.apartmentTrustShare?.value || 0);
+    const share = Math.min(100, Math.max(0, raw));
+    updateState((state) => {
+      const a = (state.apartments || []).find((x) => x.id === apt.id);
+      if (!a) return;
+      a.businessModel = 'trust';
+      a.trustShare = share;
+    });
+    await rerender(`Доля УК: ${share}%`);
+  };
+  dom.apartmentBusinessModelSaveBtn?.addEventListener('click', saveTrustShare);
+  dom.apartmentTrustShare?.addEventListener('change', saveTrustShare);
+
   // Открытие модалки синхронизации по клику на кнопку в карточке квартиры
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-sync-apartment]');

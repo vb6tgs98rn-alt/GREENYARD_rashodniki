@@ -736,8 +736,21 @@ export async function getFinanceApartmentSummaryAsync() {
   });
 
   // 6) Формируем вывод (тот же шейп, что в синхронной версии).
+  // Система учёта: если «trust» и доля УК = N%, то:
+  //   ownerPayout = исходная прибыль × (100 − N) / 100 — выплата собственнику
+  //   profit в таблице = исходная прибыль − ownerPayout — что остаётся УК
+  // Если «sublease» — ownerPayout = null (прочерк), profit = исходная прибыль.
   const list = Array.from(rows.values()).map((r) => {
-    const profit = r.income - r.expense;
+    const apt = (state.apartments || []).find((a) => a.id === r.apartmentId);
+    const model = apt?.businessModel === 'trust' ? 'trust' : 'sublease';
+    const trustShare = Math.min(100, Math.max(0, Number(apt?.trustShare || 0)));
+    const rawProfit = r.income - r.expense;
+    let ownerPayout = null;
+    let profit = rawProfit;
+    if (model === 'trust') {
+      ownerPayout = rawProfit * (100 - trustShare) / 100;
+      profit = rawProfit - ownerPayout;
+    }
     const availableNights = periodDays;
     const occupancy = availableNights > 0 ? Math.min(100, (r.soldNights / availableNights) * 100) : 0;
     const adr = r.soldNights > 0 ? r.income / r.soldNights : 0;
@@ -747,7 +760,8 @@ export async function getFinanceApartmentSummaryAsync() {
       apartmentId: r.apartmentId, name: r.name,
       income: r.income, grossIncome: r.grossIncome, platformCommission: r.platformCommission,
       expense: r.expense, soldNights: r.soldNights, bookings: r.bookings,
-      profit, availableNights, occupancy, adr, avgDaily, avgStay,
+      profit, ownerPayout, businessModel: model, trustShare,
+      availableNights, occupancy, adr, avgDaily, avgStay,
     };
   });
 
@@ -756,9 +770,13 @@ export async function getFinanceApartmentSummaryAsync() {
       acc.income += r.income; acc.grossIncome += r.grossIncome; acc.platformCommission += r.platformCommission;
       acc.expense += r.expense; acc.profit += r.profit;
       acc.soldNights += r.soldNights; acc.bookings += r.bookings;
+      // Выплата собственнику — только для объектов с ДУ (sublease даёт 0).
+      if (r.businessModel === 'trust' && r.ownerPayout != null) {
+        acc.ownerPayout += r.ownerPayout;
+      }
       return acc;
     },
-    { income: 0, grossIncome: 0, platformCommission: 0, expense: 0, profit: 0, soldNights: 0, bookings: 0 },
+    { income: 0, grossIncome: 0, platformCommission: 0, expense: 0, profit: 0, soldNights: 0, bookings: 0, ownerPayout: 0 },
   );
   const totalAvailable = periodDays * list.length;
   totals.availableNights = totalAvailable;

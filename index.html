@@ -15,7 +15,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Green Yard</title>
   <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./styles.css?v=20260831-8" />
+  <link rel="stylesheet" href="./styles.css?v=20260831-9" />
 </head>
 <body class="is-guest">
   <!-- ─── Экран входа для гостя (виден только при body.is-guest) ────────── -->
@@ -343,6 +343,21 @@
         <div class="grid"><label><span class="small">Название квартиры</span><input id="apartmentName" type="text" placeholder="Например, Ленина 12" /></label></div>
         <div class="grid" style="margin-top:.75rem;"><label><span class="small">ID объекта в RealtyCalendar (realty_id)</span><div style="display:flex;gap:.5rem;align-items:stretch;"><input id="apartmentRealtyId" type="text" inputmode="numeric" placeholder="Например, 208656" style="flex:1" /><button class="btn btn-secondary" id="saveApartmentRealtyId" type="button">Сохранить</button></div></label></div>
         <div class="grid" style="margin-top:.75rem;"><label><span class="small">Цена уборки, ₽ (автоматический расход в день создания брони)</span><div style="display:flex;gap:.5rem;align-items:stretch;"><input id="apartmentCleaningPrice" type="number" min="0" step="50" placeholder="Например, 1500" style="flex:1" /><button class="btn btn-secondary" id="apartmentCleaningPriceEditBtn" type="button" hidden>Редактировать</button><button class="btn btn-primary" id="apartmentCleaningPriceSaveBtn" type="button">Сохранить</button></div></label></div>
+        <div class="grid" style="margin-top:.75rem;">
+          <label><span class="small">Система</span>
+            <select id="apartmentBusinessModel">
+              <option value="sublease">Субаренда</option>
+              <option value="trust">Доверительное управление</option>
+            </select>
+          </label>
+          <label id="apartmentTrustShareRow" hidden>
+            <span class="small">Доля УК, % (что остаётся вам как УК)</span>
+            <div style="display:flex;gap:.5rem;align-items:stretch;">
+              <input id="apartmentTrustShare" type="number" min="0" max="100" step="1" placeholder="Например, 30" style="flex:1" />
+              <button class="btn btn-primary" id="apartmentBusinessModelSaveBtn" type="button">Сохранить</button>
+            </div>
+          </label>
+        </div>
         <div class="grid" style="margin-top:1rem;">
           <div class="section-head" style="margin-bottom:0;"><h2 style="margin:0">Добавить расходник</h2></div>
           <label><span class="small">Название</span><input id="newItemName" type="text" placeholder="Например, Губка" /></label>
@@ -411,6 +426,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="./app.js?v=20260831-8"></script>
+  <script type="module" src="./app.js?v=20260831-9"></script>
 </body>
 </html>

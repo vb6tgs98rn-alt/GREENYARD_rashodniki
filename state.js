@@ -105,6 +105,10 @@ export function ensureStateShape(rawState) {
     items: Array.isArray(apartment?.items) ? apartment.items : [],
     externalIds: { realtyCalendarUnitId: apartment?.externalIds?.realtyCalendarUnitId || '' },
     cleaningPrice: Number(apartment?.cleaningPrice || 0),
+    // Система работы с объектом: 'sublease' (субаренда) или 'trust' (доверительное управление).
+    businessModel: (apartment?.businessModel === 'trust') ? 'trust' : 'sublease',
+    // Доля УК в ДУ, % (0..100). Собственнику полагается (100 − trustShare)% прибыли.
+    trustShare: Math.min(100, Math.max(0, Number(apartment?.trustShare || 0))),
     unitEcoReports: {
       active: apartment?.unitEcoReports?.active || null,
       history: Array.isArray(apartment?.unitEcoReports?.history) ? apartment.unitEcoReports.history : [],

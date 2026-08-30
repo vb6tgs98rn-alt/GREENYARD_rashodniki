@@ -118,6 +118,8 @@ export function normalizeImportedState(raw) {
       realtyCalendarUnitId: apartment?.externalIds?.realtyCalendarUnitId || '',
     },
     cleaningPrice: Math.max(0, Number(apartment?.cleaningPrice || 0)),
+    businessModel: (apartment?.businessModel === 'trust') ? 'trust' : 'sublease',
+    trustShare: Math.min(100, Math.max(0, Number(apartment?.trustShare || 0))),
     unitEcoReports: {
       active: apartment?.unitEcoReports?.active || null,
       history: Array.isArray(apartment?.unitEcoReports?.history) ? apartment.unitEcoReports.history : [],

@@ -144,5 +144,9 @@ const dom = {
   // Кнопки read-only для цены уборки
   apartmentCleaningPriceEditBtn: byId('apartmentCleaningPriceEditBtn'),
   apartmentCleaningPriceSaveBtn: byId('apartmentCleaningPriceSaveBtn'),
+  apartmentBusinessModel: byId('apartmentBusinessModel'),
+  apartmentTrustShareRow: byId('apartmentTrustShareRow'),
+  apartmentTrustShare: byId('apartmentTrustShare'),
+  apartmentBusinessModelSaveBtn: byId('apartmentBusinessModelSaveBtn'),
 };
 export default dom;
