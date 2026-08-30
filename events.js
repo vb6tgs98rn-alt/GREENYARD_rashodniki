@@ -732,6 +732,49 @@ function bindFinanceFilters() {
     });
     await rerender('Фильтры сброшены');
   });
+
+  // ─── Период на вкладке «Итоги по квартирам» (привязан к тем же dateFrom/dateTo) ───
+  const summaryFrom = byId('summaryDateFrom');
+  const summaryTo = byId('summaryDateTo');
+  const summaryReset = byId('summaryResetPeriod');
+  const applySummaryPeriod = async (from, to) => {
+    updateState((state) => {
+      state.ui.finance.dateFrom = from || '';
+      state.ui.finance.dateTo = to || '';
+      if (from || to) state.ui.finance.month = '';
+    });
+    // Синк видимых полей на вкладке «Финансы» (если переключится)
+    if (dom.financeDateFrom) dom.financeDateFrom.value = from || '';
+    if (dom.financeDateTo) dom.financeDateTo.value = to || '';
+    await rerender('Период обновлён');
+  };
+  const onSummaryDatesInput = () => applySummaryPeriod(summaryFrom?.value || '', summaryTo?.value || '');
+  summaryFrom?.addEventListener('input', onSummaryDatesInput);
+  summaryTo?.addEventListener('input', onSummaryDatesInput);
+  summaryReset?.addEventListener('click', () => applySummaryPeriod('', ''));
+
+  // Пресеты
+  document.querySelectorAll('[data-summary-preset]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const preset = btn.getAttribute('data-summary-preset');
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const toIso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      let from = '';
+      let to = '';
+      if (preset === 'month') {
+        from = toIso(new Date(now.getFullYear(), now.getMonth(), 1));
+        to = toIso(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+      } else if (preset === 'prev-month') {
+        from = toIso(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+        to = toIso(new Date(now.getFullYear(), now.getMonth(), 0));
+      } else if (preset === 'ytd') {
+        from = toIso(new Date(now.getFullYear(), 0, 1));
+        to = toIso(now);
+      }
+      applySummaryPeriod(from, to);
+    });
+  });
 }
 
 function bindUnitEconomicsTab() {

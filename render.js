@@ -307,6 +307,11 @@ function renderFinance(state) {
   `;
 
   // По квартирам — таблица как в референсе «Реалти»
+  // Синк видимых полей периода на вкладке «Итоги по квартирам»
+  const summaryFromEl = byId('summaryDateFrom');
+  const summaryToEl = byId('summaryDateTo');
+  if (summaryFromEl) summaryFromEl.value = filter.dateFrom || '';
+  if (summaryToEl) summaryToEl.value = filter.dateTo || '';
   if (dom.financeByApartment) {
     const apt = getFinanceApartmentSummary();
     if (!apt.rows.length) {
@@ -319,7 +324,7 @@ function renderFinance(state) {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-08-31.2';
+      const BUILD_VERSION = 'v.2026-08-31.4';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       const rowsHtml = apt.rows.map((r) => `
         <tr>
