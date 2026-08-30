@@ -18,6 +18,12 @@
 // Документация: https://developers.tochka.com/docs/tochka-api/
 // deno-lint-ignore-file no-explicit-any
 
+// TLS: сервер enter.tochka.com выдаёт сертификат, подписанный корнем
+// «Russian Trusted Root CA» (Минцифры). В CA-хранилище Deno в Supabase
+// Edge Runtime этого корня нет, поэтому все fetch к Точке идут через
+// собственный HttpClient с явно доверенной цепочкой.
+import { ruHttpClient } from "./ru_ca.ts";
+
 // ───────────────────────────────────────────────────────────────
 // Окружение
 // ───────────────────────────────────────────────────────────────
@@ -108,7 +114,7 @@ async function fetchWithTimeout(url: string, init: RequestInit, ms = 20000): Pro
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), ms);
   try {
-    return await fetch(url, { ...init, signal: ac.signal });
+    return await fetch(url, { ...(init as any), signal: ac.signal, client: ruHttpClient() } as any);
   } finally {
     clearTimeout(timer);
   }

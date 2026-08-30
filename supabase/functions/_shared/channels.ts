@@ -17,6 +17,12 @@
 //
 // deno-lint-ignore-file no-explicit-any
 
+// TLS: platform-api*.max.ru выдаёт сертификат, подписанный Минцифры
+// (Russian Trusted Root CA). Deno в Supabase Edge его не знает, поэтому
+// все вызовы к MAX идут через fetchRu(), который автоматически
+// подкладывает клиент с доверенной цепочкой для *.max.ru.
+import { fetchRu } from "./ru_ca.ts";
+
 // ═══════════════════════════════════════════════════════════════════
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════
@@ -308,7 +314,7 @@ async function maxSend(chatId: string, html: string, opts: SendOpts, profile: Bo
   const attachments = maxKeyboard(opts.buttons);
   if (attachments) body.attachments = attachments;
 
-  const r = await fetch(url.href, {
+  const r = await fetchRu(url.href, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: token },
     body: JSON.stringify(body),
@@ -325,7 +331,7 @@ async function maxAnswerCallback(callbackId: string, text: string, profile: BotP
   const token = maxTokenFor(profile);
   const url = new URL("/answers", MAX_API);
   url.searchParams.set("callback_id", callbackId);
-  await fetch(url.href, {
+  await fetchRu(url.href, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: token },
     body: JSON.stringify(text ? { notification: text } : {}),
