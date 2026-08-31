@@ -487,6 +487,26 @@ export function ensureAutoRentEntryForMonth(apartmentId, year, month1) {
   _ensureAutoRentEntryForMonth(state, apt, year, month1);
 }
 
+// Одноразовая очистка всех ручных записей аренды (пользователь теперь полагается на auto-rent через настройки).
+// Удаляем: expense-записи с категорией/титлом содержащим «аренд», но source ≠ auto-rent и ≠ realtycalendar.
+export function cleanupManualRentEntries() {
+  let removed = 0;
+  updateState((state) => {
+    if (state.migrations?.manualRentCleanup2026 === true) return;
+    state.finance.entries = (state.finance.entries || []).filter((e) => {
+      if (e.type !== FINANCE_TYPES.expense) return true;
+      if (e.source === 'auto-rent') return true;
+      if (e.source === 'realtycalendar') return true;
+      const hay = `${e.category || ''} ${e.title || ''}`.toLowerCase();
+      if (hay.includes('аренд')) { removed++; return false; }
+      return true;
+    });
+    if (!state.migrations) state.migrations = {};
+    state.migrations.manualRentCleanup2026 = true;
+  });
+  return removed;
+}
+
 // Перегенерация автосписаний для всех квартир. Безопасно вызывать в бутстрапе.
 export function regenerateAutoRentEntriesForAllApartments() {
   const state = getState();
@@ -512,8 +532,6 @@ function _ensureAutoRentEntryForMonth(state, apt, year, month1) {
     const extId = `auto-rent:${apt.id}:${monthKeyStr}`;
     // Существует ли наша автозапись? (включая manual-версию после редактирования).
     const existsIdx = state.finance.entries.findIndex((e) => String(e.externalBookingId || '') === extId);
-    // Если есть любая другая ручная аренда в этом месяце (без extId) — не создаём дубль.
-    if (existsIdx < 0 && _hasManualRentInMonth(state, apt.id, year, month1)) return;
     const payload = {
       apartmentId: apt.id,
       apartmentName: getDisplayApartmentName(apt.name),
@@ -555,8 +573,6 @@ function _ensureAutoRentEntryForMonth(state, apt, year, month1) {
 
     const extId = `auto-owner-payout:${apt.id}:${monthKeyStr}`;
     const existsIdx = state.finance.entries.findIndex((e) => String(e.externalBookingId || '') === extId);
-    // Если есть ручная выплата собу в этом месяце (без extId) — не создаём дубль.
-    if (existsIdx < 0 && _hasManualOwnerPayoutInMonth(state, apt.id, year, month1)) return;
     // Если выплата ≤ 0 (убыток) — не создаём запись.
     if (!(ownerPayout > 0)) {
       if (existsIdx >= 0) state.finance.entries.splice(existsIdx, 1);

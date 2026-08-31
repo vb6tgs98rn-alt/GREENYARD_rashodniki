@@ -9,7 +9,7 @@
  */
 import dom, { byId } from './dom.js';
 import { fetchRealtyCalendarBookings, fetchRealtyCalendarLog, fetchRealtyCalendarIntegration, saveRealtyCalendarIntegration, disconnectRealtyCalendar, buildFinanceWebhookExample, getWebhookUrl } from './api.js';
-import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport, dedupeFinanceEntriesByExternalId, regenerateAutoRentEntriesForAllApartments } from './finance.js';
+import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport, dedupeFinanceEntriesByExternalId, regenerateAutoRentEntriesForAllApartments, cleanupManualRentEntries } from './finance.js';
 import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus, setAuthMsg } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, setState, updateState } from './state.js';
 import { persistState, exportJson, importJson, fetchCloudState } from './storage.js';
@@ -63,6 +63,7 @@ function bindSectionNav() {
     // При открытии раздела «Финансы» бесплатно перегенерируем автосписания по всем квартирам
     // (идемпотентно: если авто-запись есть — перезапишется, если нет — создастся).
     try {
+      cleanupManualRentEntries();
       regenerateAutoRentEntriesForAllApartments();
       dedupeFinanceEntriesByExternalId();
       persistState(setStatus, true).catch(() => {});
