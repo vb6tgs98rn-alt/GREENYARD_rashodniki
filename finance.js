@@ -426,6 +426,18 @@ export function regenerateAutoRentEntries(apartmentId) {
     return !(e.source === 'auto-rent' || e.source === 'auto-owner-payout');
   });
 
+  // 1б) Единоразово: удаляем ручные записи-аренды/выплаты собу, чтобы автосписания их заменили.
+  // Критерий: expense квартиры + в категории/названии есть "аренд" или (для ДУ) "выплат" + "соб". source не realtycalendar.
+  state.finance.entries = state.finance.entries.filter((e) => {
+    if (e.apartmentId !== apartmentId) return true;
+    if (e.type !== FINANCE_TYPES.expense) return true;
+    if (e.source === 'realtycalendar') return true;
+    const hay = `${e.category || ''} ${e.title || ''}`.toLowerCase();
+    const isRent = hay.includes('аренд');
+    const isOwnerPayout = hay.includes('выплат') && hay.includes('соб');
+    return !(isRent || isOwnerPayout);
+  });
+
   // 2) Если день оплаты не задан — выходим (автосписаний нет).
   if (!(paymentDay >= 1 && paymentDay <= 31)) return;
 
@@ -464,8 +476,6 @@ function _ensureAutoRentEntryForMonth(state, apt, year, month1) {
   if (model === 'sublease') {
     if (!(rentAmount > 0)) return;
     const extId = `auto-rent:${apt.id}:${monthKeyStr}`;
-    // Если в этом месяце уже есть ручная запись-аренда (созданная до обновления) — не дублируем.
-    if (_hasManualRentInMonth(state, apt.id, year, month1)) return;
     // Существует?
     const existsIdx = state.finance.entries.findIndex((e) => e.source === 'auto-rent' && String(e.externalBookingId) === extId);
     const payload = {
@@ -507,8 +517,6 @@ function _ensureAutoRentEntryForMonth(state, apt, year, month1) {
     const rawProfit = stats.income - stats.expense;
     const ownerPayout = rawProfit * (100 - trustShare) / 100;
 
-    // Если в этом месяце уже есть ручная выплата собу — не дублируем.
-    if (_hasManualOwnerPayoutInMonth(state, apt.id, year, month1)) return;
     const extId = `auto-owner-payout:${apt.id}:${monthKeyStr}`;
     const existsIdx = state.finance.entries.findIndex((e) => e.source === 'auto-owner-payout' && String(e.externalBookingId) === extId);
     // Если выплата ≤ 0 (убыток) — не создаём запись.
