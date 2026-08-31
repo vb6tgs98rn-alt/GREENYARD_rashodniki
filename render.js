@@ -384,7 +384,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-08-31.16';
+      const BUILD_VERSION = 'v.2026-08-31.17';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
@@ -466,7 +466,7 @@ async function _renderFinanceByCyclesAsync() {
   if (myToken !== _financeAptSummaryToken) return;
   if (!dom.financeByApartment) return;
 
-  const BUILD_VERSION = 'v.2026-08-31.16';
+  const BUILD_VERSION = 'v.2026-08-31.17';
   const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
   const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -486,21 +486,12 @@ async function _renderFinanceByCyclesAsync() {
     const s = `${d} ${_MONTHS_RU[m - 1]}`;
     return y === _nowYear ? s : `${s} ${y}`;
   };
-  const fmtRange = (from, to) => {
-    const [fy] = from.split('-').map(Number);
-    const [ty] = to.split('-').map(Number);
-    // Если оба конца — текущий год: не печатаем год. Если годы отличаются — печатаем год на том конце, где он не равен текущему.
-    return `${fmtShort(from)} — ${fmtShort(to)}`;
-  };
+  const fmtRange = (from, to) => `${fmtShort(from)}-${fmtShort(to)}`;
 
   const periodCell = (r) => {
-    const badge = r.offset === 0 ? '' : `<sup class="small muted" style="margin-left:.2rem;">${r.offset > 0 ? '+' : ''}${r.offset}</sup>`;
-    return `<td class="fin-cycle-period small muted" style="white-space:nowrap;padding:.35rem .5rem;">
-      <span style="display:inline-flex;align-items:center;gap:.2rem;">
-        <button type="button" class="cycle-arrow" data-action="fin-apt-cycle-prev" data-apt-id="${r.apartmentId}" title="Предыдущий цикл">‹</button>
-        <span style="white-space:nowrap;">${fmtRange(r.period.from, r.period.to)}${badge}</span>
-        <button type="button" class="cycle-arrow" data-action="fin-apt-cycle-next" data-apt-id="${r.apartmentId}" title="Следующий цикл">›</button>
-      </span>
+    const badge = r.offset === 0 ? '' : `<sup class="small muted">${r.offset > 0 ? '+' : ''}${r.offset}</sup>`;
+    return `<td class="fin-cycle-period small muted">
+      <button type="button" class="cycle-arrow" data-action="fin-apt-cycle-prev" data-apt-id="${r.apartmentId}" title="Предыдущий цикл">‹</button><span class="cycle-range">${fmtRange(r.period.from, r.period.to)}${badge}</span><button type="button" class="cycle-arrow" data-action="fin-apt-cycle-next" data-apt-id="${r.apartmentId}" title="Следующий цикл">›</button>
     </td>`;
   };
 
