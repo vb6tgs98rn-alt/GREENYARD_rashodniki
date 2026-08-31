@@ -1176,8 +1176,6 @@ export async function getFinanceCyclesSummaryAsync(offsetByApt = {}) {
     else bookings = data || [];
   }
 
-  const rawEntries = state.finance?.entries || [];
-
   const aptsWithCycle = [];
   const aptsNoDay = [];
   (state.apartments || []).forEach((a) => {
@@ -1254,7 +1252,7 @@ export async function getFinanceCyclesSummaryAsync(offsetByApt = {}) {
         row.totalNightsForStayAvg += totalNights;
       });
     }
-    rawEntries.forEach((e) => {
+    (state.finance?.entries || []).forEach((e) => {
       if (e.apartmentId !== apt.id) return;
       if (e.status === 'cancelled') return;
       if (e.source === 'realtycalendar' && e.type === FINANCE_TYPES.income) return;
@@ -1296,6 +1294,16 @@ export async function getFinanceCyclesSummaryAsync(offsetByApt = {}) {
     };
   };
 
+  // Сначала гарантируем автосписания для видимых циклов (месяц-старт = месяц даты автозаписи).
+  aptsWithCycle.forEach(({ apt, paymentDay }) => {
+    const offset = Number(offsetByApt?.[apt.id] || 0);
+    // Повторяем логику _windowForApt чтобы вычислить старт-месяц цикла.
+    const startDayThis = _clampDayToMonth(todayY, todayM, paymentDay);
+    let sY = todayY, sM = todayM;
+    if (todayD < startDayThis) { sM = todayM - 1; if (sM < 1) { sM = 12; sY -= 1; } }
+    const startDate = new Date(sY, sM - 1 + offset, 1);
+    _ensureAutoRentEntryForMonth(state, apt, startDate.getFullYear(), startDate.getMonth() + 1);
+  });
   const cycleRows = aptsWithCycle.map(({ apt, paymentDay }) => {
     const offset = Number(offsetByApt?.[apt.id] || 0);
     const { from, to } = _windowForApt(paymentDay, offset);
