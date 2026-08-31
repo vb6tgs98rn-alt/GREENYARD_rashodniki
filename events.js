@@ -880,6 +880,11 @@ function bindFinanceModals() {
     if (!amount) { setStatus('Укажите сумму'); return; }
     const editId = financeEntryModalEl?.dataset.editId || '';
     if (editId) {
+      // Если редактируем автосписание — отвязываем его от автогенерации
+      // (меняем source в 'manual', чтобы следующая регенерация её не тронула).
+      const _st = getState();
+      const _existing = _st.finance?.entries?.find((x) => x.id === editId);
+      const _wasAuto = _existing && (_existing.source === 'auto-rent' || _existing.source === 'auto-owner-payout' || _existing.source === 'cleaning');
       updateFinanceEntry(editId, {
         apartmentId: dom.financeEntryApartment?.value,
         type: dom.financeEntryType?.value,
@@ -887,6 +892,7 @@ function bindFinanceModals() {
         amount,
         date: dom.financeEntryDate?.value,
         notes: dom.financeEntryNotes?.value,
+        ...(_wasAuto ? { source: 'manual', externalBookingId: null } : {}),
       });
       if (financeEntryModalEl) financeEntryModalEl.dataset.editId = '';
       closeModal('financeEntryModal');

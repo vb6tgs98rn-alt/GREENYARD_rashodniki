@@ -357,10 +357,22 @@ export function applyRealtyCalendarBookings(bookings = []) {
           meta: { booking_id: b.booking_id, kind: 'cleaning' },
         };
         if (existingByBookingId.has(cleaningId)) {
+          // Старые автоуборки НЕ перецениваем: если цена уборки в настройках изменилась,
+          // у уже созданных записей оставляем прежнюю сумму. Новая цена применится только к новым броням.
           const { entry, idx } = existingByBookingId.get(cleaningId);
           state.finance.entries[idx] = {
             ...entry,
-            ...cleaningPayload,
+            // обновляем только отображаемые поля, без amount/netAmount:
+            apartmentId: cleaningPayload.apartmentId,
+            type: cleaningPayload.type,
+            category: cleaningPayload.category,
+            title: cleaningPayload.title,
+            date: cleaningPayload.date,
+            source: cleaningPayload.source,
+            status: entry.status || cleaningPayload.status,
+            notes: entry.notes || cleaningPayload.notes,
+            externalBookingId: cleaningPayload.externalBookingId,
+            meta: cleaningPayload.meta,
             apartmentName: getDisplayApartmentName(apartment.name),
             id: entry.id,
           };
@@ -452,6 +464,8 @@ function _ensureAutoRentEntryForMonth(state, apt, year, month1) {
   if (model === 'sublease') {
     if (!(rentAmount > 0)) return;
     const extId = `auto-rent:${apt.id}:${monthKeyStr}`;
+    // Если в этом месяце уже есть ручная запись-аренда (созданная до обновления) — не дублируем.
+    if (_hasManualRentInMonth(state, apt.id, year, month1)) return;
     // Существует?
     const existsIdx = state.finance.entries.findIndex((e) => e.source === 'auto-rent' && String(e.externalBookingId) === extId);
     const payload = {
@@ -493,6 +507,8 @@ function _ensureAutoRentEntryForMonth(state, apt, year, month1) {
     const rawProfit = stats.income - stats.expense;
     const ownerPayout = rawProfit * (100 - trustShare) / 100;
 
+    // Если в этом месяце уже есть ручная выплата собу — не дублируем.
+    if (_hasManualOwnerPayoutInMonth(state, apt.id, year, month1)) return;
     const extId = `auto-owner-payout:${apt.id}:${monthKeyStr}`;
     const existsIdx = state.finance.entries.findIndex((e) => e.source === 'auto-owner-payout' && String(e.externalBookingId) === extId);
     // Если выплата ≤ 0 (убыток) — не создаём запись.
@@ -522,6 +538,33 @@ function _ensureAutoRentEntryForMonth(state, apt, year, month1) {
       state.finance.entries.unshift(createFinanceEntryDraft(payload));
     }
   }
+}
+
+// Есть ли ручная запись-аренда в указанном месяце (чтобы не дублировать автосписание).
+// Считаем ручной: type=expense и категория/название содержит "аренд", дата попадает в месяц, source не auto-rent и не realtycalendar.
+function _hasManualRentInMonth(state, apartmentId, year, month1) {
+  const prefix = `${year}-${String(month1).padStart(2, '0')}-`;
+  return (state.finance.entries || []).some((e) => {
+    if (e.apartmentId !== apartmentId) return false;
+    if (e.type !== FINANCE_TYPES.expense) return false;
+    if (e.source === 'auto-rent') return false;
+    if (e.source === 'realtycalendar') return false;
+    if (!e.date || !String(e.date).startsWith(prefix)) return false;
+    const hay = `${e.category || ''} ${e.title || ''}`.toLowerCase();
+    return hay.includes('аренд');
+  });
+}
+
+function _hasManualOwnerPayoutInMonth(state, apartmentId, year, month1) {
+  const prefix = `${year}-${String(month1).padStart(2, '0')}-`;
+  return (state.finance.entries || []).some((e) => {
+    if (e.apartmentId !== apartmentId) return false;
+    if (e.type !== FINANCE_TYPES.expense) return false;
+    if (e.source === 'auto-owner-payout') return false;
+    if (!e.date || !String(e.date).startsWith(prefix)) return false;
+    const hay = `${e.category || ''} ${e.title || ''}`.toLowerCase();
+    return hay.includes('выплат') && hay.includes('соб');
+  });
 }
 
 // Считает доход/расход квартиры в окне [startInclusive, endExclusive), беря строки из state.finance.entries.

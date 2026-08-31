@@ -224,8 +224,8 @@ function financeEntryCard(entry) {
   }
 
   // Компактные иконки в правом верхнем углу: карандаш (редактировать) + корзина (удалить).
-  // Системные брони из RealtyCalendar/уборки не редактируем и не удаляем.
-  const isSystem = entry.source === 'realtycalendar' || entry.source === 'cleaning';
+  // Системные брони из RealtyCalendar не редактируем. Автосписания (auto-rent/auto-owner-payout/cleaning) — редактируем и удаляем.
+  const isSystem = entry.source === 'realtycalendar';
   const iconsHtml = isSystem ? '' : `
     <div class="finance-card-icons">
       <button class="finance-icon-btn" data-action="edit-entry" data-id="${entry.id}" title="Редактировать" aria-label="Редактировать">
@@ -376,7 +376,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-08-31.10';
+      const BUILD_VERSION = 'v.2026-08-31.11';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
