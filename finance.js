@@ -411,7 +411,8 @@ function _clampDayToMonth(year, month1, day) {
   return Math.min(last, day);
 }
 
-export function regenerateAutoRentEntries(apartmentId) {
+export function regenerateAutoRentEntries(apartmentId, options = {}) {
+  const { removeManualDuplicates = false } = options;
   const state = getState();
   const apt = (state.apartments || []).find((a) => a.id === apartmentId);
   if (!apt) return;
@@ -426,17 +427,18 @@ export function regenerateAutoRentEntries(apartmentId) {
     return !(e.source === 'auto-rent' || e.source === 'auto-owner-payout');
   });
 
-  // 1б) Единоразово: удаляем ручные записи-аренды/выплаты собу, чтобы автосписания их заменили.
-  // Критерий: expense квартиры + в категории/названии есть "аренд" или (для ДУ) "выплат" + "соб". source не realtycalendar.
-  state.finance.entries = state.finance.entries.filter((e) => {
-    if (e.apartmentId !== apartmentId) return true;
-    if (e.type !== FINANCE_TYPES.expense) return true;
-    if (e.source === 'realtycalendar') return true;
-    const hay = `${e.category || ''} ${e.title || ''}`.toLowerCase();
-    const isRent = hay.includes('аренд');
-    const isOwnerPayout = hay.includes('выплат') && hay.includes('соб');
-    return !(isRent || isOwnerPayout);
-  });
+  // 1б) Опционально: удаляем ручные записи-аренды/выплаты собу (только при сохранении настроек).
+  if (removeManualDuplicates) {
+    state.finance.entries = state.finance.entries.filter((e) => {
+      if (e.apartmentId !== apartmentId) return true;
+      if (e.type !== FINANCE_TYPES.expense) return true;
+      if (e.source === 'realtycalendar') return true;
+      const hay = `${e.category || ''} ${e.title || ''}`.toLowerCase();
+      const isRent = hay.includes('аренд');
+      const isOwnerPayout = hay.includes('выплат') && hay.includes('соб');
+      return !(isRent || isOwnerPayout);
+    });
+  }
 
   // 2) Если день оплаты не задан — выходим (автосписаний нет).
   if (!(paymentDay >= 1 && paymentDay <= 31)) return;
@@ -460,6 +462,15 @@ export function ensureAutoRentEntryForMonth(apartmentId, year, month1) {
   const apt = (state.apartments || []).find((a) => a.id === apartmentId);
   if (!apt) return;
   _ensureAutoRentEntryForMonth(state, apt, year, month1);
+}
+
+// Перегенерация автосписаний для всех квартир. Безопасно вызывать в бутстрапе.
+export function regenerateAutoRentEntriesForAllApartments() {
+  const state = getState();
+  (state.apartments || []).forEach((a) => {
+    if (a.archived) return;
+    regenerateAutoRentEntries(a.id);
+  });
 }
 
 function _ensureAutoRentEntryForMonth(state, apt, year, month1) {

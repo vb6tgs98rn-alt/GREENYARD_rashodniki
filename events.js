@@ -9,7 +9,7 @@
  */
 import dom, { byId } from './dom.js';
 import { fetchRealtyCalendarBookings, fetchRealtyCalendarLog, fetchRealtyCalendarIntegration, saveRealtyCalendarIntegration, disconnectRealtyCalendar, buildFinanceWebhookExample, getWebhookUrl } from './api.js';
-import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport, dedupeFinanceEntriesByExternalId } from './finance.js';
+import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport, dedupeFinanceEntriesByExternalId, regenerateAutoRentEntriesForAllApartments } from './finance.js';
 import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus, setAuthMsg } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, setState, updateState } from './state.js';
 import { persistState, exportJson, importJson, fetchCloudState } from './storage.js';
@@ -60,6 +60,12 @@ function bindSectionNav() {
   // автосинк с записью в state.finance.entries больше не нужен.
   dom.financeDrawerButton?.addEventListener('click', async () => {
     ensureFinanceGeneratedForCurrentMonth();
+    // При открытии раздела «Финансы» бесплатно перегенерируем автосписания по всем квартирам
+    // (идемпотентно: если авто-запись есть — перезапишется, если нет — создастся).
+    try {
+      regenerateAutoRentEntriesForAllApartments();
+      persistState(setStatus, true).catch(() => {});
+    } catch (e) { console.warn('[auto-rent] bootstrap regen:', e?.message || e); }
     render();
     openModal('financeModal');
     closeDrawer();
@@ -1358,7 +1364,7 @@ function bindApartmentRealtyId() {
     // Перегенерировать автосписания аренды/выплаты собственнику.
     try {
       const { regenerateAutoRentEntries } = await import('./finance.js');
-      regenerateAutoRentEntries(apt.id);
+      regenerateAutoRentEntries(apt.id, { removeManualDuplicates: true });
     } catch (e) { console.warn('[auto-rent] regen:', e?.message || e); }
     await rerender('Настройки сохранены');
   };
