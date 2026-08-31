@@ -991,13 +991,18 @@ function bindFinanceModals() {
       // Регенерация автосписаний на текущий открытый месяц (offset 0) уже была выполнена при открытии Финансов.
       await rerender('Режим: по циклам оплаты');
     }
-    if (action === 'fin-cycles-prev' || action === 'fin-cycles-next') {
-      const delta = action === 'fin-cycles-prev' ? -1 : 1;
+    // Стрелки per-квартира в режиме циклов.
+    if (action === 'fin-apt-cycle-prev' || action === 'fin-apt-cycle-next') {
+      const aptId = btn.dataset.aptId;
+      if (!aptId) return;
+      const delta = action === 'fin-apt-cycle-prev' ? -1 : 1;
       updateState((s) => {
         s.ui = s.ui || {}; s.ui.finance = s.ui.finance || {};
-        s.ui.finance.cyclesMonthOffset = Number(s.ui.finance.cyclesMonthOffset || 0) + delta;
+        s.ui.finance.cyclesOffsetByApt = s.ui.finance.cyclesOffsetByApt || {};
+        const cur = Number(s.ui.finance.cyclesOffsetByApt[aptId] || 0);
+        s.ui.finance.cyclesOffsetByApt[aptId] = cur + delta;
       });
-      await rerender('Цикл оплаты: месяц смещён');
+      await rerender('Цикл смещён');
     }
 
     if (action === 'edit-entry') {

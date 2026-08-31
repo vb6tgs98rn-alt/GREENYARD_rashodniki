@@ -1154,16 +1154,15 @@ export function getFinanceApartmentSummary() {
 // Режим «Расчёт по циклам оплаты»: каждая квартира — своё окно [payDay pred, payDay tec).
 // Квартиры без paymentDay — календарный месяц анкора. monthOffset: 0 = тек., -1 = прошл., +1 = буд.
 // ======================================================================
-export async function getFinanceCyclesSummaryAsync(monthOffset = 0) {
+export async function getFinanceCyclesSummaryAsync(offsetByApt = {}) {
   const state = getState();
   const supabase = getSupabaseClient();
   const user = supabase ? await requireUser() : null;
 
   const now = new Date();
-  const anchor = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
-  const anchorY = anchor.getFullYear();
-  const anchorM = anchor.getMonth() + 1;
-  const monthLabel = anchor.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+  const todayY = now.getFullYear();
+  const todayM = now.getMonth() + 1; // 1..12
+  const todayD = now.getDate();
 
   let bookings = [];
   if (supabase && user) {
@@ -1178,9 +1177,6 @@ export async function getFinanceCyclesSummaryAsync(monthOffset = 0) {
   }
 
   const rawEntries = state.finance?.entries || [];
-  const monthStart = `${anchorY}-${String(anchorM).padStart(2, '0')}-01`;
-  const monthLastDay = new Date(anchorY, anchorM, 0).getDate();
-  const monthEnd = `${anchorY}-${String(anchorM).padStart(2, '0')}-${String(monthLastDay).padStart(2, '0')}`;
 
   const aptsWithCycle = [];
   const aptsNoDay = [];
@@ -1191,16 +1187,44 @@ export async function getFinanceCyclesSummaryAsync(monthOffset = 0) {
     else aptsNoDay.push(a);
   });
 
-  const _windowForApt = (paymentDay) => {
-    const prevY = anchorM === 1 ? anchorY - 1 : anchorY;
-    const prevM = anchorM === 1 ? 12 : anchorM - 1;
-    const startDay = _clampDayToMonth(prevY, prevM, paymentDay);
-    const from = `${prevY}-${String(prevM).padStart(2, '0')}-${String(startDay).padStart(2, '0')}`;
-    const endDay = _clampDayToMonth(anchorY, anchorM, paymentDay);
-    const endDateObj = new Date(anchorY, anchorM - 1, endDay);
-    endDateObj.setDate(endDateObj.getDate() - 1);
-    const to = `${endDateObj.getFullYear()}-${String(endDateObj.getMonth() + 1).padStart(2, '0')}-${String(endDateObj.getDate()).padStart(2, '0')}`;
+  // Текущий цикл = окно, содержащее сегодня: [payDay месяца-старта, payDay след.месяца − 1 день].
+  // offset 0 = тек., -1 = предыдущий, +1 = следующий.
+  const _windowForApt = (paymentDay, offset) => {
+    // Месяц-старт текущего цикла: если сегодня ≥ payDay текущего месяца — текущий, иначе прошлый.
+    const startDayThis = _clampDayToMonth(todayY, todayM, paymentDay);
+    let startY = todayY;
+    let startM = todayM;
+    if (todayD < startDayThis) {
+      startM = todayM - 1;
+      if (startM < 1) { startM = 12; startY -= 1; }
+    }
+    // Применяем offset — сдвиг цикла на N месяцев.
+    const startDate = new Date(startY, startM - 1 + offset, 1);
+    const sY = startDate.getFullYear();
+    const sM = startDate.getMonth() + 1;
+    const sDay = _clampDayToMonth(sY, sM, paymentDay);
+    const from = `${sY}-${String(sM).padStart(2, '0')}-${String(sDay).padStart(2, '0')}`;
+    // Конец = payDay следующего месяца − 1 день.
+    const nextDate = new Date(sY, sM, 1);
+    const nY = nextDate.getFullYear();
+    const nM = nextDate.getMonth() + 1;
+    const nDay = _clampDayToMonth(nY, nM, paymentDay);
+    const endObj = new Date(nY, nM - 1, nDay);
+    endObj.setDate(endObj.getDate() - 1);
+    const to = `${endObj.getFullYear()}-${String(endObj.getMonth() + 1).padStart(2, '0')}-${String(endObj.getDate()).padStart(2, '0')}`;
     return { from, to };
+  };
+
+  // Окно «Прочих» (без payDay) = календарный месяц (текущий + offset).
+  const _windowForNoDay = (offset) => {
+    const d = new Date(todayY, todayM - 1 + offset, 1);
+    const y = d.getFullYear();
+    const m = d.getMonth() + 1;
+    const lastDay = new Date(y, m, 0).getDate();
+    return {
+      from: `${y}-${String(m).padStart(2, '0')}-01`,
+      to: `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`,
+    };
   };
 
   const _buildRow = (apt, from, to) => {
@@ -1273,10 +1297,19 @@ export async function getFinanceCyclesSummaryAsync(monthOffset = 0) {
   };
 
   const cycleRows = aptsWithCycle.map(({ apt, paymentDay }) => {
-    const { from, to } = _windowForApt(paymentDay);
-    return _buildRow(apt, from, to);
+    const offset = Number(offsetByApt?.[apt.id] || 0);
+    const { from, to } = _windowForApt(paymentDay, offset);
+    const row = _buildRow(apt, from, to);
+    row.offset = offset;
+    return row;
   });
-  const noDayRows = aptsNoDay.map((apt) => _buildRow(apt, monthStart, monthEnd));
+  const noDayRows = aptsNoDay.map((apt) => {
+    const offset = Number(offsetByApt?.[apt.id] || 0);
+    const { from, to } = _windowForNoDay(offset);
+    const row = _buildRow(apt, from, to);
+    row.offset = offset;
+    return row;
+  });
 
   const _totals = (list) => {
     const t = list.reduce((acc, r) => {
@@ -1300,9 +1333,6 @@ export async function getFinanceCyclesSummaryAsync(monthOffset = 0) {
     cycleTotals: _totals(cycleRows),
     noDayRows,
     noDayTotals: _totals(noDayRows),
-    monthLabel,
-    monthOffset,
-    monthCalendar: { from: monthStart, to: monthEnd },
   };
 }
 
