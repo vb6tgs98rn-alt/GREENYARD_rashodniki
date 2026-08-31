@@ -227,8 +227,9 @@ function formatRange(beginDate, endDate) {
 export function dedupeFinanceEntriesByExternalId() {
   let removed = 0;
   updateState((state) => {
+    // 1) Для realtycalendar дедуп по (source, externalBookingId).
     const seen = new Set();
-    const kept = [];
+    let kept = [];
     for (const e of state.finance.entries) {
       if (e.source === 'realtycalendar' && e.externalBookingId) {
         const key = `${e.source}:${String(e.externalBookingId)}`;
@@ -237,6 +238,28 @@ export function dedupeFinanceEntriesByExternalId() {
       }
       kept.push(e);
     }
+
+    // 2) Для auto-rent / auto-owner-payout дедуп по externalBookingId (включая manual-копии).
+    //    Предпочтение: manual > auto-rent > auto-owner-payout (сохраняем пользовательские правки).
+    const byExt = new Map();
+    for (const e of kept) {
+      const ext = String(e.externalBookingId || '');
+      if (!ext.startsWith('auto-rent:') && !ext.startsWith('auto-owner-payout:')) continue;
+      const existing = byExt.get(ext);
+      if (!existing) { byExt.set(ext, e); continue; }
+      // Приоритет: manual побеждает.
+      const rank = (x) => x.source === 'manual' ? 2 : (x.source === 'auto-rent' || x.source === 'auto-owner-payout' ? 1 : 0);
+      if (rank(e) > rank(existing)) byExt.set(ext, e);
+    }
+    const winnersByExt = new Set(Array.from(byExt.values()).map((e) => e.id));
+    kept = kept.filter((e) => {
+      const ext = String(e.externalBookingId || '');
+      if (!ext.startsWith('auto-rent:') && !ext.startsWith('auto-owner-payout:')) return true;
+      if (winnersByExt.has(e.id)) return true;
+      removed++;
+      return false;
+    });
+
     if (removed) state.finance.entries = kept;
   });
   return removed;
@@ -487,8 +510,10 @@ function _ensureAutoRentEntryForMonth(state, apt, year, month1) {
   if (model === 'sublease') {
     if (!(rentAmount > 0)) return;
     const extId = `auto-rent:${apt.id}:${monthKeyStr}`;
-    // Существует?
-    const existsIdx = state.finance.entries.findIndex((e) => e.source === 'auto-rent' && String(e.externalBookingId) === extId);
+    // Существует ли наша автозапись? (включая manual-версию после редактирования).
+    const existsIdx = state.finance.entries.findIndex((e) => String(e.externalBookingId || '') === extId);
+    // Если есть любая другая ручная аренда в этом месяце (без extId) — не создаём дубль.
+    if (existsIdx < 0 && _hasManualRentInMonth(state, apt.id, year, month1)) return;
     const payload = {
       apartmentId: apt.id,
       apartmentName: getDisplayApartmentName(apt.name),
@@ -529,7 +554,9 @@ function _ensureAutoRentEntryForMonth(state, apt, year, month1) {
     const ownerPayout = rawProfit * (100 - trustShare) / 100;
 
     const extId = `auto-owner-payout:${apt.id}:${monthKeyStr}`;
-    const existsIdx = state.finance.entries.findIndex((e) => e.source === 'auto-owner-payout' && String(e.externalBookingId) === extId);
+    const existsIdx = state.finance.entries.findIndex((e) => String(e.externalBookingId || '') === extId);
+    // Если есть ручная выплата собу в этом месяце (без extId) — не создаём дубль.
+    if (existsIdx < 0 && _hasManualOwnerPayoutInMonth(state, apt.id, year, month1)) return;
     // Если выплата ≤ 0 (убыток) — не создаём запись.
     if (!(ownerPayout > 0)) {
       if (existsIdx >= 0) state.finance.entries.splice(existsIdx, 1);
@@ -1304,6 +1331,8 @@ export async function getFinanceCyclesSummaryAsync(offsetByApt = {}) {
     const startDate = new Date(sY, sM - 1 + offset, 1);
     _ensureAutoRentEntryForMonth(state, apt, startDate.getFullYear(), startDate.getMonth() + 1);
   });
+  // Чистим возможные дубли от старых версий.
+  try { dedupeFinanceEntriesByExternalId(); } catch (_) {}
   const cycleRows = aptsWithCycle.map(({ apt, paymentDay }) => {
     const offset = Number(offsetByApt?.[apt.id] || 0);
     const { from, to } = _windowForApt(paymentDay, offset);

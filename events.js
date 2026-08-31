@@ -64,6 +64,7 @@ function bindSectionNav() {
     // (идемпотентно: если авто-запись есть — перезапишется, если нет — создастся).
     try {
       regenerateAutoRentEntriesForAllApartments();
+      dedupeFinanceEntriesByExternalId();
       persistState(setStatus, true).catch(() => {});
     } catch (e) { console.warn('[auto-rent] bootstrap regen:', e?.message || e); }
     render();
