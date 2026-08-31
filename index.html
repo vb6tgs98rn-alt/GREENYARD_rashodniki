@@ -15,7 +15,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Green Yard</title>
   <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./styles.css?v=20260831-9" />
+  <link rel="stylesheet" href="./styles.css?v=20260831-10" />
 </head>
 <body class="is-guest">
   <!-- ─── Экран входа для гостя (виден только при body.is-guest) ────────── -->
@@ -352,11 +352,26 @@
           </label>
           <label id="apartmentTrustShareRow" hidden>
             <span class="small">Доля УК, % (что остаётся вам как УК)</span>
-            <div style="display:flex;gap:.5rem;align-items:stretch;">
-              <input id="apartmentTrustShare" type="number" min="0" max="100" step="1" placeholder="Например, 30" style="flex:1" />
-              <button class="btn btn-primary" id="apartmentBusinessModelSaveBtn" type="button">Сохранить</button>
-            </div>
+            <input id="apartmentTrustShare" type="number" min="0" max="100" step="1" placeholder="Например, 30" />
           </label>
+          <label>
+            <span class="small">День оплаты (число месяца, 1–31)</span>
+            <input id="apartmentPaymentDay" type="number" min="1" max="31" step="1" placeholder="Например, 13" />
+          </label>
+          <label id="apartmentRentScheduleRow" hidden>
+            <span class="small">Тип оплаты аренды</span>
+            <select id="apartmentRentSchedule">
+              <option value="postpay">Постоплата (в последний день цикла)</option>
+              <option value="prepay">Предоплата (в первый день цикла)</option>
+            </select>
+          </label>
+          <label id="apartmentRentAmountRow" hidden>
+            <span class="small">Стоимость аренды, ₽ (автосписание в день оплаты)</span>
+            <input id="apartmentRentAmount" type="number" min="0" step="100" placeholder="Например, 60000" />
+          </label>
+          <div style="display:flex;gap:.5rem;justify-content:flex-end;">
+            <button class="btn btn-primary" id="apartmentBusinessModelSaveBtn" type="button">Сохранить</button>
+          </div>
         </div>
         <div class="grid" style="margin-top:1rem;">
           <div class="section-head" style="margin-bottom:0;"><h2 style="margin:0">Добавить расходник</h2></div>
@@ -426,6 +441,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="./app.js?v=20260831-9"></script>
+  <script type="module" src="./app.js?v=20260831-10"></script>
 </body>
 </html>

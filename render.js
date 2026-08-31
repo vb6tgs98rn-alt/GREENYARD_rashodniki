@@ -108,9 +108,23 @@ function renderInventory(state) {
   if (dom.apartmentBusinessModel) {
     const model = apartment.businessModel === 'trust' ? 'trust' : 'sublease';
     dom.apartmentBusinessModel.value = model;
+    // Доля УК видна только при ДУ.
     if (dom.apartmentTrustShareRow) dom.apartmentTrustShareRow.hidden = (model !== 'trust');
     if (dom.apartmentTrustShare) {
       dom.apartmentTrustShare.value = Number(apartment.trustShare || 0) > 0 ? String(apartment.trustShare) : '';
+    }
+    // День оплаты — всегда виден.
+    if (dom.apartmentPaymentDay) {
+      dom.apartmentPaymentDay.value = Number(apartment.paymentDay || 0) > 0 ? String(apartment.paymentDay) : '';
+    }
+    // Тип оплаты аренды и стоимость — только для субаренды.
+    if (dom.apartmentRentScheduleRow) dom.apartmentRentScheduleRow.hidden = (model !== 'sublease');
+    if (dom.apartmentRentAmountRow) dom.apartmentRentAmountRow.hidden = (model !== 'sublease');
+    if (dom.apartmentRentSchedule) {
+      dom.apartmentRentSchedule.value = apartment.rentSchedule === 'prepay' ? 'prepay' : 'postpay';
+    }
+    if (dom.apartmentRentAmount) {
+      dom.apartmentRentAmount.value = Number(apartment.rentAmount || 0) > 0 ? String(apartment.rentAmount) : '';
     }
   }
   dom.apartmentSearch.value = state.ui.apartmentSearch || '';
@@ -362,7 +376,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-08-31.9';
+      const BUILD_VERSION = 'v.2026-08-31.10';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {

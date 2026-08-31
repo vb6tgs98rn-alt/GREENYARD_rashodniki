@@ -147,6 +147,11 @@ const dom = {
   apartmentBusinessModel: byId('apartmentBusinessModel'),
   apartmentTrustShareRow: byId('apartmentTrustShareRow'),
   apartmentTrustShare: byId('apartmentTrustShare'),
+  apartmentPaymentDay: byId('apartmentPaymentDay'),
+  apartmentRentScheduleRow: byId('apartmentRentScheduleRow'),
+  apartmentRentSchedule: byId('apartmentRentSchedule'),
+  apartmentRentAmountRow: byId('apartmentRentAmountRow'),
+  apartmentRentAmount: byId('apartmentRentAmount'),
   apartmentBusinessModelSaveBtn: byId('apartmentBusinessModelSaveBtn'),
 };
 export default dom;

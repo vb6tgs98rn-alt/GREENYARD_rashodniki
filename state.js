@@ -109,6 +109,12 @@ export function ensureStateShape(rawState) {
     businessModel: (apartment?.businessModel === 'trust') ? 'trust' : 'sublease',
     // Доля УК в ДУ, % (0..100). Собственнику полагается (100 − trustShare)% прибыли.
     trustShare: Math.min(100, Math.max(0, Number(apartment?.trustShare || 0))),
+    // День оплаты аренды / выплаты собу, 1..31. 0 = не задан.
+    paymentDay: Math.min(31, Math.max(0, Math.trunc(Number(apartment?.paymentDay || 0)))),
+    // Субаренда: 'prepay' (в 1-й день цикла) / 'postpay' (в последний день цикла).
+    rentSchedule: (apartment?.rentSchedule === 'prepay') ? 'prepay' : 'postpay',
+    // Стоимость аренды (только субаренда), ₽. 0 = не задана.
+    rentAmount: Math.max(0, Number(apartment?.rentAmount || 0)),
     unitEcoReports: {
       active: apartment?.unitEcoReports?.active || null,
       history: Array.isArray(apartment?.unitEcoReports?.history) ? apartment.unitEcoReports.history : [],

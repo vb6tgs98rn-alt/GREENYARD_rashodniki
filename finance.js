@@ -388,6 +388,162 @@ export function applyRealtyCalendarBookings(bookings = []) {
 export function importBookingsToFinance() { return []; }
 
 // =============================================================================
+// Автосписания: аренда (субаренда) / выплата собственнику (ДУ)
+// =============================================================================
+// Создаёт по одной записи на каждый цикл (месяц), в котором есть день оплаты.
+// - Субаренда: source='auto-rent', сумма = rentAmount, дата = день оплаты (сдвиг на конец месяца, если дня нет).
+// - ДУ: source='auto-owner-payout', сумма = прибыль цикла × (100 − trustShare) / 100, дата = день выплаты.
+// externalBookingId = 'auto-rent:<aptId>:<YYYY-MM>' или 'auto-owner-payout:<aptId>:<YYYY-MM>' — для дедупа.
+function _clampDayToMonth(year, month1, day) {
+  const last = new Date(year, month1, 0).getDate();
+  return Math.min(last, day);
+}
+
+export function regenerateAutoRentEntries(apartmentId) {
+  const state = getState();
+  const apt = (state.apartments || []).find((a) => a.id === apartmentId);
+  if (!apt) return;
+  const paymentDay = Math.trunc(Number(apt.paymentDay || 0));
+  const model = apt.businessModel === 'trust' ? 'trust' : 'sublease';
+  const trustShare = Math.min(100, Math.max(0, Number(apt.trustShare || 0)));
+  const rentAmount = Math.max(0, Number(apt.rentAmount || 0));
+
+  // 1) Удаляем все прежние автозаписи этой квартиры (чтобы не было дублей/старых сумм).
+  state.finance.entries = state.finance.entries.filter((e) => {
+    if (e.apartmentId !== apartmentId) return true;
+    return !(e.source === 'auto-rent' || e.source === 'auto-owner-payout');
+  });
+
+  // 2) Если день оплаты не задан — выходим (автосписаний нет).
+  if (!(paymentDay >= 1 && paymentDay <= 31)) return;
+
+  // 3) Для субаренды: без стоимости — автосписаний нет.
+  if (model === 'sublease' && !(rentAmount > 0)) return;
+  // Для ДУ: без доли УК (100%) собственнику ничего не полагается (но всё равно генерим — сумму увидим 0, если что).
+
+  // 4) Определяем месяцы: генерим автосписания только на текущий месяц
+  //    (так не будет взрыва записей на старые квартиры). Прошлые месяцы — если пользователь
+  //    перелистывает циклы стрелками, мы будем генерить автосписания во всех видимых месяцах отдельно.
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1; // 1..12
+  _ensureAutoRentEntryForMonth(state, apt, y, m);
+}
+
+// Генерация автосписания на конкретный месяц (year, month1: 1..12). Используется из навигации по циклам.
+export function ensureAutoRentEntryForMonth(apartmentId, year, month1) {
+  const state = getState();
+  const apt = (state.apartments || []).find((a) => a.id === apartmentId);
+  if (!apt) return;
+  _ensureAutoRentEntryForMonth(state, apt, year, month1);
+}
+
+function _ensureAutoRentEntryForMonth(state, apt, year, month1) {
+  const paymentDay = Math.trunc(Number(apt.paymentDay || 0));
+  if (!(paymentDay >= 1 && paymentDay <= 31)) return;
+  const model = apt.businessModel === 'trust' ? 'trust' : 'sublease';
+  const rentAmount = Math.max(0, Number(apt.rentAmount || 0));
+  const trustShare = Math.min(100, Math.max(0, Number(apt.trustShare || 0)));
+
+  const monthKeyStr = `${year}-${String(month1).padStart(2, '0')}`;
+  const day = _clampDayToMonth(year, month1, paymentDay);
+  const date = `${year}-${String(month1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+  if (model === 'sublease') {
+    if (!(rentAmount > 0)) return;
+    const extId = `auto-rent:${apt.id}:${monthKeyStr}`;
+    // Существует?
+    const existsIdx = state.finance.entries.findIndex((e) => e.source === 'auto-rent' && String(e.externalBookingId) === extId);
+    const payload = {
+      apartmentId: apt.id,
+      apartmentName: getDisplayApartmentName(apt.name),
+      type: FINANCE_TYPES.expense,
+      category: 'Аренда',
+      title: `Аренда за ${monthKeyStr}`,
+      amount: rentAmount,
+      netAmount: rentAmount,
+      currency: 'RUB',
+      date,
+      source: 'auto-rent',
+      status: 'planned',
+      notes: `Автосписание аренды (${apt.rentSchedule === 'prepay' ? 'предоплата' : 'постоплата'}).`,
+      externalBookingId: extId,
+      meta: { kind: 'auto-rent', month: monthKeyStr, apartmentId: apt.id },
+    };
+    if (existsIdx >= 0) {
+      state.finance.entries[existsIdx] = { ...state.finance.entries[existsIdx], ...payload };
+    } else {
+      state.finance.entries.unshift(createFinanceEntryDraft(payload));
+    }
+    return;
+  }
+
+  if (model === 'trust') {
+    // Сумму выплаты собу считаем тут же — по текущему state (включая брони в entries).
+    // Цикл: [день предыдущего месяца … день выплаты включительно).
+    // Но по границе цикла: [paymentDay, paymentDay) — выбрал выше [start, end).
+    // Значит для месяца M цикл: [payDay месяца M-1, payDay месяца M).
+    const startY = month1 === 1 ? year - 1 : year;
+    const startM = month1 === 1 ? 12 : month1 - 1;
+    const startDay = _clampDayToMonth(startY, startM, paymentDay);
+    const cycleStart = `${startY}-${String(startM).padStart(2, '0')}-${String(startDay).padStart(2, '0')}`;
+    const cycleEndExclusive = date; // текущая выплата не включает себя
+
+    const stats = _computeCycleStatsFromEntries(apt.id, cycleStart, cycleEndExclusive);
+    const rawProfit = stats.income - stats.expense;
+    const ownerPayout = rawProfit * (100 - trustShare) / 100;
+
+    const extId = `auto-owner-payout:${apt.id}:${monthKeyStr}`;
+    const existsIdx = state.finance.entries.findIndex((e) => e.source === 'auto-owner-payout' && String(e.externalBookingId) === extId);
+    // Если выплата ≤ 0 (убыток) — не создаём запись.
+    if (!(ownerPayout > 0)) {
+      if (existsIdx >= 0) state.finance.entries.splice(existsIdx, 1);
+      return;
+    }
+    const payload = {
+      apartmentId: apt.id,
+      apartmentName: getDisplayApartmentName(apt.name),
+      type: FINANCE_TYPES.expense,
+      category: 'Выплата собственнику',
+      title: `Выплата собу за цикл ${cycleStart} → ${cycleEndExclusive}`,
+      amount: Math.round(ownerPayout),
+      netAmount: Math.round(ownerPayout),
+      currency: 'RUB',
+      date,
+      source: 'auto-owner-payout',
+      status: 'planned',
+      notes: `Автосписание выплаты собственнику (ДУ, доля УК ${trustShare}%).`,
+      externalBookingId: extId,
+      meta: { kind: 'auto-owner-payout', month: monthKeyStr, apartmentId: apt.id, trustShare, cycleStart, cycleEndExclusive },
+    };
+    if (existsIdx >= 0) {
+      state.finance.entries[existsIdx] = { ...state.finance.entries[existsIdx], ...payload };
+    } else {
+      state.finance.entries.unshift(createFinanceEntryDraft(payload));
+    }
+  }
+}
+
+// Считает доход/расход квартиры в окне [startInclusive, endExclusive), беря строки из state.finance.entries.
+// Автозаписи (авто-аренда, авто-выплата) в расчёт НЕ включаем — чтобы не было цикла.
+function _computeCycleStatsFromEntries(apartmentId, startInclusive, endExclusive) {
+  const state = getState();
+  let income = 0;
+  let expense = 0;
+  (state.finance.entries || []).forEach((e) => {
+    if (e.apartmentId !== apartmentId) return;
+    if (e.source === 'auto-rent' || e.source === 'auto-owner-payout') return;
+    if (!e.date) return;
+    if (e.date < startInclusive || e.date >= endExclusive) return;
+    const gross = Number(e.amount || 0);
+    const net = Number(e.netAmount != null ? e.netAmount : e.amount || 0);
+    if (e.type === FINANCE_TYPES.income) income += net;
+    else if (e.type === FINANCE_TYPES.expense) expense += gross;
+  });
+  return { income, expense };
+}
+
+// =============================================================================
 // Юнит-экономика по квартирам
 // =============================================================================
 // За выбранный период (dateFrom..dateTo, по умолчанию — текущий месяц) считаем
@@ -719,6 +875,8 @@ export async function getFinanceApartmentSummaryAsync() {
     if (e.status === 'cancelled') return;
     // Брони realtycalendar уже взяты из rc_bookings — пропускаем их здесь.
     if (e.source === 'realtycalendar' && e.type === FINANCE_TYPES.income) return;
+    // Авто-выплата собу в таблице учитывается отдельной колонкой — в expense не включаем.
+    if (e.source === 'auto-owner-payout') return;
     const gross = Number(e.amount || 0);
     const tax = Number(e.meta?.platform_tax || 0);
     const net = Number(e.netAmount != null ? e.netAmount : Math.max(0, gross - tax));

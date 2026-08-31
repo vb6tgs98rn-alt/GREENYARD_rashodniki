@@ -1315,38 +1315,48 @@ function bindApartmentRealtyId() {
     if (dom.apartmentCleaningPriceSaveBtn) dom.apartmentCleaningPriceSaveBtn.hidden = false;
   });
 
-  // Система учёта: субаренда или доверительное управление.
-  dom.apartmentBusinessModel?.addEventListener('change', async () => {
+  // Система учёта: переключение — сразу показываем/прячем нужные поля.
+  dom.apartmentBusinessModel?.addEventListener('change', () => {
+    const model = dom.apartmentBusinessModel.value === 'trust' ? 'trust' : 'sublease';
+    if (dom.apartmentTrustShareRow) dom.apartmentTrustShareRow.hidden = (model !== 'trust');
+    if (dom.apartmentRentScheduleRow) dom.apartmentRentScheduleRow.hidden = (model !== 'sublease');
+    if (dom.apartmentRentAmountRow) dom.apartmentRentAmountRow.hidden = (model !== 'sublease');
+  });
+
+  // Кнопка «Сохранить» в блоке «Система» — сохраняет все поля разом.
+  const saveBusinessModel = async () => {
     const apt = currentApartment();
     if (!apt) return;
-    const model = dom.apartmentBusinessModel.value === 'trust' ? 'trust' : 'sublease';
-    // Показываем/прячем инпут доли УК сразу.
-    if (dom.apartmentTrustShareRow) dom.apartmentTrustShareRow.hidden = (model !== 'trust');
+    const model = dom.apartmentBusinessModel?.value === 'trust' ? 'trust' : 'sublease';
+    const share = Math.min(100, Math.max(0, Number(dom.apartmentTrustShare?.value || 0)));
+    const paymentDayRaw = Math.trunc(Number(dom.apartmentPaymentDay?.value || 0));
+    const paymentDay = Math.min(31, Math.max(0, paymentDayRaw));
+    const rentSchedule = dom.apartmentRentSchedule?.value === 'prepay' ? 'prepay' : 'postpay';
+    const rentAmount = Math.max(0, Number(dom.apartmentRentAmount?.value || 0));
     updateState((state) => {
       const a = (state.apartments || []).find((x) => x.id === apt.id);
       if (!a) return;
       a.businessModel = model;
-      if (model === 'sublease') a.trustShare = 0;
+      a.trustShare = model === 'trust' ? share : 0;
+      a.paymentDay = paymentDay;
+      // Тип оплаты и стоимость аренды — только для субаренды.
+      if (model === 'sublease') {
+        a.rentSchedule = rentSchedule;
+        a.rentAmount = rentAmount;
+      } else {
+        // Для ДУ чистим, чтобы не сбивало логику.
+        a.rentAmount = 0;
+        a.rentSchedule = 'postpay';
+      }
     });
-    await rerender(model === 'trust' ? 'Система: доверительное управление' : 'Система: субаренда');
-  });
-
-  // Сохранить долю УК в ДУ.
-  const saveTrustShare = async () => {
-    const apt = currentApartment();
-    if (!apt) return;
-    const raw = Number(dom.apartmentTrustShare?.value || 0);
-    const share = Math.min(100, Math.max(0, raw));
-    updateState((state) => {
-      const a = (state.apartments || []).find((x) => x.id === apt.id);
-      if (!a) return;
-      a.businessModel = 'trust';
-      a.trustShare = share;
-    });
-    await rerender(`Доля УК: ${share}%`);
+    // Перегенерировать автосписания аренды/выплаты собственнику.
+    try {
+      const { regenerateAutoRentEntries } = await import('./finance.js');
+      regenerateAutoRentEntries(apt.id);
+    } catch (e) { console.warn('[auto-rent] regen:', e?.message || e); }
+    await rerender('Настройки сохранены');
   };
-  dom.apartmentBusinessModelSaveBtn?.addEventListener('click', saveTrustShare);
-  dom.apartmentTrustShare?.addEventListener('change', saveTrustShare);
+  dom.apartmentBusinessModelSaveBtn?.addEventListener('click', saveBusinessModel);
 
   // Открытие модалки синхронизации по клику на кнопку в карточке квартиры
   document.addEventListener('click', (e) => {

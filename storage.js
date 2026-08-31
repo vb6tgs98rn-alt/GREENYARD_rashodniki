@@ -120,6 +120,9 @@ export function normalizeImportedState(raw) {
     cleaningPrice: Math.max(0, Number(apartment?.cleaningPrice || 0)),
     businessModel: (apartment?.businessModel === 'trust') ? 'trust' : 'sublease',
     trustShare: Math.min(100, Math.max(0, Number(apartment?.trustShare || 0))),
+    paymentDay: Math.min(31, Math.max(0, Math.trunc(Number(apartment?.paymentDay || 0)))),
+    rentSchedule: (apartment?.rentSchedule === 'prepay') ? 'prepay' : 'postpay',
+    rentAmount: Math.max(0, Number(apartment?.rentAmount || 0)),
     unitEcoReports: {
       active: apartment?.unitEcoReports?.active || null,
       history: Array.isArray(apartment?.unitEcoReports?.history) ? apartment.unitEcoReports.history : [],
