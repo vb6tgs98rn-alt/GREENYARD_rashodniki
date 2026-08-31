@@ -1150,6 +1150,162 @@ export function getFinanceApartmentSummary() {
   return { rows: list, totals, period: { from, to, days: periodDays } };
 }
 
+// ======================================================================
+// Режим «Расчёт по циклам оплаты»: каждая квартира — своё окно [payDay pred, payDay tec).
+// Квартиры без paymentDay — календарный месяц анкора. monthOffset: 0 = тек., -1 = прошл., +1 = буд.
+// ======================================================================
+export async function getFinanceCyclesSummaryAsync(monthOffset = 0) {
+  const state = getState();
+  const supabase = getSupabaseClient();
+  const user = supabase ? await requireUser() : null;
+
+  const now = new Date();
+  const anchor = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const anchorY = anchor.getFullYear();
+  const anchorM = anchor.getMonth() + 1;
+  const monthLabel = anchor.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+
+  let bookings = [];
+  if (supabase && user) {
+    const { data, error } = await supabase
+      .from('rc_bookings')
+      .select('booking_id, realty_id, apartment_title, begin_date, end_date, amount, status, raw_payload, platform_tax')
+      .eq('user_id', user.id)
+      .not('status', 'in', '(canceled,deleted)')
+      .limit(2000);
+    if (error) console.warn('[finance] rc_bookings fetch error:', error.message);
+    else bookings = data || [];
+  }
+
+  const rawEntries = state.finance?.entries || [];
+  const monthStart = `${anchorY}-${String(anchorM).padStart(2, '0')}-01`;
+  const monthLastDay = new Date(anchorY, anchorM, 0).getDate();
+  const monthEnd = `${anchorY}-${String(anchorM).padStart(2, '0')}-${String(monthLastDay).padStart(2, '0')}`;
+
+  const aptsWithCycle = [];
+  const aptsNoDay = [];
+  (state.apartments || []).forEach((a) => {
+    if (a.archived) return;
+    const pd = Math.trunc(Number(a.paymentDay || 0));
+    if (pd >= 1 && pd <= 31) aptsWithCycle.push({ apt: a, paymentDay: pd });
+    else aptsNoDay.push(a);
+  });
+
+  const _windowForApt = (paymentDay) => {
+    const prevY = anchorM === 1 ? anchorY - 1 : anchorY;
+    const prevM = anchorM === 1 ? 12 : anchorM - 1;
+    const startDay = _clampDayToMonth(prevY, prevM, paymentDay);
+    const from = `${prevY}-${String(prevM).padStart(2, '0')}-${String(startDay).padStart(2, '0')}`;
+    const endDay = _clampDayToMonth(anchorY, anchorM, paymentDay);
+    const endDateObj = new Date(anchorY, anchorM - 1, endDay);
+    endDateObj.setDate(endDateObj.getDate() - 1);
+    const to = `${endDateObj.getFullYear()}-${String(endDateObj.getMonth() + 1).padStart(2, '0')}-${String(endDateObj.getDate()).padStart(2, '0')}`;
+    return { from, to };
+  };
+
+  const _buildRow = (apt, from, to) => {
+    const row = {
+      apartmentId: apt.id, name: getDisplayApartmentName(apt.name),
+      income: 0, grossIncome: 0, platformCommission: 0, expense: 0,
+      soldNights: 0, bookings: 0, totalNightsForStayAvg: 0,
+    };
+    const rc = apt.externalIds?.realtyCalendarUnitId;
+    if (rc) {
+      bookings.forEach((b) => {
+        if (String(b.realty_id) !== String(rc)) return;
+        const bd = b.begin_date, ed = b.end_date;
+        const totalNights = _nightsBetween(bd, ed);
+        if (totalNights <= 0) return;
+        const nightsIn = _bookingNightsInPeriod(bd, ed, from, to);
+        if (nightsIn <= 0) return;
+        const gross = Number(b.amount || 0);
+        const tax = Number(b.raw_payload?.data?.booking?.platform_tax ?? b.platform_tax ?? 0);
+        const net = Math.max(0, gross - tax);
+        const share = nightsIn / totalNights;
+        row.grossIncome += gross * share;
+        row.platformCommission += tax * share;
+        row.income += net * share;
+        row.soldNights += nightsIn;
+        row.bookings += 1;
+        row.totalNightsForStayAvg += totalNights;
+      });
+    }
+    rawEntries.forEach((e) => {
+      if (e.apartmentId !== apt.id) return;
+      if (e.status === 'cancelled') return;
+      if (e.source === 'realtycalendar' && e.type === FINANCE_TYPES.income) return;
+      if (e.source === 'auto-owner-payout') return;
+      if (!e.date) return;
+      if (e.date < from || e.date > to) return;
+      const gross = Number(e.amount || 0);
+      const tax = Number(e.meta?.platform_tax || 0);
+      const net = Number(e.netAmount != null ? e.netAmount : Math.max(0, gross - tax));
+      if (e.type === FINANCE_TYPES.income) {
+        row.grossIncome += gross;
+        row.platformCommission += tax;
+        row.income += net;
+      } else if (e.type === FINANCE_TYPES.expense) {
+        row.expense += gross;
+      }
+    });
+    const periodDays = Math.max(1, _nightsBetween(from, to) + 1);
+    const model = apt.businessModel === 'trust' ? 'trust' : 'sublease';
+    const trustShare = Math.min(100, Math.max(0, Number(apt.trustShare || 0)));
+    const rawProfit = row.income - row.expense;
+    let ownerPayout = null;
+    let profit = rawProfit;
+    if (model === 'trust') {
+      ownerPayout = rawProfit * (100 - trustShare) / 100;
+      profit = rawProfit - ownerPayout;
+    }
+    const occupancy = periodDays > 0 ? Math.min(100, (row.soldNights / periodDays) * 100) : 0;
+    const adr = row.soldNights > 0 ? row.income / row.soldNights : 0;
+    const avgDaily = periodDays > 0 ? row.income / periodDays : 0;
+    const avgStay = row.bookings > 0 ? row.totalNightsForStayAvg / row.bookings : 0;
+    return {
+      apartmentId: apt.id, name: row.name,
+      income: row.income, grossIncome: row.grossIncome, platformCommission: row.platformCommission,
+      expense: row.expense, soldNights: row.soldNights, bookings: row.bookings,
+      profit, ownerPayout, businessModel: model, trustShare,
+      availableNights: periodDays, occupancy, adr, avgDaily, avgStay,
+      period: { from, to, days: periodDays },
+    };
+  };
+
+  const cycleRows = aptsWithCycle.map(({ apt, paymentDay }) => {
+    const { from, to } = _windowForApt(paymentDay);
+    return _buildRow(apt, from, to);
+  });
+  const noDayRows = aptsNoDay.map((apt) => _buildRow(apt, monthStart, monthEnd));
+
+  const _totals = (list) => {
+    const t = list.reduce((acc, r) => {
+      acc.income += r.income; acc.grossIncome += r.grossIncome; acc.platformCommission += r.platformCommission;
+      acc.expense += r.expense; acc.profit += r.profit;
+      acc.soldNights += r.soldNights; acc.bookings += r.bookings;
+      acc.availableNights += r.availableNights;
+      if (r.businessModel === 'trust' && r.ownerPayout != null) acc.ownerPayout += r.ownerPayout;
+      return acc;
+    }, { income: 0, grossIncome: 0, platformCommission: 0, expense: 0, profit: 0, soldNights: 0, bookings: 0, ownerPayout: 0, availableNights: 0 });
+    t.occupancy = t.availableNights > 0 ? Math.min(100, (t.soldNights / t.availableNights) * 100) : 0;
+    t.adr = t.soldNights > 0 ? t.income / t.soldNights : 0;
+    t.avgDaily = t.availableNights > 0 ? t.income / t.availableNights : 0;
+    const totalStayNights = list.reduce((s, r) => s + (r.avgStay * r.bookings), 0);
+    t.avgStay = t.bookings > 0 ? totalStayNights / t.bookings : 0;
+    return t;
+  };
+
+  return {
+    cycleRows,
+    cycleTotals: _totals(cycleRows),
+    noDayRows,
+    noDayTotals: _totals(noDayRows),
+    monthLabel,
+    monthOffset,
+    monthCalendar: { from: monthStart, to: monthEnd },
+  };
+}
+
 export function getFinanceSummary() {
   const entries = getFilteredFinanceEntries();
   const totals = entries.reduce(

@@ -8,7 +8,7 @@
  * 1301 ГК РФ.
  */
 import dom, { byId } from './dom.js';
-import { getFinanceSummary, getFinanceApartmentSummary, getFinanceApartmentSummaryAsync, monthKey, STATUS_LABELS, fetchUnitEcoReports, advanceUnitEcoReportIfNeeded, REPORT_CADENCE_LABELS } from './finance.js';
+import { getFinanceSummary, getFinanceApartmentSummary, getFinanceApartmentSummaryAsync, getFinanceCyclesSummaryAsync, monthKey, STATUS_LABELS, fetchUnitEcoReports, advanceUnitEcoReportIfNeeded, REPORT_CADENCE_LABELS } from './finance.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, statusBy } from './state.js';
 
 export function setStatus(text = 'Готово') { if (dom.saveStatus) dom.saveStatus.textContent = text; }
@@ -337,10 +337,18 @@ function renderFinance(state) {
   if (summaryToEl) summaryToEl.value = filter.dateTo || '';
   if (dom.financeByApartment) {
     dom.financeByApartment.innerHTML = '<div class="empty">Загрузка…</div>';
-    _renderFinanceByApartmentAsync().catch((e) => {
-      console.warn('[finance] apt summary async error:', e);
-      dom.financeByApartment.innerHTML = '<div class="empty">Ошибка загрузки.</div>';
-    });
+    const cyclesMode = !!state.ui?.finance?.cyclesMode;
+    if (cyclesMode) {
+      _renderFinanceByCyclesAsync().catch((e) => {
+        console.warn('[finance] cycles summary async error:', e);
+        dom.financeByApartment.innerHTML = '<div class="empty">Ошибка загрузки.</div>';
+      });
+    } else {
+      _renderFinanceByApartmentAsync().catch((e) => {
+        console.warn('[finance] apt summary async error:', e);
+        dom.financeByApartment.innerHTML = '<div class="empty">Ошибка загрузки.</div>';
+      });
+    }
   }
 
   // Список проводок
@@ -376,7 +384,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-08-31.13';
+      const BUILD_VERSION = 'v.2026-08-31.14';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
@@ -399,6 +407,7 @@ async function _renderFinanceByApartmentAsync() {
       `).join('');
       const t = apt.totals;
       dom.financeByApartment.innerHTML = `
+        ${_renderFinanceModeToggle('common', BUILD_VERSION)}
         <div class="fin-tbl-period small muted" style="margin-bottom:.5rem;display:flex;justify-content:space-between;gap:.5rem;flex-wrap:wrap;"><span>Период: ${periodLabel}</span><span style="opacity:.6">${BUILD_VERSION}</span></div>
         <div class="fin-tbl-wrap">
           <table class="fin-tbl">
@@ -434,6 +443,119 @@ async function _renderFinanceByApartmentAsync() {
           </table>
         </div>
       `;
+}
+
+// Переключатель «Общий период ↔ По циклам оплаты» + стрелки месяца (в режиме циклов).
+function _renderFinanceModeToggle(mode, buildVersion, monthLabel = '', monthOffset = 0) {
+  const isCycles = mode === 'cycles';
+  const arrows = isCycles
+    ? `<div style="display:inline-flex;align-items:center;gap:.5rem;margin-left:.75rem;">
+         <button type="button" class="btn ghost xs" data-action="fin-cycles-prev" title="Предыдущий месяц">‹</button>
+         <span class="small" style="min-width:9rem;text-align:center;">${monthLabel}</span>
+         <button type="button" class="btn ghost xs" data-action="fin-cycles-next" title="Следующий месяц">›</button>
+       </div>`
+    : '';
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.5rem;">
+      <div style="display:inline-flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
+        <div class="seg-ctl" role="tablist" style="display:inline-flex;border:1px solid var(--color-border);border-radius:8px;overflow:hidden;">
+          <button type="button" class="btn ${!isCycles ? 'primary' : 'ghost'} xs" style="border-radius:0;border:0;" data-action="fin-mode-common" ${!isCycles ? 'aria-pressed="true"' : ''}>Общий период</button>
+          <button type="button" class="btn ${isCycles ? 'primary' : 'ghost'} xs" style="border-radius:0;border:0;" data-action="fin-mode-cycles" ${isCycles ? 'aria-pressed="true"' : ''}>По циклам оплаты</button>
+        </div>
+        ${arrows}
+      </div>
+    </div>
+  `;
+}
+
+async function _renderFinanceByCyclesAsync() {
+  const myToken = ++_financeAptSummaryToken;
+  const state = getState();
+  const monthOffset = Number(state.ui?.finance?.cyclesMonthOffset || 0);
+  const data = await getFinanceCyclesSummaryAsync(monthOffset);
+  if (myToken !== _financeAptSummaryToken) return;
+  if (!dom.financeByApartment) return;
+
+  const BUILD_VERSION = 'v.2026-08-31.14';
+  const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
+  const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const money = (n) => `${fmt2(n)} ₽`;
+  const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
+  const payoutCell = (r) => {
+    if (r.businessModel !== 'trust' || r.ownerPayout == null) return '<td class="num muted">—</td>';
+    return `<td class="num">${money(r.ownerPayout)}</td>`;
+  };
+
+  const renderTable = (rows, totals, showPeriodCol) => {
+    if (!rows.length) return '<div class="empty">Нет данных.</div>';
+    const periodHeader = showPeriodCol ? '<th>Цикл оплаты</th>' : '';
+    const rowsHtml = rows.map((r) => `
+      <tr>
+        <td class="fin-tbl-name">${r.name}</td>
+        ${showPeriodCol ? `<td class="small muted">${r.period.from} — ${r.period.to}</td>` : ''}
+        <td class="num" style="color:${profitColor(r.profit)};font-weight:600">${r.profit >= 0 ? '' : '−'}${money(Math.abs(r.profit))}</td>
+        ${payoutCell(r)}
+        <td class="num">${money(r.income)}</td>
+        <td class="num">${money(r.expense)}</td>
+        <td class="num">${money(r.platformCommission)}</td>
+        <td class="num">${money(r.avgDaily)}</td>
+        <td class="num">${money(r.adr)}</td>
+        <td class="num">${pct(r.occupancy)}</td>
+        <td class="num">${stay(r.avgStay)}</td>
+      </tr>
+    `).join('');
+    return `
+      <div class="fin-tbl-wrap">
+        <table class="fin-tbl">
+          <thead>
+            <tr>
+              <th>Объект</th>
+              ${periodHeader}
+              <th class="num">Прибыль</th>
+              <th class="num">Выплата собственнику</th>
+              <th class="num">Доходы</th>
+              <th class="num">Расходы</th>
+              <th class="num">Комиссии площадок</th>
+              <th class="num">Среднесуточный доход</th>
+              <th class="num">ADR (средняя цена проданной ночи)</th>
+              <th class="num">Загрузка</th>
+              <th class="num">Средняя длит. проживания</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+          <tfoot>
+            <tr class="fin-tbl-total">
+              <td>Итого:</td>
+              ${showPeriodCol ? '<td></td>' : ''}
+              <td class="num" style="color:${profitColor(totals.profit)}">${totals.profit >= 0 ? '' : '−'}${money(Math.abs(totals.profit))}</td>
+              <td class="num">${(totals.ownerPayout && totals.ownerPayout > 0) ? money(totals.ownerPayout) : '<span class="muted">—</span>'}</td>
+              <td class="num">${money(totals.income)}</td>
+              <td class="num">${money(totals.expense)}</td>
+              <td class="num">${money(totals.platformCommission)}</td>
+              <td class="num">${money(totals.avgDaily)}</td>
+              <td class="num">${money(totals.adr)}</td>
+              <td class="num">${pct(totals.occupancy)}</td>
+              <td class="num">${stay(totals.avgStay)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    `;
+  };
+
+  const cyclesBlock = renderTable(data.cycleRows, data.cycleTotals, true);
+  const noDayBlock = data.noDayRows.length
+    ? `<h4 class="small muted" style="margin:1rem 0 .5rem 0;">Прочие (без дня оплаты) — календарный месяц ${data.monthCalendar.from} — ${data.monthCalendar.to}</h4>
+       ${renderTable(data.noDayRows, data.noDayTotals, false)}`
+    : '';
+
+  dom.financeByApartment.innerHTML = `
+    ${_renderFinanceModeToggle('cycles', BUILD_VERSION, data.monthLabel, data.monthOffset)}
+    <div class="small muted" style="margin-bottom:.5rem;">Режим: расчёт по циклам оплаты (анкор — <b>${data.monthLabel}</b>). <span style="opacity:.6">${BUILD_VERSION}</span></div>
+    ${cyclesBlock}
+    ${noDayBlock}
+  `;
 }
 
 // Заглушки-остатки от старого renderFinance — вынесены в renderUnitEconomicsSection.

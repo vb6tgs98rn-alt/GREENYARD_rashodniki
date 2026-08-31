@@ -977,6 +977,29 @@ function bindFinanceModals() {
       await rerender('Запись удалена');
     }
 
+    // Финансы: переключение режима таблицы + стрелки месяца.
+    if (action === 'fin-mode-common') {
+      updateState((s) => { s.ui = s.ui || {}; s.ui.finance = s.ui.finance || {}; s.ui.finance.cyclesMode = false; });
+      await rerender('Режим: общий период');
+    }
+    if (action === 'fin-mode-cycles') {
+      updateState((s) => {
+        s.ui = s.ui || {}; s.ui.finance = s.ui.finance || {};
+        s.ui.finance.cyclesMode = true;
+        if (s.ui.finance.cyclesMonthOffset == null) s.ui.finance.cyclesMonthOffset = 0;
+      });
+      // Регенерация автосписаний на текущий открытый месяц (offset 0) уже была выполнена при открытии Финансов.
+      await rerender('Режим: по циклам оплаты');
+    }
+    if (action === 'fin-cycles-prev' || action === 'fin-cycles-next') {
+      const delta = action === 'fin-cycles-prev' ? -1 : 1;
+      updateState((s) => {
+        s.ui = s.ui || {}; s.ui.finance = s.ui.finance || {};
+        s.ui.finance.cyclesMonthOffset = Number(s.ui.finance.cyclesMonthOffset || 0) + delta;
+      });
+      await rerender('Цикл оплаты: месяц смещён');
+    }
+
     if (action === 'edit-entry') {
       const id = btn.dataset.id;
       if (!id) return;
