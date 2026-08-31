@@ -1068,6 +1068,14 @@ body.is-guest .modal-backdrop{display:none !important}
 .fin-tbl tbody tr:last-child td{border-bottom:none}
 .fin-tbl .fin-tbl-name{font-weight:600;white-space:nowrap}
 .fin-tbl tfoot .fin-tbl-total td{padding:.7rem;font-weight:700;background:var(--color-surface-2);border-top:2px solid var(--color-border)}
+/* Вертикальные разделители */
+.fin-tbl th + th, .fin-tbl td + td{border-left:1px solid var(--color-border)}
+.fin-tbl tfoot .fin-tbl-total td + td{border-left:1px solid var(--color-border)}
+/* Компактные стрелки цикла */
+.cycle-arrow{appearance:none;background:transparent;color:var(--color-text-muted);border:1px solid var(--color-border);border-radius:.35rem;width:1.35rem;height:1.35rem;display:inline-flex;align-items:center;justify-content:center;font-size:.95rem;line-height:1;padding:0;cursor:pointer;transition:background .15s,color .15s}
+.cycle-arrow:hover{background:var(--color-surface-2);color:var(--color-text)}
+.cycle-arrow:active{transform:translateY(1px)}
+.fin-cycle-period{font-variant-numeric:tabular-nums}
 
 /* ==== Блок выбора периода в «Итогах по квартирам» ==== */
 .summary-period{display:flex;flex-direction:column;gap:.6rem;margin-bottom:1rem;padding:.75rem;border-radius:var(--radius-lg);background:var(--color-surface-2)}
