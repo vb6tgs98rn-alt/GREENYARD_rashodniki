@@ -111,13 +111,14 @@ export interface TochkaConnection {
 
 /** Запрос с таймаутом: висящее соединение не должно держать функцию. */
 async function fetchWithTimeout(url: string, init: RequestInit, ms = 20000): Promise<Response> {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), ms);
+  // В Deno Edge Runtime передача signal вместе с custom `client` в некоторых версиях сбрасывает
+  // подменённый CA-бандл (наблюдается UnknownIssuer). AbortSignal.timeout — современный вариант,
+  // который не мешает client-параметру.
+  const opts: any = { ...(init as any), client: ruHttpClient() };
   try {
-    return await fetch(url, { ...(init as any), signal: ac.signal, client: ruHttpClient() } as any);
-  } finally {
-    clearTimeout(timer);
-  }
+    opts.signal = (AbortSignal as any).timeout ? (AbortSignal as any).timeout(ms) : undefined;
+  } catch { /* no-op */ }
+  return await fetch(url, opts);
 }
 
 /** Ошибка вызова API Точки: несёт статус и текст ответа для логов. */

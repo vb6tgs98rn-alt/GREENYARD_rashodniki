@@ -84,9 +84,9 @@ export async function fetchPayments(booking_id) {
 // ─── Настройки в manager_settings ───────────────────────────────────────
 
 const SETTINGS_FIELDS = [
-  'tochka_enabled', 'tochka_payment_method', 'tochka_auto_send', 'tochka_with_receipt',
+  'tochka_enabled', 'tochka_auto_send', 'tochka_with_receipt',
   'tochka_tax_system', 'tochka_vat_type', 'tochka_ttl_minutes',
-  'tochka_purpose_template', 'tochka_requisites', 'tochka_success_url',
+  'tochka_purpose_template', 'tochka_success_url', 'tochka_card_enabled',
 ];
 
 export async function loadSettings() {
@@ -153,17 +153,22 @@ function ensureModal() {
             <span class="gy-toggle-label">Отправлять ссылку автоматически вместе с договором</span>
           </label>
 
-          <label style="display:block;margin-top:1rem;">
-            <span class="small">Способ оплаты</span>
-            <select id="tochkaMethod" style="margin-top:.4rem;width:100%;">
-              <option value="payment_link">Платёжная ссылка (СБП + карта, с чеком)</option>
-              <option value="sbp_qr">Динамический QR-код СБП (без чека)</option>
-              <option value="requisites">Реквизиты для перевода вручную</option>
-            </select>
-            <span class="small" id="tochkaMethodHint" style="opacity:.75;display:block;margin-top:.35rem;"></span>
-          </label>
+          <div class="small" style="margin-top:1rem;padding:.6rem .75rem;border:1px solid rgba(127,127,127,.25);border-radius:.5rem;opacity:.9;">
+            Способ оплаты — <b>динамический QR-код СБП</b>. Гость откроет ссылку
+            в приложении своего банка и подтвердит платёж. Комиссия ниже, чем по карте,
+            чек 54-ФЗ таким платежом не формируется.
+          </div>
 
-          <div id="tochkaReceiptBox">
+          <label class="gy-toggle" style="margin-top:1rem;" title="Пока недоступно">
+            <input id="tochkaCardEnabled" type="checkbox" disabled />
+            <span class="gy-toggle-track" aria-hidden="true"><span class="gy-toggle-thumb"></span></span>
+            <span class="gy-toggle-label">Оплата картой (веб-эквайринг Точки)</span>
+          </label>
+          <div class="small" style="opacity:.7;margin-top:.25rem;margin-bottom:.25rem;">
+            Активация доступна после подключения веб-эквайринга в личном кабинете Точки.
+          </div>
+
+          <div id="tochkaReceiptBox" style="display:none;">
             <label class="gy-toggle" style="margin-top:1rem;">
               <input id="tochkaWithReceipt" type="checkbox" />
               <span class="gy-toggle-track" aria-hidden="true"><span class="gy-toggle-thumb"></span></span>
@@ -207,11 +212,6 @@ function ensureModal() {
             <span class="small" style="opacity:.7;display:block;margin-top:.25rem;">Подстановки: {booking_id}, {apartment}, {begin}, {end}, {fio}.</span>
           </label>
 
-          <label style="display:block;margin-top:1rem;" id="tochkaRequisitesBox">
-            <span class="small">Реквизиты для перевода вручную</span>
-            <textarea id="tochkaRequisites" rows="4" style="margin-top:.4rem;width:100%;" placeholder="Например: перевод по СБП на +7 900 000-00-00, получатель Иван И."></textarea>
-          </label>
-
           <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1.25rem;">
             <button class="btn btn-primary" id="tochkaSave" type="button">Сохранить настройки</button>
           </div>
@@ -227,12 +227,6 @@ function ensureModal() {
   `;
   document.body.appendChild(wrap.children[0]);
 }
-
-const METHOD_HINTS = {
-  payment_link: 'Гость платит по ссылке: СБП или картой. Чек уходит гостю на e-mail автоматически. Нужен подключённый интернет-эквайринг Точки.',
-  sbp_qr: 'Динамический QR-код СБП: комиссия ниже, но чек по 54-ФЗ такой платёж не формирует — выбивать придётся отдельно.',
-  requisites: 'Банк не задействуется: бот просто пришлёт гостю ваш текст с реквизитами, статус оплаты отмечаете вручную.',
-};
 
 const STATUS_LABEL = {
   created: '⏳ ожидает оплаты',
@@ -281,16 +275,6 @@ function renderStatusBox(st) {
   config.style.display = 'block';
 }
 
-function applyMethodVisibility() {
-  const method = document.getElementById('tochkaMethod').value;
-  document.getElementById('tochkaMethodHint').textContent = METHOD_HINTS[method] || '';
-  const receipt = document.getElementById('tochkaReceiptBox');
-  const req = document.getElementById('tochkaRequisitesBox');
-  // hidden не скрывает label — прячем через display.
-  receipt.style.display = method === 'payment_link' ? 'block' : 'none';
-  req.style.display = method === 'requisites' ? 'block' : 'none';
-}
-
 async function renderPayments() {
   const box = document.getElementById('tochkaPayments');
   if (!box) return;
@@ -332,12 +316,10 @@ export async function openTochkaSettings() {
   const disconnectBtn = document.getElementById('tochkaDisconnect');
   const saveBtn = document.getElementById('tochkaSave');
   const pollBtn = document.getElementById('tochkaPoll');
-  const methodSel = document.getElementById('tochkaMethod');
 
   // Сначала поднимаем рабочий интерфейс, и только потом идём в сеть:
   // если банк или база отвечают долго, модалка всё равно кликается.
-  applyMethodVisibility();
-  bindHandlers(modal, { closeBtn, connectBtn, refreshBtn, disconnectBtn, saveBtn, pollBtn, methodSel });
+  bindHandlers(modal, { closeBtn, connectBtn, refreshBtn, disconnectBtn, saveBtn, pollBtn });
 
   // Статус подключения
   let st = null;
@@ -354,14 +336,14 @@ export async function openTochkaSettings() {
     document.getElementById('tochkaEnabled').checked = Boolean(s.tochka_enabled);
     document.getElementById('tochkaAutoSend').checked = s.tochka_auto_send !== false;
     document.getElementById('tochkaWithReceipt').checked = s.tochka_with_receipt !== false;
-    methodSel.value = s.tochka_payment_method || 'payment_link';
+    // Карточная оплата пока недоступна — чекбокс всегда выключен и залочен.
+    const cardChk = document.getElementById('tochkaCardEnabled');
+    if (cardChk) { cardChk.checked = Boolean(s.tochka_card_enabled); cardChk.disabled = true; }
     document.getElementById('tochkaTax').value = s.tochka_tax_system || 'usn_income';
     document.getElementById('tochkaVat').value = s.tochka_vat_type || 'none';
     document.getElementById('tochkaTtl').value = s.tochka_ttl_minutes ?? 4320;
     document.getElementById('tochkaPurpose').value = s.tochka_purpose_template
       || 'Оплата проживания по брони №{booking_id}, {apartment}, {begin}—{end}';
-    document.getElementById('tochkaRequisites').value = s.tochka_requisites || '';
-    applyMethodVisibility();
   } catch (err) {
     setStatus('Не удалось загрузить настройки оплаты: ' + err.message, 'error');
   }
@@ -371,12 +353,11 @@ export async function openTochkaSettings() {
 
 /** Привязывает обработчики один раз за жизнь модалки. */
 function bindHandlers(modal, els) {
-  const { closeBtn, connectBtn, refreshBtn, disconnectBtn, saveBtn, pollBtn, methodSel } = els;
+  const { closeBtn, connectBtn, refreshBtn, disconnectBtn, saveBtn, pollBtn } = els;
   if (modal.dataset.bound) return;
   modal.dataset.bound = '1';
 
   closeBtn.addEventListener('click', () => closeModal('tochkaModal'));
-  methodSel.addEventListener('change', applyMethodVisibility);
 
   connectBtn.addEventListener('click', async () => {
     connectBtn.disabled = true;
@@ -435,12 +416,10 @@ function bindHandlers(modal, els) {
         tochka_enabled: document.getElementById('tochkaEnabled').checked,
         tochka_auto_send: document.getElementById('tochkaAutoSend').checked,
         tochka_with_receipt: document.getElementById('tochkaWithReceipt').checked,
-        tochka_payment_method: methodSel.value,
         tochka_tax_system: document.getElementById('tochkaTax').value,
         tochka_vat_type: document.getElementById('tochkaVat').value,
         tochka_ttl_minutes: Math.round(ttl),
         tochka_purpose_template: document.getElementById('tochkaPurpose').value.trim() || null,
-        tochka_requisites: document.getElementById('tochkaRequisites').value.trim() || null,
       });
       setStatus('Настройки оплаты сохранены', 'success');
     } catch (err) {

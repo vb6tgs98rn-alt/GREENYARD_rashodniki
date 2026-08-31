@@ -101,16 +101,9 @@ export async function ensureBookingPayment(
 
   const purposeTpl = String(ms.tochka_purpose_template || DEFAULT_PURPOSE);
   const purpose = buildPurpose(purposeTpl, bk);
-  const method = String(ms.tochka_payment_method || "payment_link") as PaymentMethod;
-
-  // Оплата по реквизитам — без обращения к API: просто текст из настроек.
-  if (method === "requisites") {
-    const req = String(ms.tochka_requisites || "").trim();
-    if (!req) {
-      return { kind: "error", amount: debt, reason: "В настройках не заполнены реквизиты для оплаты" };
-    }
-    return { kind: "requisites", amount: debt, requisites: req, method };
-  }
+  // Политика: всегда СБП QR. Карта без интернет-эквайринга в Точке в SaaS-режиме не работает,
+  // реквизиты как отдельный режим убраны. Сохранённое в базе значение игнорируем.
+  const method: PaymentMethod = "sbp_qr";
 
   // Переиспользуем действующую ссылку, если сумма и способ не поменялись.
   if (!opts.force) {
@@ -146,18 +139,15 @@ export async function ensureBookingPayment(
     return { kind: "error", amount: debt, reason: "Точка Банк не подключена" };
   }
 
-  // Для чека 54-ФЗ Точка требует почту покупателя уже при создании платежа,
-  // на странице оплаты гость её не вводит. Поэтому сначала спрашиваем её в чате.
+  // СБП QR чек по 54-ФЗ не формирует — email гостя не требуется. Готовим без чека.
   const clientEmail = String(bk.client_email || "").trim();
-  if (Boolean(ms.tochka_with_receipt) && !clientEmail) {
-    return { kind: "need_email", amount: debt };
-  }
 
   const req: PaymentRequest = {
     amount: debt,
     purpose,
     ttlMinutes: Number(ms.tochka_ttl_minutes || 4320),
-    withReceipt: Boolean(ms.tochka_with_receipt),
+    // СБП QR: чек не выбиваем — всегда false, чтобы банк не спотыкался в отсутствии email.
+    withReceipt: false,
     taxSystem: String(ms.tochka_tax_system || "usn_income"),
     vatType: String(ms.tochka_vat_type || "none"),
     clientName: bk.client_fio ?? null,
@@ -205,13 +195,7 @@ export async function ensureBookingPayment(
 export function paymentMessage(p: BookingPayment, escape: (s: string) => string): string | null {
   const sum = p.amount.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   if (p.kind === "ok" && p.payUrl) {
-    const how = p.method === "sbp_qr"
-      ? "Оплата через СБП — ссылка откроет приложение вашего банка."
-      : "Оплатить можно картой или через СБП.";
-    return `💳 <b>Оплата проживания</b>\n\nК оплате: <b>${escape(sum)} ₽</b>\n${escape(how)}\n\n${escape(p.payUrl)}\n\nПосле оплаты мы автоматически увидим платёж — подтверждать ничего не нужно.`;
-  }
-  if (p.kind === "requisites" && p.requisites) {
-    return `💳 <b>Оплата проживания</b>\n\nК оплате: <b>${escape(sum)} ₽</b>\n\nРеквизиты для перевода:\n${escape(p.requisites)}\n\nПосле оплаты пришлите, пожалуйста, подтверждение в этот чат.`;
+    return `💳 <b>Оплата проживания</b>\n\nК оплате: <b>${escape(sum)} ₽</b>\nОплата через СБП — ссылка откроет приложение вашего банка.\n\n${escape(p.payUrl)}\n\nПосле оплаты мы автоматически увидим платёж — подтверждать ничего не нужно.`;
   }
   return null;
 }
