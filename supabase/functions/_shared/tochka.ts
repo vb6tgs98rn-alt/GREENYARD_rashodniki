@@ -460,7 +460,12 @@ export async function createPaymentLink(
     Data.taxSystemCode = req.taxSystem;
     const client: Record<string, string> = {};
     if (req.clientName) client.name = req.clientName;
-    if (req.clientEmail) client.email = req.clientEmail;
+    if (req.clientEmail) {
+      client.email = req.clientEmail;
+    } else {
+      // Нет email — пусть гость сам введёт на странице оплаты Точки.
+      client.emailSource = "buyer";
+    }
     const phone = normalizePhone(req.clientPhone);
     if (phone) client.phone = phone;
     if (Object.keys(client).length) Data.Client = client;

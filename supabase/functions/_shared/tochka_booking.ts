@@ -26,7 +26,7 @@ export interface BookingPayment {
    * ok — ссылка готова; nothing_to_pay — долга нет; requisites — оплата по реквизитам;
    * need_email — для чека нужна почта гостя; error — не получилось.
    */
-  kind: "ok" | "nothing_to_pay" | "requisites" | "disabled" | "need_email" | "error";
+  kind: "ok" | "nothing_to_pay" | "requisites" | "disabled" | "error";
   amount: number;
   payUrl?: string;
   requisites?: string;
@@ -143,14 +143,10 @@ export async function ensureBookingPayment(
     return { kind: "error", amount: debt, reason: "Точка Банк не подключена" };
   }
 
-  // Чек по 54-ФЗ выбиваем только для payment_link и только если менеджер включил эту опцию.
-  // Для чека требуется email — если его нет, просим бота задать вопрос гостю.
-  // СБП QR чек не формирует — email не нужен.
+  // Чек по 54-ФЗ — только для payment_link и только если менеджер включил эту опцию.
+  // Если email гостя нет — Точка сама попросит его на странице оплаты (emailSource=buyer).
   const clientEmail = String(bk.client_email || "").trim();
   const withReceipt = method === "payment_link" && Boolean(ms.tochka_with_receipt);
-  if (withReceipt && !clientEmail) {
-    return { kind: "need_email", amount: debt };
-  }
 
   const req: PaymentRequest = {
     amount: debt,
