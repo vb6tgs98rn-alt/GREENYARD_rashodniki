@@ -384,7 +384,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-09-05.23';
+      const BUILD_VERSION = 'v.2026-09-05.24';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
@@ -466,7 +466,7 @@ async function _renderFinanceByCyclesAsync() {
   if (myToken !== _financeAptSummaryToken) return;
   if (!dom.financeByApartment) return;
 
-  const BUILD_VERSION = 'v.2026-09-05.23';
+  const BUILD_VERSION = 'v.2026-09-05.24';
   const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
   const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -571,11 +571,20 @@ function renderUnitEconomicsSection(state) {
   void renderUnitEconomics(state);
 
   // Селекты квартир в модалках
-  [dom.financeEntryApartment, dom.recurringApartment].forEach((el) => {
-    if (!el) return;
-    el.innerHTML = state.apartments.map((a) => `<option value="${a.id}">${getDisplayApartmentName(a.name)}</option>`).join('');
-    if (!el.value) el.value = state.activeApartmentId;
-  });
+  // В модалке «Новая запись» дополнительно есть опция «Все квартиры» — сумма делится поровну.
+  if (dom.financeEntryApartment) {
+    const prev = dom.financeEntryApartment.value;
+    dom.financeEntryApartment.innerHTML =
+      `<option value="__all__">Все квартиры (разделить поровну)</option>` +
+      state.apartments.map((a) => `<option value="${a.id}">${getDisplayApartmentName(a.name)}</option>`).join('');
+    dom.financeEntryApartment.value = prev || state.activeApartmentId || '__all__';
+  }
+  if (dom.recurringApartment) {
+    const prev = dom.recurringApartment.value;
+    dom.recurringApartment.innerHTML = state.apartments
+      .map((a) => `<option value="${a.id}">${getDisplayApartmentName(a.name)}</option>`).join('');
+    if (!prev) dom.recurringApartment.value = state.activeApartmentId;
+  }
   if (dom.financeEntryDate && !dom.financeEntryDate.value) dom.financeEntryDate.value = new Date().toISOString().slice(0, 10);
   if (dom.recurringStartDate && !dom.recurringStartDate.value) dom.recurringStartDate.value = new Date().toISOString().slice(0, 10);
 }

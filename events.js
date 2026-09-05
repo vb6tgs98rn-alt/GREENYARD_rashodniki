@@ -865,20 +865,35 @@ function bindFinanceModals() {
   const financeEntryModalEl = document.getElementById('financeEntryModal');
   const financeEntryTitleEl = financeEntryModalEl?.querySelector('.modal-title');
 
+  // Подсказка под селектом: показывается, когда выбрано «Все квартиры» (только для создания новой).
+  function updateFinanceEntryApartmentHint() {
+    const hint = document.getElementById('financeEntrySplitHint');
+    if (!hint) return;
+    const isEdit = !!(financeEntryModalEl && financeEntryModalEl.dataset.editId);
+    const isAll = !isEdit && dom.financeEntryApartment?.value === '__all__';
+    hint.style.display = isAll ? '' : 'none';
+  }
+  dom.financeEntryApartment?.addEventListener('change', updateFinanceEntryApartmentHint);
+
   function resetFinanceEntryForm() {
-    if (dom.financeEntryApartment) dom.financeEntryApartment.value = currentApartment()?.id || '';
+    if (dom.financeEntryApartment) dom.financeEntryApartment.value = currentApartment()?.id || '__all__';
     if (dom.financeEntryType) dom.financeEntryType.value = 'expense';
     if (dom.financeEntryDate) dom.financeEntryDate.value = new Date().toISOString().slice(0,10);
     if (dom.financeEntryTitle) dom.financeEntryTitle.value = '';
     if (dom.financeEntryCategory) dom.financeEntryCategory.value = '';
     if (dom.financeEntryAmount) dom.financeEntryAmount.value = '';
     if (dom.financeEntryNotes) dom.financeEntryNotes.value = '';
+    updateFinanceEntryApartmentHint();
   }
 
   dom.financeAddEntryBtn?.addEventListener('click', () => {
     resetFinanceEntryForm();
     if (financeEntryModalEl) financeEntryModalEl.dataset.editId = '';
     if (financeEntryTitleEl) financeEntryTitleEl.textContent = 'Новая запись';
+    // Перевключаем опцию «Все квартиры»: в режиме создания — показываем, в режиме редактирования — скрываем.
+    const allOpt = dom.financeEntryApartment?.querySelector('option[value="__all__"]');
+    if (allOpt) allOpt.hidden = false;
+    updateFinanceEntryApartmentHint();
     openModal('financeEntryModal');
   });
   dom.cancelFinanceEntry?.addEventListener('click', () => closeModal('financeEntryModal'));
@@ -907,16 +922,45 @@ function bindFinanceModals() {
       await rerender('Запись обновлена');
       return;
     }
-    addFinanceEntry({
-      apartmentId: dom.financeEntryApartment?.value,
-      type: dom.financeEntryType?.value,
+    const _selectedApt = dom.financeEntryApartment?.value || '';
+    const _type = dom.financeEntryType?.value;
+    const _status = _type === 'income' ? 'confirmed' : 'planned';
+    const _commonPayload = {
+      type: _type,
       category: dom.financeEntryCategory?.value,
       title: dom.financeEntryTitle?.value,
-      amount,
       date: dom.financeEntryDate?.value,
       notes: dom.financeEntryNotes?.value,
       source: 'manual',
-      status: dom.financeEntryType?.value === 'income' ? 'confirmed' : 'planned',
+      status: _status,
+    };
+    if (_selectedApt === '__all__') {
+      // «Все квартиры»: делим сумму поровну между всеми неархивными квартирами
+      // и создаём по записи на каждую (объединены splitGroupId в meta).
+      const _st = getState();
+      const apts = (_st.apartments || []).filter((a) => !a.archived);
+      if (!apts.length) { setStatus('Нет квартир для распределения'); return; }
+      const per = Math.round((amount / apts.length) * 100) / 100;
+      let residue = Math.round((amount - per * apts.length) * 100) / 100; // копеечный остаток от округления
+      const groupId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+      apts.forEach((a, idx) => {
+        // Остаток кладём в первую запись, чтобы сумма частей == введённой сумме.
+        const share = idx === 0 ? Math.round((per + residue) * 100) / 100 : per;
+        addFinanceEntry({
+          ..._commonPayload,
+          apartmentId: a.id,
+          amount: share,
+          meta: { splitGroupId: groupId, splitTotal: amount, splitCount: apts.length },
+        });
+      });
+      closeModal('financeEntryModal');
+      await rerender(`Запись разделена на ${apts.length} квартир`);
+      return;
+    }
+    addFinanceEntry({
+      ..._commonPayload,
+      apartmentId: _selectedApt,
+      amount,
     });
     closeModal('financeEntryModal');
     await rerender('Запись добавлена');
@@ -1022,6 +1066,11 @@ function bindFinanceModals() {
       if (dom.financeEntryNotes) dom.financeEntryNotes.value = entry.notes || '';
       if (financeEntryModalEl) financeEntryModalEl.dataset.editId = id;
       if (financeEntryTitleEl) financeEntryTitleEl.textContent = 'Редактирование записи';
+      // При редактировании скрываем опцию «Все квартиры» — она только для создания новой записи.
+      const allOpt = dom.financeEntryApartment?.querySelector('option[value="__all__"]');
+      if (allOpt) allOpt.hidden = true;
+      const hint = document.getElementById('financeEntrySplitHint');
+      if (hint) hint.style.display = 'none';
       openModal('financeEntryModal');
     }
 
