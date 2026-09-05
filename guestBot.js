@@ -675,20 +675,9 @@ function renderBookingsList(state) {
       : `<button class="btn btn-primary bk-btn-link ${linkSent ? 'is-sent' : ''}" data-link-booking="${esc(b.booking_id)}" data-channel="${esc(channels[0].id)}" data-secure="${esc(secureId)}">
            ${linkSent ? '✓ Ссылка скопирована' : '📋 Ссылка гостю'}
          </button>`;
-    // Тумблер «Разрешить карту»: по умолчанию гостю предлагается только СБП.
-    // Менеджер может включить карту для конкретной брони — тогда на странице оплаты
-    // появлятся оба варианта (paymentMode=["sbp","card"]).
-    const cardOn = b.tochka_card_enabled === true;
-    const cardToggle = isCancelled
-      ? ''
-      : `<label class="bk-card-toggle" title="По умолчанию оплата только через СБП. Включите, чтобы гость мог заплатить картой (эквайринг взимает комиссию)." style="display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem;color:var(--muted,#666);cursor:pointer;">
-           <input type="checkbox" data-toggle-card="${esc(b.booking_id)}" ${cardOn ? 'checked' : ''} style="margin:0;">
-           <span>💳 Разрешить оплату картой</span>
-         </label>`;
-
     const actions = isCancelled
       ? ''
-      : `<div class="bk-card-actions">${linkButtons}${cardToggle ? `<div style="margin-top:.4rem;">${cardToggle}</div>` : ''}</div>`;
+      : `<div class="bk-card-actions">${linkButtons}</div>`;
 
     return `
       <div class="bk-card${isCancelled ? ' bk-cancelled' : ''}" data-booking="${esc(b.booking_id)}" style="${isCancelled ? 'opacity:.75;' : ''}">

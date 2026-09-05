@@ -1063,11 +1063,11 @@ async function sendPaymentLink(to: Recipient, session: Session, silent: boolean)
     return;
   }
   if (res.kind === "need_email") {
-    // Ставим признак ожидания: следующее сообщение гостя разберём как почту.
+    const sb = svc();
     await sb.from("guest_sessions").update({ awaiting_email: true }).eq("id", session.id);
     const sum = res.amount.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const ask = `Для оплаты остатка <b>${htmlEscape(sum)} ₽</b> нужна ваша почта — на неё придёт кассовый чек.\n\nНапишите адрес одним сообщением, например: <code>ivan@mail.ru</code>`;
-    await sendMessage(to, ask, { preview: false });
+    await send(to, ask);
     await logMessage(session, "bot", ask, { kind: "ask_email", amount: res.amount });
     return;
   }
@@ -1242,27 +1242,21 @@ async function handleArrival(to: Recipient, from: InboundEvent["from"], kind: "a
   }
 }
 
-/** Почта в свободном тексте: гость может написать «моя почта ivan@mail.ru». */
+/** Почта в свободном тексте. */
 function extractEmail(text: string): string | null {
   const m = String(text || "").match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
   return m ? m[0].toLowerCase() : null;
 }
 
-/**
- * Ответ гостя на вопрос о почте для чека.
- *
- * @returns true, если сообщение обработано и дальше его вести не надо.
- */
+/** Ответ гостя на вопрос о почте для чека. */
 async function handleEmailAnswer(to: Recipient, session: Session, text: string): Promise<boolean> {
   const sb = svc();
   const email = extractEmail(text);
   if (!email) {
-    // Гость написал что-то другое — не держим его в тупике, снимаем ожидание.
     await sb.from("guest_sessions").update({ awaiting_email: false }).eq("id", session.id);
     (session as any).awaiting_email = false;
     return false;
   }
-
   await sb.from("rc_bookings")
     .update({ client_email: email })
     .eq("user_id", session.user_id)
@@ -1271,34 +1265,30 @@ async function handleEmailAnswer(to: Recipient, session: Session, text: string):
   (session as any).awaiting_email = false;
 
   const ok = `Спасибо, чек пришлём на <code>${htmlEscape(email)}</code>. Готовлю ссылку на оплату…`;
-  await sendMessage(to, ok, { preview: false });
+  await send(to, ok);
   await logMessage(session, "bot", ok, { kind: "email_saved" });
-
   await sendPaymentLink(to, session, false);
   return true;
 }
 
 async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: string, messageId: string | null) {
   const sb = svc();
-  // Если в чате есть сессия с awaiting_email=true — ответ относится именно к ней
-  // (где мы спросили email), даже если в чате есть более свежая сессия.
+  // Сначала ищем сессию с awaiting_email=true — верный ответ на наш вопрос о email.
   const { data: waitingRow } = await sb
     .from("guest_sessions")
     .select(SESSION_COLS)
     .eq("channel", to.channel)
     .eq("channel_chat_id", to.chatId)
     .eq("awaiting_email", true)
-    .order("updated_at", { ascending: false })
+    .order("started_at", { ascending: false, nullsFirst: false })
     .limit(1)
     .maybeSingle();
 
   let session: Session | null = (waitingRow as Session) ?? null;
   if (!session) {
-    // Обычный путь — активная бронь. Если активных несколько — берём первую
-    // (скорее всего текущее заселение). Свободный текст всё равно уйдёт менеджеру — точность вторична.
+    // Обычный путь — активная бронь по датам.
     const active = await findActiveSessions(to);
-    if (active.length) session = active[0];
-    else session = await findSessionByRcpt(to);
+    session = active.length ? active[0] : await findSessionByRcpt(to);
   }
   if (!session) {
     await send(to, "Сессия не найдена. Откройте бота по персональной ссылке от менеджера (она содержит код вашего бронирования).");
@@ -1307,7 +1297,7 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
   const fromName = [from?.firstName, from?.lastName].filter(Boolean).join(" ") || from?.username || "Гость";
   await logMessage(session, "inbound", text, { message_id: messageId, channel: to.channel, from });
 
-  // Ждём почту для чека — разбираем её до всей остальной логики.
+  // Ждём почту — разбираем её до всей остальной логики.
   if ((session as any).awaiting_email) {
     const handled = await handleEmailAnswer(to, session, text);
     if (handled) return;
