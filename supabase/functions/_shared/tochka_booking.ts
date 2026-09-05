@@ -101,9 +101,13 @@ export async function ensureBookingPayment(
 
   const purposeTpl = String(ms.tochka_purpose_template || DEFAULT_PURPOSE);
   const purpose = buildPurpose(purposeTpl, bk);
-  // Политика: всегда СБП QR. Карта без интернет-эквайринга в Точке в SaaS-режиме не работает,
-  // реквизиты как отдельный режим убраны. Сохранённое в базе значение игнорируем.
-  const method: PaymentMethod = "sbp_qr";
+  // Способ оплаты: по умолчанию — платёжная ссылка Точки. Она сама предлагает
+  // гостю и СБП, и карту (paymentMode=["sbp","card"]) через интернет-эквайринг —
+  // отдельная регистрация ТСП в СБП не нужна.
+  // Отдельный СБП QR используем только если менеджер явно выбрал sbp_qr
+  // И у подключения Точки есть sbp_merchant_id (иначе Точка вернёт ошибку).
+  const savedMethod = String(ms.tochka_payment_method || "payment_link") as PaymentMethod;
+  const method: PaymentMethod = savedMethod === "sbp_qr" ? "sbp_qr" : "payment_link";
 
   // Переиспользуем действующую ссылку, если сумма и способ не поменялись.
   if (!opts.force) {
@@ -195,7 +199,10 @@ export async function ensureBookingPayment(
 export function paymentMessage(p: BookingPayment, escape: (s: string) => string): string | null {
   const sum = p.amount.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   if (p.kind === "ok" && p.payUrl) {
-    return `💳 <b>Оплата проживания</b>\n\nК оплате: <b>${escape(sum)} ₽</b>\nОплата через СБП — ссылка откроет приложение вашего банка.\n\n${escape(p.payUrl)}\n\nПосле оплаты мы автоматически увидим платёж — подтверждать ничего не нужно.`;
+    const hint = p.method === "sbp_qr"
+      ? "Оплата через СБП — ссылка откроет приложение вашего банка."
+      : "На странице оплаты можно выбрать СБП или банковскую карту.";
+    return `💳 <b>Оплата проживания</b>\n\nК оплате: <b>${escape(sum)} ₽</b>\n${hint}\n\n${escape(p.payUrl)}\n\nПосле оплаты мы автоматически увидим платёж — подтверждать ничего не нужно.`;
   }
   return null;
 }
