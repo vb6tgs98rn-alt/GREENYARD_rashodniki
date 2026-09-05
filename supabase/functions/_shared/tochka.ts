@@ -404,6 +404,9 @@ export interface PaymentRequest {
   successUrl?: string | null;
   supplierName?: string | null;
   supplierInn?: string | null;
+  // Способы оплаты на странице Точки. По умолчанию — только СБП.
+  // ["sbp"] — гость платит только через СБП; ["sbp","card"] — доступна и карта.
+  paymentMode?: ("sbp" | "card")[];
 }
 
 export interface PaymentResult {
@@ -444,7 +447,8 @@ export async function createPaymentLink(
     customerCode: conn.customer_code,
     amount,
     purpose: req.purpose,
-    paymentMode: ["sbp", "card"],
+    // По умолчанию — только СБП. Карта включается на уровне брони/менеджера.
+    paymentMode: (req.paymentMode && req.paymentMode.length) ? req.paymentMode : ["sbp"],
     merchantId: conn.acquiring_merchant_id,
     preAuthorization: false,
     ttl: req.ttlMinutes,
@@ -496,7 +500,8 @@ export async function createPaymentLink(
     operationId: d.operationId ? String(d.operationId) : null,
     qrcId: null,
     expiresAt: new Date(Date.now() + req.ttlMinutes * 60 * 1000).toISOString(),
-    raw: res,
+    // Сохраняем и ответ Точки, и отправленный payload (paymentMode и др.) — нужен для сверки при переиспользовании ссылки.
+    raw: { response: res, request: { Data } },
   };
 }
 

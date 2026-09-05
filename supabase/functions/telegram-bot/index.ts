@@ -108,15 +108,32 @@ async function send(to: Recipient, text: string, buttons?: Btn[][], preview = fa
  * Меню гостя. Возвращается в нейтральном виде — каждый канал сам решит,
  * рисовать это кнопками или списком.
  */
-function guestKeyboard(channelUrl?: string | null, payEnabled = false): Btn[][] {
+/**
+ * Формат callback_data для кнопок гостя: "<cmd>:bk<booking_id>".
+ * Старые сообщения без брони (просто "pay", "address") тоже обрабатываются —
+ * в этом случае бронь резолвится как «активная на сегодня».
+ */
+function cmdWithBooking(cmd: string, bookingId?: number | string | null): string {
+  return bookingId ? `${cmd}:bk${bookingId}` : cmd;
+}
+
+/** Разбираем callback_data: вытаскиваем базовую команду и опциональный booking_id. */
+function parseCallbackData(raw: string): { cmd: string; bookingId: number | null } {
+  const s = String(raw || "");
+  const m = s.match(/^(.*?):bk(\d+)$/);
+  if (m) return { cmd: m[1], bookingId: Number(m[2]) };
+  return { cmd: s, bookingId: null };
+}
+
+function guestKeyboard(channelUrl?: string | null, payEnabled = false, bookingId?: number | string | null): Btn[][] {
+  const b = bookingId ?? null;
   const rows: Btn[][] = [
-    [{ text: "📍 Адрес", data: "address" }, { text: "📶 Wi-Fi", data: "wifi" }],
-    [{ text: "🔑 Заселение", data: "checkin_info" }, { text: "🚪 Выезд", data: "checkout_info" }],
-    [{ text: "✅ Я приехал", data: "i_arrived" }, { text: "👋 Я уезжаю", data: "i_leaving" }],
-    [{ text: "📋 Правила", data: "rules" }, { text: "📞 Помощь", data: "help" }],
+    [{ text: "📍 Адрес", data: cmdWithBooking("address", b) }, { text: "📶 Wi-Fi", data: cmdWithBooking("wifi", b) }],
+    [{ text: "🔑 Заселение", data: cmdWithBooking("checkin_info", b) }, { text: "🚪 Выезд", data: cmdWithBooking("checkout_info", b) }],
+    [{ text: "✅ Я приехал", data: cmdWithBooking("i_arrived", b) }, { text: "👋 Я уезжаю", data: cmdWithBooking("i_leaving", b) }],
+    [{ text: "📋 Правила", data: cmdWithBooking("rules", b) }, { text: "📞 Помощь", data: cmdWithBooking("help", b) }],
   ];
-  // Кнопку оплаты показываем, только если арендодатель включил приём оплаты.
-  if (payEnabled) rows.push([{ text: "💳 Оплатить проживание", data: "pay" }]);
+  if (payEnabled) rows.push([{ text: "💳 Оплатить проживание", data: cmdWithBooking("pay", b) }]);
   if (channelUrl) rows.push([{ text: "📢 Наш канал", url: channelUrl }]);
   return rows;
 }
@@ -179,6 +196,111 @@ async function findSessionByRcpt(to: Recipient): Promise<Session | null> {
     .maybeSingle();
   if (error) console.error("[bot] findSessionByRcpt:", error.message);
   return (data as Session) ?? null;
+}
+
+/**
+ * Сессия считается активной, если сегодня попадает в диапазон брони
+ * [begin_date - 1 день ... end_date + 1 день] — то есть гость всё ещё не съехал
+ * или вот-вот заедет. Отменённые брони в активные не попадают.
+ */
+async function findActiveSessions(to: Recipient): Promise<Array<Session & { begin_date: string | null; end_date: string | null; apartment_title: string | null }>> {
+  const sb = svc();
+  // Берём все сессии этого чата за последние 60 дней и джойним с rc_bookings по датам/статусу.
+  const cutoff = new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString();
+  const { data, error } = await sb
+    .from("guest_sessions")
+    .select(SESSION_COLS)
+    .eq("channel", to.channel)
+    .eq("channel_chat_id", to.chatId)
+    .gt("created_at", cutoff)
+    .order("started_at", { ascending: false, nullsFirst: false });
+  if (error) console.error("[bot] findActiveSessions sessions:", error.message);
+  const sessions = (data as Session[] | null) ?? [];
+  if (!sessions.length) return [];
+
+  const userId = sessions[0].user_id;
+  const ids = Array.from(new Set(sessions.map((s) => s.booking_id).filter((x) => x != null)));
+  if (!ids.length) return [];
+
+  const { data: bks, error: err2 } = await sb
+    .from("rc_bookings")
+    .select("booking_id, begin_date, end_date, status, apartment_title")
+    .eq("user_id", userId)
+    .in("booking_id", ids);
+  if (err2) console.error("[bot] findActiveSessions bookings:", err2.message);
+
+  const bkMap = new Map<string, any>();
+  for (const b of (bks ?? []) as any[]) bkMap.set(String(b.booking_id), b);
+
+  // «Сегодня» в локальном времени Москвы (UTC+3) — без DST.
+  const nowMs = Date.now() + 3 * 3600 * 1000;
+  const todayIso = new Date(nowMs).toISOString().slice(0, 10);
+
+  const dayMs = 24 * 3600 * 1000;
+  const isActiveBooking = (b: any): boolean => {
+    if (!b) return false;
+    if (String(b.status || "").toLowerCase() === "cancelled") return false;
+    if (!b.begin_date || !b.end_date) return false;
+    // Активная: today ∈ [begin - 1, end + 1].
+    const begin = new Date(b.begin_date).getTime() - dayMs;
+    const end = new Date(b.end_date).getTime() + dayMs;
+    const today = new Date(todayIso).getTime();
+    return today >= begin && today <= end;
+  };
+
+  const active: any[] = [];
+  for (const s of sessions) {
+    const bk = bkMap.get(String(s.booking_id));
+    if (isActiveBooking(bk)) {
+      active.push({
+        ...s,
+        begin_date: bk.begin_date,
+        end_date: bk.end_date,
+        apartment_title: bk.apartment_title,
+      });
+    }
+  }
+  // Сортировка: сначала те, что уже идут (ближе begin_date), потом предстоящие.
+  active.sort((a, b) => (a.begin_date < b.begin_date ? -1 : a.begin_date > b.begin_date ? 1 : 0));
+  return active;
+}
+
+/** Найти сессию по конкретной брони в этом чате (для callback’ов с :bk<id>). */
+async function findSessionByBooking(to: Recipient, bookingId: number): Promise<Session | null> {
+  const sb = svc();
+  const { data, error } = await sb
+    .from("guest_sessions")
+    .select(SESSION_COLS)
+    .eq("channel", to.channel)
+    .eq("channel_chat_id", to.chatId)
+    .eq("booking_id", bookingId)
+    .order("started_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) console.error("[bot] findSessionByBooking:", error.message);
+  return (data as Session) ?? null;
+}
+
+/**
+ * Резолвим сессию для входящего события.
+ *
+ * - Если кликнули по кнопке с booking_id (новый формат) — берём в точности её.
+ * - Иначе (кнопка без брони, /-команда, свободный текст) — активная бронь.
+ *   Нет активных — сообщаем гостю; несколько — просим выбрать.
+ */
+async function resolveGuestSession(
+  to: Recipient,
+  bookingIdFromCallback: number | null,
+): Promise<{ session: Session | null; needChoice: boolean; activeCount: number }> {
+  if (bookingIdFromCallback) {
+    const s = await findSessionByBooking(to, bookingIdFromCallback);
+    if (s) return { session: s, needChoice: false, activeCount: 0 };
+    // Сессия по этому booking_id не найдена (вдруг удалена) — падаем на «активную».
+  }
+  const active = await findActiveSessions(to);
+  if (active.length === 1) return { session: active[0], needChoice: false, activeCount: 1 };
+  if (active.length > 1) return { session: null, needChoice: true, activeCount: active.length };
+  return { session: null, needChoice: false, activeCount: 0 };
 }
 
 async function resolveApartmentId(userId: string, realtyId: number | null, bookingId?: number | null): Promise<{ id: string | null; diag: any }> {
@@ -1014,7 +1136,7 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
 
   const welcome = buildWelcomeMessage(fromName, instr);
-  await send(to, welcome, guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled)));
+  await send(to, welcome, guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id));
   await logMessage(session, "bot", welcome, { kind: "welcome" });
   await logEvent(session, "custom", { kind: "bot_started", channel: to.channel, chat_id: to.chatId, from: fromName });
   await notifyManager(session.user_id, `🟢 Гость <b>${htmlEscape(fromName || "—")}</b> запустил бота (${CHANNEL_TITLE[to.channel]}).\nБронь: <code>${session.booking_id}</code>`);
@@ -1040,12 +1162,37 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
   }
 }
 
-async function handleCommand(to: Recipient, cmd: string) {
-  const session = await findSessionByRcpt(to);
-  if (!session) {
-    await send(to, "Сначала откройте бота по персональной ссылке от менеджера (она содержит код вашего бронирования).");
+/**
+ * Если активных броней несколько — предлагаем гостю выбрать, к какой относится действие.
+ * Новые кнопки выбора несут booking_id — последующий клик резолвится точно.
+ */
+async function askWhichBooking(to: Recipient, cmd: string, activeList: Array<{ booking_id: number; apartment_title: string | null; end_date: string | null }>) {
+  const rows: Btn[][] = activeList.map((a) => [{
+    text: `${a.apartment_title || "Бронь №" + a.booking_id} · до ${a.end_date ? fmtDateShort(a.end_date) : "?"}`,
+    data: cmdWithBooking(cmd, a.booking_id),
+  }]);
+  await send(to, "У вас несколько активных бронирований. Выберите, к какому относится ваш вопрос:", rows);
+}
+
+async function handleCommand(to: Recipient, cmd: string, bookingIdFromCallback: number | null = null) {
+  const { session, needChoice, activeCount } = await resolveGuestSession(to, bookingIdFromCallback);
+  if (needChoice) {
+    const active = await findActiveSessions(to);
+    await askWhichBooking(to, cmd, active.map((a) => ({ booking_id: a.booking_id, apartment_title: a.apartment_title, end_date: a.end_date })));
     return;
   }
+  if (!session) {
+    // Нет активных — если вообще нет сессий, гворим о ссылке; если были но все прошли — о нет активных.
+    const any = await findSessionByRcpt(to);
+    if (!any) {
+      await send(to, "Сначала откройте бота по персональной ссылке от менеджера (она содержит код вашего бронирования).");
+    } else {
+      await send(to, "У вас нет активных бронирований. Если нужна помощь — напишите сюда, менеджер ответит.");
+    }
+    return;
+  }
+  void activeCount;
+
   const { id: apartmentId } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
   const instr = await loadInstructions(session.user_id, apartmentId);
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
@@ -1065,16 +1212,21 @@ async function handleCommand(to: Recipient, cmd: string) {
     case "menu": case "start_menu": reply = "Выберите, что вас интересует:"; break;
     default: reply = "Команда не распознана. Используйте кнопки ниже.";
   }
-  await send(to, reply, guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled)));
+  await send(to, reply, guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id));
   await logMessage(session, "bot", reply, { kind: "command", cmd });
 }
 
-async function handleArrival(to: Recipient, from: InboundEvent["from"], kind: "arrived" | "leaving") {
-  const session = await findSessionByRcpt(to);
-  if (!session) { await send(to, "Сессия не найдена. Откройте бота по ссылке от менеджера."); return; }
+async function handleArrival(to: Recipient, from: InboundEvent["from"], kind: "arrived" | "leaving", bookingIdFromCallback: number | null = null) {
+  const { session, needChoice } = await resolveGuestSession(to, bookingIdFromCallback);
+  if (needChoice) {
+    const active = await findActiveSessions(to);
+    await askWhichBooking(to, kind === "arrived" ? "i_arrived" : "i_leaving", active.map((a) => ({ booking_id: a.booking_id, apartment_title: a.apartment_title, end_date: a.end_date })));
+    return;
+  }
+  if (!session) { await send(to, "У вас нет активных бронирований. Напишите сюда — менеджер ответит."); return; }
   const fromName = [from?.firstName, from?.lastName].filter(Boolean).join(" ") || from?.username || "";
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
-  const kb = guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled));
+  const kb = guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id);
   if (kind === "arrived") {
     const reply = "Спасибо! ✅ Я передал менеджеру, что вы приехали. Хорошего отдыха!";
     await send(to, reply, kb);
@@ -1127,7 +1279,27 @@ async function handleEmailAnswer(to: Recipient, session: Session, text: string):
 }
 
 async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: string, messageId: string | null) {
-  const session = await findSessionByRcpt(to);
+  const sb = svc();
+  // Если в чате есть сессия с awaiting_email=true — ответ относится именно к ней
+  // (где мы спросили email), даже если в чате есть более свежая сессия.
+  const { data: waitingRow } = await sb
+    .from("guest_sessions")
+    .select(SESSION_COLS)
+    .eq("channel", to.channel)
+    .eq("channel_chat_id", to.chatId)
+    .eq("awaiting_email", true)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  let session: Session | null = (waitingRow as Session) ?? null;
+  if (!session) {
+    // Обычный путь — активная бронь. Если активных несколько — берём первую
+    // (скорее всего текущее заселение). Свободный текст всё равно уйдёт менеджеру — точность вторична.
+    const active = await findActiveSessions(to);
+    if (active.length) session = active[0];
+    else session = await findSessionByRcpt(to);
+  }
   if (!session) {
     await send(to, "Сессия не найдена. Откройте бота по персональной ссылке от менеджера (она содержит код вашего бронирования).");
     return;
@@ -1144,7 +1316,7 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
   const { id: apartmentId, diag: resolveDiag } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
   const instr = await loadInstructions(session.user_id, apartmentId);
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
-  const kb = guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled));
+  const kb = guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id);
 
   const aiInstrLen = (instr?.ai_instructions ?? "").toString().trim().length;
   const sessionAiEnabled = session.ai_enabled !== false;
@@ -1259,9 +1431,11 @@ async function handleEvent(ev: InboundEvent) {
       }
     }
 
-    if (data === "i_arrived") await handleArrival(to, ev.from, "arrived");
-    else if (data === "i_leaving") await handleArrival(to, ev.from, "leaving");
-    else await handleCommand(to, data);
+    // Разбираем новый формат callback с booking_id: "<cmd>:bk<id>".
+    const { cmd, bookingId } = parseCallbackData(data);
+    if (cmd === "i_arrived") await handleArrival(to, ev.from, "arrived", bookingId);
+    else if (cmd === "i_leaving") await handleArrival(to, ev.from, "leaving", bookingId);
+    else await handleCommand(to, cmd, bookingId);
     return;
   }
 

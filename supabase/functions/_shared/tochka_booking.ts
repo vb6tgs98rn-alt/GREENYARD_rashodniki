@@ -109,7 +109,22 @@ export async function ensureBookingPayment(
   const savedMethod = String(ms.tochka_payment_method || "payment_link") as PaymentMethod;
   const method: PaymentMethod = savedMethod === "sbp_qr" ? "sbp_qr" : "payment_link";
 
-  // Переиспользуем действующую ссылку, если сумма и способ не поменялись.
+  // Способ на странице оплаты: по умолчанию — только СБП.
+  // Карту разрешаем, только если менеджер явно включил её для этой брони.
+  const cardEnabled = bk.tochka_card_enabled === true;
+  const paymentMode: ("sbp" | "card")[] = cardEnabled ? ["sbp", "card"] : ["sbp"];
+  const paymentModeKey = paymentMode.join(",");
+
+  // Для платёжной ссылки с чеком по 54-ФЗ Точка требует email клиента.
+  // Если менеджер включил чек, а email в брони нет — просим бота задать вопрос гостю.
+  // Для СБП QR чек мы не выбиваем — email не нужен.
+  const withReceipt = method === "payment_link" && Boolean(ms.tochka_with_receipt);
+  const clientEmail = String(bk.client_email || "").trim();
+  if (withReceipt && !clientEmail) {
+    return { kind: "need_email", amount: debt };
+  }
+
+  // Переиспользуем действующую ссылку, если сумма, способ и набор оплат не поменялись.
   if (!opts.force) {
     const { data: existing } = await sb
       .from("tochka_payments")
@@ -122,7 +137,12 @@ export async function ensureBookingPayment(
       const notExpired = !existing.expires_at ||
         new Date(existing.expires_at).getTime() > Date.now();
       const sameAmount = Math.abs(Number(existing.amount) - debt) < 0.01;
-      if (notExpired && sameAmount && existing.method === method && existing.pay_url) {
+      // Сохранённый набор способов оплаты — из raw.request.Data (что именно ушло в Точку).
+      const existingMode = Array.isArray(existing.raw?.request?.Data?.paymentMode)
+        ? (existing.raw.request.Data.paymentMode as string[]).join(",")
+        : (method === "sbp_qr" ? "sbp" : "");
+      const sameMode = existingMode === paymentModeKey || method === "sbp_qr";
+      if (notExpired && sameAmount && existing.method === method && sameMode && existing.pay_url) {
         return {
           kind: "ok",
           amount: debt,
@@ -143,21 +163,18 @@ export async function ensureBookingPayment(
     return { kind: "error", amount: debt, reason: "Точка Банк не подключена" };
   }
 
-  // СБП QR чек по 54-ФЗ не формирует — email гостя не требуется. Готовим без чека.
-  const clientEmail = String(bk.client_email || "").trim();
-
   const req: PaymentRequest = {
     amount: debt,
     purpose,
     ttlMinutes: Number(ms.tochka_ttl_minutes || 4320),
-    // СБП QR: чек не выбиваем — всегда false, чтобы банк не спотыкался в отсутствии email.
-    withReceipt: false,
+    withReceipt,
     taxSystem: String(ms.tochka_tax_system || "usn_income"),
     vatType: String(ms.tochka_vat_type || "none"),
     clientName: bk.client_fio ?? null,
     clientPhone: bk.client_phone ?? null,
     clientEmail: clientEmail || null,
     successUrl: ms.tochka_success_url ? String(ms.tochka_success_url) : null,
+    paymentMode,
   };
 
   let res: PaymentResult;

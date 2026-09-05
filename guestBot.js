@@ -675,9 +675,20 @@ function renderBookingsList(state) {
       : `<button class="btn btn-primary bk-btn-link ${linkSent ? 'is-sent' : ''}" data-link-booking="${esc(b.booking_id)}" data-channel="${esc(channels[0].id)}" data-secure="${esc(secureId)}">
            ${linkSent ? '✓ Ссылка скопирована' : '📋 Ссылка гостю'}
          </button>`;
+    // Тумблер «Разрешить карту»: по умолчанию гостю предлагается только СБП.
+    // Менеджер может включить карту для конкретной брони — тогда на странице оплаты
+    // появлятся оба варианта (paymentMode=["sbp","card"]).
+    const cardOn = b.tochka_card_enabled === true;
+    const cardToggle = isCancelled
+      ? ''
+      : `<label class="bk-card-toggle" title="По умолчанию оплата только через СБП. Включите, чтобы гость мог заплатить картой (эквайринг взимает комиссию)." style="display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem;color:var(--muted,#666);cursor:pointer;">
+           <input type="checkbox" data-toggle-card="${esc(b.booking_id)}" ${cardOn ? 'checked' : ''} style="margin:0;">
+           <span>💳 Разрешить оплату картой</span>
+         </label>`;
+
     const actions = isCancelled
       ? ''
-      : `<div class="bk-card-actions">${linkButtons}</div>`;
+      : `<div class="bk-card-actions">${linkButtons}${cardToggle ? `<div style="margin-top:.4rem;">${cardToggle}</div>` : ''}</div>`;
 
     return `
       <div class="bk-card${isCancelled ? ' bk-cancelled' : ''}" data-booking="${esc(b.booking_id)}" style="${isCancelled ? 'opacity:.75;' : ''}">
@@ -1898,10 +1909,39 @@ export function bindGuestBotEvents(state) {
       return;
     }
   });
-  document.body.addEventListener('change', (e) => {
+  document.body.addEventListener('change', async (e) => {
     if (e.target.id === 'bookingFilterApt')    { _bookingsState.filter.apt = e.target.value;    renderBookingsList(state); }
     if (e.target.id === 'bookingFilterStatus') { _bookingsState.filter.status = e.target.value; renderBookingsList(state); }
     if (e.target.id === 'bookingFilterSource') { _bookingsState.filter.source = e.target.value; renderBookingsList(state); }
+
+    // Тумблер «Разрешить карту» на карточке брони.
+    const cardChk = e.target.closest('[data-toggle-card]');
+    if (cardChk) {
+      const bid = cardChk.getAttribute('data-toggle-card');
+      const enabled = !!cardChk.checked;
+      const supabase = getSupabaseClient();
+      if (!supabase) return;
+      try {
+        await waitForAuthReady();
+        const { data: { session: _sess } } = await supabase.auth.getSession();
+        const user = _sess?.user ?? null;
+        if (!user) return;
+        const { error } = await supabase
+          .from('rc_bookings')
+          .update({ tochka_card_enabled: enabled })
+          .eq('user_id', user.id)
+          .eq('booking_id', bid);
+        if (error) throw error;
+        // Обновляем локально, чтобы при следующем рендере состояние совпадало.
+        const b = (_bookingsState.all || []).find(x => String(x.booking_id) === String(bid));
+        if (b) b.tochka_card_enabled = enabled;
+      } catch (err) {
+        console.warn('[bookings] toggle card failed:', err?.message);
+        // Откатываем визуально.
+        cardChk.checked = !enabled;
+      }
+      return;
+    }
   });
 
   // — Инструкции
