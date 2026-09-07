@@ -1197,14 +1197,52 @@ function openFinanceAptDetails({ aptId, kind, from, to, aptName }) {
   if (!entries.length) {
     body.innerHTML = `<div class="empty" style="padding:1.25rem;text-align:center;color:var(--color-text-muted)">Нет записей в этом периоде.</div>`;
   } else {
-    const total = entries.reduce((s, e) => s + Number(e.amount || 0), 0);
+    // Для доходов считаем чистый итог (без комиссий) — как в сводке по квартирам.
+    const total = entries.reduce((s, e) => s + Number((kind === 'income' && e.netAmount != null) ? e.netAmount : e.amount || 0), 0);
     const sign = kind === 'expense' ? '−' : '+';
     const color = kind === 'expense' ? 'var(--color-error)' : 'var(--color-success)';
+    // Кол-во ночей между begin_date и end_date (выездные сутки не считаем).
+    const nightsBetween = (from, to) => {
+      if (!from || !to) return 0;
+      const a = new Date(from + 'T00:00:00Z');
+      const b = new Date(to + 'T00:00:00Z');
+      const ms = b - a;
+      return ms > 0 ? Math.round(ms / 86400000) : 0;
+    };
     const rows = entries.map((e) => {
       const st = STATUS_LABELS[e.status] || { label: e.status || '', cls: 'planned' };
       const title = e.title || e.category || '—';
       const cat = e.category && e.category !== e.title ? `<span class="sep">·</span><span>${e.category}</span>` : '';
       const notes = e.notes ? `<div class="finance-card-notes" style="margin-top:.25rem;color:var(--color-text-muted);font-size:var(--text-sm)">${e.notes}</div>` : '';
+
+      // Для доходов отображаем чистую сумму (без комиссии) и цены за сутки.
+      let amountBlock;
+      if (kind === 'income') {
+        const gross = Number(e.amount || 0);
+        const net = Number(e.netAmount != null ? e.netAmount : gross);
+        const nights = nightsBetween(e.meta?.begin_date, e.meta?.end_date);
+        const perNightNet = nights > 0 ? net / nights : 0;
+        const perNightGross = nights > 0 ? gross / nights : 0;
+        const showPerNight = nights > 0;
+        const commissionRow = gross > net
+          ? `<div class="small muted" style="margin-top:.1rem;text-align:right">Полная: ${fmt(gross)} ₽ · комиссия −${fmt(gross - net)} ₽</div>`
+          : '';
+        const perNightBlock = showPerNight
+          ? `<div class="small muted" style="margin-top:.15rem;text-align:right">За сутки: <b style="color:var(--color-text)">${fmt(perNightNet)} ₽</b>${gross > net ? ` · полная ${fmt(perNightGross)} ₽` : ''} × ${nights}</div>`
+          : '';
+        amountBlock = `
+          <div class="finance-amount ${e.type}">${sign}${fmt(net)} ₽</div>
+          ${commissionRow}
+          ${perNightBlock}
+          <span class="finance-status ${st.cls}" style="margin-top:.2rem">${st.label}</span>
+        `;
+      } else {
+        amountBlock = `
+          <div class="finance-amount ${e.type}">${sign}${fmt(e.amount)} ₽</div>
+          <span class="finance-status ${st.cls}">${st.label}</span>
+        `;
+      }
+
       return `<article class="finance-card ${e.type}" style="padding:.6rem .75rem;">
         <div class="finance-card-top">
           <div class="finance-card-left">
@@ -1217,9 +1255,8 @@ function openFinanceAptDetails({ aptId, kind, from, to, aptName }) {
             </div>
             ${notes}
           </div>
-          <div class="finance-card-right">
-            <div class="finance-amount ${e.type}">${sign}${fmt(e.amount)} ₽</div>
-            <span class="finance-status ${st.cls}">${st.label}</span>
+          <div class="finance-card-right" style="display:flex;flex-direction:column;align-items:flex-end;gap:.15rem">
+            ${amountBlock}
           </div>
         </div>
       </article>`;
