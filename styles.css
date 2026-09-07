@@ -112,6 +112,7 @@ button,input,select{font:inherit} button{cursor:pointer;border:none;background:n
 
 .finance-modal{width:min(1100px,100%);max-height:92dvh;overflow:auto;display:flex;flex-direction:column;gap:0}
 #financeEntryModal,#recurringExpenseModal,#financeWebhookModal,#confirmDeleteModal{z-index:40}
+#financeAptDetailsModal{z-index:50}
 
 .finance-modal .finance-list,.finance-modal .recurring-list{display:grid;gap:.75rem;margin-top:.5rem}
 
