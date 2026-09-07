@@ -310,26 +310,13 @@ export function applyRealtyCalendarBookings(bookings = []) {
       // Пользователь просил не показывать подробности в фин учёте.
       const notes = '';
 
-      // Комиссия площадки (Avito/ЦИАН/Суточно и т.п.) приходит в platform_tax.
+      // Комиссия площадки (Avito/ЦИАН/Суточно/Островок и т.п.) приходит в platform_tax.
       // Для ручных броней (source=manual) это поле null → комиссия = 0 → netAmount = amount.
-      // Колонки platform_tax в rc_bookings пока нет — берём из raw_payload.data.booking.
+      // balance_to_be_paid_1 не используем: это остаток к доплате гостем, а не чистый доход.
       const grossAmount = Number(b.amount || 0);
       const rawBooking = b.raw_payload?.data?.booking || {};
-      const platformTaxRaw = Number(rawBooking.platform_tax || 0);
-      // Реалти иногда присылает завышенный platform_tax (нормативный %) вместо фактически
-      // удержанной комиссии (кейс брони #167679176). Но в balance_to_be_paid_1 у него
-      // всегда лежит правильная «сумма к получению» — её и берём приоритетно.
-      // Для полной оплаты на сайте b1=0 → условие не выполнено → фолбэк на старую формулу.
-      const b1 = Number(rawBooking.balance_to_be_paid_1);
-      let netAmount;
-      let platformTax;
-      if (Number.isFinite(b1) && b1 > 0 && b1 < grossAmount) {
-        netAmount = b1;
-        platformTax = Math.max(0, grossAmount - b1);
-      } else {
-        netAmount = Math.max(0, grossAmount - platformTaxRaw);
-        platformTax = platformTaxRaw;
-      }
+      const platformTax = Number(rawBooking.platform_tax || 0);
+      const netAmount = Math.max(0, grossAmount - platformTax);
 
       const payload = {
         apartmentId: apartment.id,
@@ -353,7 +340,6 @@ export function applyRealtyCalendarBookings(bookings = []) {
           booking_url: b.booking_url,
           rc_status: b.status,
           platform_tax: platformTax,
-          platform_tax_raw: platformTaxRaw,
           // Okidoki — текущее состояние договора для этой брони
           contract_id: b.okidoki_contract_id || '',
           contract_link: b.okidoki_link || '',
