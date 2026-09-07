@@ -1067,6 +1067,8 @@ body.is-guest .modal-backdrop{display:none !important}
 .fin-tbl tbody td{padding:.6rem .7rem;border-bottom:1px solid var(--color-border)}
 .fin-tbl tbody tr:last-child td{border-bottom:none}
 .fin-tbl .fin-tbl-name{font-weight:600;white-space:nowrap}
+.fin-tbl-link{background:none;border:none;padding:0;font:inherit;color:var(--color-text);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;cursor:pointer;font-variant-numeric:tabular-nums lining-nums}
+.fin-tbl-link:hover{color:var(--color-primary);text-decoration-style:solid}
 .fin-tbl tfoot .fin-tbl-total td{padding:.7rem;font-weight:700;background:var(--color-surface-2);border-top:2px solid var(--color-border)}
 /* Вертикальные разделители */
 .fin-tbl th + th, .fin-tbl td + td{border-left:1px solid var(--color-border)}

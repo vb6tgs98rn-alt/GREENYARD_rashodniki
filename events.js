@@ -9,7 +9,7 @@
  */
 import dom, { byId } from './dom.js';
 import { fetchRealtyCalendarBookings, fetchRealtyCalendarLog, fetchRealtyCalendarIntegration, saveRealtyCalendarIntegration, disconnectRealtyCalendar, buildFinanceWebhookExample, getWebhookUrl } from './api.js';
-import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport, dedupeFinanceEntriesByExternalId, regenerateAutoRentEntriesForAllApartments, cleanupManualRentEntries } from './finance.js';
+import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport, dedupeFinanceEntriesByExternalId, regenerateAutoRentEntriesForAllApartments, cleanupManualRentEntries, STATUS_LABELS, FINANCE_TYPES } from './finance.js';
 import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus, setAuthMsg } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, setState, updateState } from './state.js';
 import { persistState, exportJson, importJson, fetchCloudState } from './storage.js';
@@ -1037,6 +1037,17 @@ function bindFinanceModals() {
       // Регенерация автосписаний на текущий открытый месяц (offset 0) уже была выполнена при открытии Финансов.
       await rerender('Режим: по циклам оплаты');
     }
+    // Клик по сумме в таблице «Итоги по квартирам»: открываем модалку с детализацией доходов/расходов.
+    if (action === 'fin-apt-details') {
+      const aptId = btn.dataset.aptId;
+      const kind = btn.dataset.kind; // 'income' | 'expense'
+      const from = btn.dataset.from || '';
+      const to = btn.dataset.to || '';
+      const aptName = btn.dataset.aptName || '';
+      if (!aptId || !kind) return;
+      openFinanceAptDetails({ aptId, kind, from, to, aptName });
+      return;
+    }
     // Стрелки per-квартира в режиме циклов.
     if (action === 'fin-apt-cycle-prev' || action === 'fin-apt-cycle-next') {
       const aptId = btn.dataset.aptId;
@@ -1130,6 +1141,99 @@ function bindFinanceModals() {
       }
     }
   });
+
+  // Модалка детализации: кнопки «Назад» / «Закрыть» / клик по подложке.
+  const _detailsModal = document.getElementById('financeAptDetailsModal');
+  document.getElementById('financeAptDetailsBack')?.addEventListener('click', () => closeModal('financeAptDetailsModal'));
+  document.getElementById('financeAptDetailsClose')?.addEventListener('click', () => closeModal('financeAptDetailsModal'));
+  _detailsModal?.addEventListener('click', (e) => { if (e.target === _detailsModal) closeModal('financeAptDetailsModal'); });
+}
+
+// ─── Модалка детализации доходов/расходов по квартире за период ─────────────
+// Выбираем записи из state.finance.entries по apartmentId + типу + дате, исключаем отменённые
+// и те же источники, что в таблице (auto-owner-payout в расходах не учитывается).
+function openFinanceAptDetails({ aptId, kind, from, to, aptName }) {
+  const body = document.getElementById('financeAptDetailsBody');
+  const titleEl = document.getElementById('financeAptDetailsTitle');
+  const subEl = document.getElementById('financeAptDetailsSubtitle');
+  if (!body || !titleEl || !subEl) return;
+
+  const state = getState();
+  const wantType = kind === 'income' ? FINANCE_TYPES.income : FINANCE_TYPES.expense;
+  const inPeriod = (d) => (!from || (d && d >= from)) && (!to || (d && d <= to));
+
+  const entries = (state.finance?.entries || []).filter((e) => {
+    if (!e || e.apartmentId !== aptId) return false;
+    if (e.type !== wantType) return false;
+    if (e.status === 'cancelled') return false;
+    if (wantType === FINANCE_TYPES.expense && e.source === 'auto-owner-payout') return false;
+    // Для RC-броней период считаем по дате заезда/выезда пересечение с [from,to]; для остальных — по entry.date.
+    if (wantType === FINANCE_TYPES.income) {
+      const bd = e.meta?.begin_date; const ed = e.meta?.end_date;
+      if (bd && ed) {
+        // Пересечение [bd, ed) с [from, to]
+        if (from && ed <= from) return false;
+        if (to && bd > to) return false;
+        return true;
+      }
+    }
+    return inPeriod(e.date);
+  }).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+
+  const fmt = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const _MONTHS_RU = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+  const fmtDate = (iso) => {
+    if (!iso) return '—';
+    const [y, m, d] = iso.split('-').map(Number);
+    if (!y || !m || !d) return iso;
+    return `${d} ${_MONTHS_RU[m - 1]} ${y}`;
+  };
+  const srcLabel = (s) => s === 'realtycalendar' ? 'RealtyCalendar' : s === 'recurring' ? 'Регулярный' : s === 'auto-rent' ? 'Авто-аренда' : s === 'cleaning' ? 'Уборка' : 'Вручную';
+
+  titleEl.textContent = kind === 'expense' ? 'Расходы' : 'Доходы';
+  const periodLabel = (from && to) ? `${fmtDate(from)} — ${fmtDate(to)}` : 'без периода';
+  subEl.textContent = `${aptName || ''} · ${periodLabel}`;
+
+  if (!entries.length) {
+    body.innerHTML = `<div class="empty" style="padding:1.25rem;text-align:center;color:var(--color-text-muted)">Нет записей в этом периоде.</div>`;
+  } else {
+    const total = entries.reduce((s, e) => s + Number(e.amount || 0), 0);
+    const sign = kind === 'expense' ? '−' : '+';
+    const color = kind === 'expense' ? 'var(--color-error)' : 'var(--color-success)';
+    const rows = entries.map((e) => {
+      const st = STATUS_LABELS[e.status] || { label: e.status || '', cls: 'planned' };
+      const title = e.title || e.category || '—';
+      const cat = e.category && e.category !== e.title ? `<span class="sep">·</span><span>${e.category}</span>` : '';
+      const notes = e.notes ? `<div class="finance-card-notes" style="margin-top:.25rem;color:var(--color-text-muted);font-size:var(--text-sm)">${e.notes}</div>` : '';
+      return `<article class="finance-card ${e.type}" style="padding:.6rem .75rem;">
+        <div class="finance-card-top">
+          <div class="finance-card-left">
+            <div class="finance-card-title">${title}</div>
+            <div class="finance-card-meta">
+              <span>${fmtDate(e.date)}</span>
+              <span class="sep">·</span>
+              <span>${srcLabel(e.source)}</span>
+              ${cat}
+            </div>
+            ${notes}
+          </div>
+          <div class="finance-card-right">
+            <div class="finance-amount ${e.type}">${sign}${fmt(e.amount)} ₽</div>
+            <span class="finance-status ${st.cls}">${st.label}</span>
+          </div>
+        </div>
+      </article>`;
+    }).join('');
+    body.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .75rem;margin-bottom:.6rem;border-radius:var(--radius-lg);background:var(--color-surface-2);">
+        <span class="small muted">Записей: ${entries.length}</span>
+        <span style="font-weight:700;color:${color}">Итого: ${sign}${fmt(total)} ₽</span>
+      </div>
+      ${rows}
+    `;
+  }
+
+  openModal('financeAptDetailsModal');
 }
 
 // ─── RealtyCalendar интеграция ──────────────────────────────────────────────

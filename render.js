@@ -384,20 +384,23 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-09-05.24';
+      const BUILD_VERSION = 'v.2026-09-07.25';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
         if (r.businessModel !== 'trust' || r.ownerPayout == null) return '<td class="num muted">—</td>';
         return `<td class="num">${money(r.ownerPayout)}</td>`;
       };
+      const _pf = apt.period.from || '';
+      const _pt = apt.period.to || '';
+      const detailBtn = (r, kind, value) => `<button type="button" class="fin-tbl-link" data-action="fin-apt-details" data-apt-id="${r.apartmentId}" data-kind="${kind}" data-from="${_pf}" data-to="${_pt}" data-apt-name="${(r.name || '').replace(/"/g, '&quot;')}" title="Показать детализацию">${money(value)}</button>`;
       const rowsHtml = apt.rows.map((r) => `
         <tr>
           <td class="fin-tbl-name">${r.name}</td>
           <td class="num" style="color:${profitColor(r.profit)};font-weight:600">${r.profit >= 0 ? '' : '−'}${money(Math.abs(r.profit))}</td>
           ${payoutCell(r)}
-          <td class="num">${money(r.income)}</td>
-          <td class="num">${money(r.expense)}</td>
+          <td class="num">${detailBtn(r, 'income', r.income)}</td>
+          <td class="num">${detailBtn(r, 'expense', r.expense)}</td>
           <td class="num">${money(r.platformCommission)}</td>
           <td class="num">${money(r.avgDaily)}</td>
           <td class="num">${money(r.adr)}</td>
@@ -466,7 +469,7 @@ async function _renderFinanceByCyclesAsync() {
   if (myToken !== _financeAptSummaryToken) return;
   if (!dom.financeByApartment) return;
 
-  const BUILD_VERSION = 'v.2026-09-05.24';
+  const BUILD_VERSION = 'v.2026-09-07.25';
   const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
   const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -498,14 +501,15 @@ async function _renderFinanceByCyclesAsync() {
   const renderTable = (rows, totals, showPeriodCol) => {
     if (!rows.length) return '<div class="empty">Нет данных.</div>';
     const periodHeader = showPeriodCol ? '<th>Цикл оплаты</th>' : '<th>Период</th>';
+    const detailBtn = (r, kind, value) => `<button type="button" class="fin-tbl-link" data-action="fin-apt-details" data-apt-id="${r.apartmentId}" data-kind="${kind}" data-from="${r.period?.from || ''}" data-to="${r.period?.to || ''}" data-apt-name="${(r.name || '').replace(/"/g, '&quot;')}" title="Показать детализацию">${money(value)}</button>`;
     const rowsHtml = rows.map((r) => `
       <tr>
         <td class="fin-tbl-name">${r.name}</td>
         ${periodCell(r)}
         <td class="num" style="color:${profitColor(r.profit)};font-weight:600">${r.profit >= 0 ? '' : '−'}${money(Math.abs(r.profit))}</td>
         ${payoutCell(r)}
-        <td class="num">${money(r.income)}</td>
-        <td class="num">${money(r.expense)}</td>
+        <td class="num">${detailBtn(r, 'income', r.income)}</td>
+        <td class="num">${detailBtn(r, 'expense', r.expense)}</td>
         <td class="num">${money(r.platformCommission)}</td>
         <td class="num">${money(r.avgDaily)}</td>
         <td class="num">${money(r.adr)}</td>

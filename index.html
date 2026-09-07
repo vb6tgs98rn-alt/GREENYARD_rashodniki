@@ -165,6 +165,18 @@
       <button class="btn btn-primary" id="saveFinanceEntry">Сохранить</button>
     </div>
   </div>
+</div><div class="modal-backdrop" id="financeAptDetailsModal" aria-hidden="true">
+  <div class="modal" style="width:min(760px,100%);max-height:90vh;display:flex;flex-direction:column;">
+    <div class="section-head" style="align-items:center;">
+      <button class="btn btn-secondary" id="financeAptDetailsBack" title="Назад" aria-label="Назад" style="padding:.35rem .6rem;">← Назад</button>
+      <div style="flex:1;text-align:center;">
+        <h2 class="modal-title" id="financeAptDetailsTitle" style="margin:0;">Детализация</h2>
+        <p class="muted" id="financeAptDetailsSubtitle" style="margin:.15rem 0 0;"></p>
+      </div>
+      <button class="btn btn-secondary" id="financeAptDetailsClose" aria-label="Закрыть">✕</button>
+    </div>
+    <div id="financeAptDetailsBody" class="finance-list" style="overflow-y:auto;padding-top:.5rem;"></div>
+  </div>
 </div><div class="modal-backdrop" id="recurringExpenseModal" aria-hidden="true">
   <div class="modal" style="width:min(680px,100%)">
     <div class="section-head">
