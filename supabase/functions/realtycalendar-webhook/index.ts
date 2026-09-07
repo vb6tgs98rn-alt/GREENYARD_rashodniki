@@ -465,6 +465,37 @@ serve(async (req) => {
     return ok({ ok: true, note: "skipped_request_status" });
   }
 
+  // Защита от «воскрешения» удалённой брони: если по этой же booking_id раньше
+  // приходил delete_booking — все последующие update/create игнорируем и в rc_bookings
+  // её не оживляем. Пользователь видел, что в RC она удалена, — значит удалена.
+  const actionLower0 = String(action).toLowerCase();
+  const isDeleteNow = actionLower0 === "delete" || actionLower0 === "delete_booking";
+  if (!isDeleteNow) {
+    const { data: prevDelete } = await admin
+      .from("rc_webhook_log")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("booking_id", booking.booking_id)
+      .in("action", ["delete", "delete_booking"])
+      .eq("http_status", 200)
+      .limit(1)
+      .maybeSingle();
+    if (prevDelete) {
+      // Гарантируем, что в базе бронь точно отсутствует и связанная уборка снята.
+      await admin.from("rc_bookings")
+        .delete()
+        .eq("user_id", userId)
+        .eq("booking_id", booking.booking_id);
+      try { await cancelCleaning(userId, booking.booking_id); } catch (_) { /* noop */ }
+      await admin.from("rc_webhook_log").insert({
+        user_id: userId, agency_id: booking.agency_id, action, status,
+        booking_id: booking.booking_id, http_status: 200,
+        error_text: "ignored_after_delete", raw_payload: payload,
+      });
+      return ok({ ok: true, note: "ignored_after_delete" });
+    }
+  }
+
   // Сохраняем старую end_date до upsert-а — сравним после, чтобы понять: продление?
   const { data: prevBk } = await admin
     .from("rc_bookings")
