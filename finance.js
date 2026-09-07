@@ -299,8 +299,10 @@ export function applyRealtyCalendarBookings(bookings = []) {
       if (!apartment) { result.skipped++; return; }
 
       // Активная бронь — обновляем или создаём
-      // Дата в карточке — дата заезда, а не создания брони.
+      // Дата в карточке дохода — дата заезда, а не создания брони.
       const date = b.begin_date || (b.rc_created_at ? String(b.rc_created_at).slice(0, 10) : '') || new Date().toISOString().slice(0, 10);
+      // Дата автоуборки — дата выезда (убирают после гостя). Если выезда нет — fallback на заезд.
+      const cleaningDate = b.end_date || date;
       // В заголовке — только имя гостя (если есть) и даты заселения.
       const range = formatRange(b.begin_date, b.end_date);
       const guest = b.client_fio ? ` · ${b.client_fio}` : '';
@@ -361,7 +363,7 @@ export function applyRealtyCalendarBookings(bookings = []) {
         result.added++;
       }
 
-      // Автоуборка: если у квартиры задана cleaningPrice > 0 — создаём/обновляем расход на дату создания брони
+      // Автоуборка: если у квартиры задана cleaningPrice > 0 — создаём/обновляем расход на дату выезда гостя
       const cleaningPrice = Number(apartment.cleaningPrice || 0);
       if (cleaningPrice > 0) {
         const cleaningPayload = {
@@ -372,7 +374,7 @@ export function applyRealtyCalendarBookings(bookings = []) {
           amount: cleaningPrice,
           netAmount: cleaningPrice,
           currency: 'RUB',
-          date,
+          date: cleaningDate,
           source: 'realtycalendar',
           status: 'planned',
           notes: `Автоматический расход. Связан с бронью #${b.booking_id}.`,
