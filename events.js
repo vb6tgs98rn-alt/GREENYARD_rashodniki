@@ -1198,7 +1198,34 @@ function openFinanceAptDetails({ aptId, kind, from, to, aptName }) {
     body.innerHTML = `<div class="empty" style="padding:1.25rem;text-align:center;color:var(--color-text-muted)">Нет записей в этом периоде.</div>`;
   } else {
     // Для доходов считаем чистый итог (без комиссий) — как в сводке по квартирам.
-    const total = entries.reduce((s, e) => s + Number((kind === 'income' && e.netAmount != null) ? e.netAmount : e.amount || 0), 0);
+    // Для броней с частью ночей вне периода — берём только пропорцию ночей, попавших в [from, to].
+    const _nightsBetween0 = (a, b) => {
+      if (!a || !b) return 0;
+      const ms = new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z');
+      return ms > 0 ? Math.round(ms / 86400000) : 0;
+    };
+    // Прибавить день к ISO-дате (YYYY-MM-DD).
+    const _addDayISO = (iso) => {
+      const d = new Date(iso + 'T00:00:00Z');
+      d.setUTCDate(d.getUTCDate() + 1);
+      return d.toISOString().slice(0, 10);
+    };
+    const _shareForEntry = (e) => {
+      if (kind !== 'income') return 1;
+      const bd = e.meta?.begin_date; const ed = e.meta?.end_date;
+      if (!bd || !ed) return 1;
+      const totalN = _nightsBetween0(bd, ed);
+      if (totalN <= 0) return 1;
+      const clipStart = from && bd < from ? from : bd;
+      const clipEnd = to && ed > to ? _addDayISO(to) : ed;
+      const inN = _nightsBetween0(clipStart, clipEnd);
+      if (inN <= 0 || inN >= totalN) return inN >= totalN ? 1 : 0;
+      return inN / totalN;
+    };
+    const total = entries.reduce((s, e) => {
+      const base = Number((kind === 'income' && e.netAmount != null) ? e.netAmount : e.amount || 0);
+      return s + base * _shareForEntry(e);
+    }, 0);
     const sign = kind === 'expense' ? '−' : '+';
     const color = kind === 'expense' ? 'var(--color-error)' : 'var(--color-success)';
     // Кол-во ночей между begin_date и end_date (выездные сутки не считаем).
@@ -1209,6 +1236,14 @@ function openFinanceAptDetails({ aptId, kind, from, to, aptName }) {
       const ms = b - a;
       return ms > 0 ? Math.round(ms / 86400000) : 0;
     };
+    // Ночи брони, попавшие внутрь расчётного периода [from, to].
+    // Ночь с даты D в дату D+1 относится к D — её включаем, если from ≤ D ≤ to.
+    const nightsInPeriod = (bd, ed) => {
+      if (!bd || !ed) return 0;
+      const clipStart = from && bd < from ? from : bd;
+      const clipEnd = to && ed > to ? _addDayISO(to) : ed;
+      return nightsBetween(clipStart, clipEnd);
+    };
     const rows = entries.map((e) => {
       const st = STATUS_LABELS[e.status] || { label: e.status || '', cls: 'planned' };
       const title = e.title || e.category || '—';
@@ -1218,17 +1253,25 @@ function openFinanceAptDetails({ aptId, kind, from, to, aptName }) {
       // Для доходов отображаем чистую сумму (без комиссии) и цены за сутки.
       let amountBlock;
       if (kind === 'income') {
-        const gross = Number(e.amount || 0);
-        const net = Number(e.netAmount != null ? e.netAmount : gross);
-        const nights = nightsBetween(e.meta?.begin_date, e.meta?.end_date);
-        const perNightNet = nights > 0 ? net / nights : 0;
-        const perNightGross = nights > 0 ? gross / nights : 0;
+        const grossFull = Number(e.amount || 0);
+        const netFull = Number(e.netAmount != null ? e.netAmount : grossFull);
+        const nightsTotal = nightsBetween(e.meta?.begin_date, e.meta?.end_date);
+        const nightsIn = nightsInPeriod(e.meta?.begin_date, e.meta?.end_date);
+        // Если бронь целиком в периоде (либо нет дат) — показываем полную сумму.
+        // Если часть ночей вне периода — карточка показывает часть, вошедшую в период.
+        const isPartial = nightsTotal > 0 && nightsIn > 0 && nightsIn < nightsTotal;
+        const share = isPartial ? (nightsIn / nightsTotal) : 1;
+        const gross = grossFull * share;
+        const net = netFull * share;
+        const nights = nightsIn > 0 ? nightsIn : nightsTotal;
+        const perNightNet = nightsTotal > 0 ? netFull / nightsTotal : 0;
+        const perNightGross = nightsTotal > 0 ? grossFull / nightsTotal : 0;
         const showPerNight = nights > 0;
         const commissionRow = gross > net
           ? `<div class="small muted" style="margin-top:.1rem;text-align:right">Полная: ${fmt(gross)} ₽ · комиссия −${fmt(gross - net)} ₽</div>`
           : '';
         const perNightBlock = showPerNight
-          ? `<div class="small muted" style="margin-top:.15rem;text-align:right">За сутки: <b style="color:var(--color-text)">${fmt(perNightNet)} ₽</b>${gross > net ? ` · полная ${fmt(perNightGross)} ₽` : ''} × ${nights}</div>`
+          ? `<div class="small muted" style="margin-top:.15rem;text-align:right">За сутки: <b style="color:var(--color-text)">${fmt(perNightNet)} ₽</b>${grossFull > netFull ? ` · полная ${fmt(perNightGross)} ₽` : ''} × ${nights}${isPartial ? ` в периоде (всего ${nightsTotal})` : ''}</div>`
           : '';
         amountBlock = `
           <div class="finance-amount ${e.type}">${sign}${fmt(net)} ₽</div>
