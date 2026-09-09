@@ -972,8 +972,15 @@ function bindFinanceModals() {
     const titleField = dom.recurringTitle?.closest('label');
     if (titleField) titleField.style.display = (kind === 'other') ? '' : 'none';
   };
+  // Подсказка «Сумма будет поровну разделена…» — показывается при выборе «Все квартиры».
+  function updateRecurringApartmentHint() {
+    const hint = document.getElementById('recurringSplitHint');
+    if (!hint) return;
+    hint.style.display = dom.recurringApartment?.value === '__all__' ? '' : 'none';
+  }
+  dom.recurringApartment?.addEventListener('change', updateRecurringApartmentHint);
   dom.financeAddRecurringBtn?.addEventListener('click', () => {
-    if (dom.recurringApartment) dom.recurringApartment.value = currentApartment()?.id || '';
+    if (dom.recurringApartment) dom.recurringApartment.value = currentApartment()?.id || '__all__';
     if (dom.recurringKind) dom.recurringKind.value = 'rent';
     if (dom.recurringTitle) dom.recurringTitle.value = '';
     if (dom.recurringCategory) dom.recurringCategory.value = '';
@@ -983,6 +990,7 @@ function bindFinanceModals() {
     if (dom.recurringEndDate) dom.recurringEndDate.value = '';
     if (dom.recurringNotes) dom.recurringNotes.value = '';
     updateRecurringTitleVisibility();
+    updateRecurringApartmentHint();
     openModal('recurringExpenseModal');
   });
   dom.recurringKind?.addEventListener('change', updateRecurringTitleVisibility);
@@ -993,17 +1001,43 @@ function bindFinanceModals() {
     if (!amount) { setStatus('Укажите сумму'); return; }
     const kind = dom.recurringKind?.value || 'other';
     if (kind === 'other' && !dom.recurringTitle?.value) { setStatus('Укажите название'); return; }
-    addRecurringRule({
-      apartmentId: dom.recurringApartment?.value,
+    const selectedApt = dom.recurringApartment?.value || '';
+    const commonPayload = {
       kind,
       title: dom.recurringTitle?.value,
       category: dom.recurringCategory?.value,
-      amount,
       dayOfMonth: Number(dom.recurringDayOfMonth?.value || 1),
       startDate: dom.recurringStartDate?.value,
       endDate: dom.recurringEndDate?.value,
       notes: dom.recurringNotes?.value,
       type: dom.recurringType?.value || 'expense',
+    };
+    if (selectedApt === '__all__') {
+      // «Все квартиры»: делим сумму поровну между всеми неархивными квартирами
+      // и создаём по правилу на каждую (объединены splitGroupId в meta).
+      const st = getState();
+      const apts = (st.apartments || []).filter((a) => !a.archived);
+      if (!apts.length) { setStatus('Нет квартир для распределения'); return; }
+      const per = Math.round((amount / apts.length) * 100) / 100;
+      const residue = Math.round((amount - per * apts.length) * 100) / 100;
+      const groupId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+      apts.forEach((a, idx) => {
+        const share = idx === 0 ? Math.round((per + residue) * 100) / 100 : per;
+        addRecurringRule({
+          ...commonPayload,
+          apartmentId: a.id,
+          amount: share,
+          meta: { splitGroupId: groupId, splitTotal: amount, splitCount: apts.length },
+        });
+      });
+      closeModal('recurringExpenseModal');
+      await rerender(`Правило создано для ${apts.length} квартир`);
+      return;
+    }
+    addRecurringRule({
+      ...commonPayload,
+      apartmentId: selectedApt,
+      amount,
     });
     closeModal('recurringExpenseModal');
     await rerender('Регулярное правило создано');

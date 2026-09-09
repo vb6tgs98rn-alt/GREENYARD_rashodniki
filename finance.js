@@ -88,6 +88,7 @@ export function createRecurringRuleDraft(data = {}) {
     endDate: data.endDate || '',
     notes: data.notes || '',
     active: data.active ?? true,
+    meta: data.meta || {},
   };
 }
 
