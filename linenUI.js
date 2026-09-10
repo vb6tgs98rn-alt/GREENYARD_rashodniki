@@ -74,7 +74,7 @@ export async function renderLinenSection() {
         <strong>Позиций ещё нет.</strong>
         <div class="small">Заполни, сколько чего сейчас в квартире, — приложение создаст позиции с ID автоматически.</div>
       </div>
-      ${capacityHintHtml(cap)}
+      ${bedsHintHtml(apt)}
       <div class="actions"><button class="btn btn-primary" id="linenBtnStartInventory" type="button">Стартовая инвентаризация</button></div>
     `;
     document.getElementById('linenBtnStartInventory')?.addEventListener('click', () => openInventoryModal());
@@ -83,7 +83,7 @@ export async function renderLinenSection() {
   // Есть позиции: рендерим сводку + действия + «в стирке».
   const laundryItems = items.filter((i) => i.status === 'laundry');
   root.innerHTML = `
-    ${capacityHintHtml(cap)}
+    ${bedsHintHtml(apt)}
     ${summaryTableHtml(summary)}
     <div class="actions" style="margin-top:.8rem;flex-wrap:wrap;gap:.5rem;">
       <button class="btn btn-secondary" id="linenBtnInventory" type="button">Инвентаризация</button>
@@ -179,12 +179,13 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function capacityHintHtml(cap) {
-  if (Number(cap) > 0) return '';
+function bedsHintHtml(apt) {
+  const beds = Array.isArray(apt?.beds) ? apt.beds : [];
+  if (beds.length > 0) return '';
   return `
     <div class="hint" style="margin-bottom:.8rem;background:color-mix(in oklab,var(--color-warning) 15%,transparent);">
-      <strong>Не задано число спальных мест.</strong>
-      <div class="small">Открой «Параметры квартиры» и укажи. Норма считается как «спальные места × 3».</div>
+      <strong>Не заданы спальные места.</strong>
+      <div class="small">Открой «Параметры квартиры» и добавь односпальные или двуспальные места — от этого зависит норма белья.</div>
     </div>
   `;
 }

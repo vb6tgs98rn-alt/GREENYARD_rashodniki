@@ -123,9 +123,20 @@ export function ensureStateShape(rawState) {
       active: apartment?.unitEcoReports?.active || null,
       history: Array.isArray(apartment?.unitEcoReports?.history) ? apartment.unitEcoReports.history : [],
     },
-    // Число спальных мест в квартире. Используется как база для расчёта нормы белья/полотенец
-    // (норма по типу = sleepingCapacity × 3: 1 на смене + 1 запас + 1 в стирке).
+    // Легаси (оставлено на время миграции). Новый API — beds[].
     sleepingCapacity: Math.max(0, Math.trunc(Number(apartment?.sleepingCapacity || 0))),
+    // Список спальных мест: [{type:'single'|'double'}]. Если пусто и есть sleepingCapacity —
+    // миграция в N двуспальных мест (безопасный вариант, т.к. макс. гостей = 2N; пользователь переставит в UI).
+    beds: Array.isArray(apartment?.beds)
+      ? apartment.beds.map((b) => ({ type: (b?.type === 'single') ? 'single' : 'double' })).slice(0, 50)
+      : Array.from({ length: Math.max(0, Math.trunc(Number(apartment?.sleepingCapacity || 0))) }, () => ({ type: 'double' })),
+    // Резерв белья/полотенец (в комплектах по своей группе, см. linen.js: computeNorms).
+    linenReserve: {
+      pillow:   Math.max(0, Math.trunc(Number(apartment?.linenReserve?.pillow   || 0))),
+      bed_s:    Math.max(0, Math.trunc(Number(apartment?.linenReserve?.bed_s    || 0))),
+      bed_full: Math.max(0, Math.trunc(Number(apartment?.linenReserve?.bed_full || 0))),
+      towel:    Math.max(0, Math.trunc(Number(apartment?.linenReserve?.towel    || 0))),
+    },
   }));
   return next;
 }

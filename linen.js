@@ -28,14 +28,16 @@
 
 import { supabase, requireUser } from './supabase-client.js';
 
-// Шесть типов позиций.
+// Типы позиций. S — односпальный комплект (отдельная норма по числу односпальных мест).
 export const LINEN_TYPES = [
-  { key: 'navolochka',   label: 'Наволочка',    prefix: 'NAV'  },
-  { key: 'pododeyalnik', label: 'Пододеяльник', prefix: 'POD'  },
-  { key: 'prostynya',    label: 'Простыня',     prefix: 'PRO'  },
-  { key: 'polotence_s',  label: 'Полотенце S',  prefix: 'POLS' },
-  { key: 'polotence_m',  label: 'Полотенце M',  prefix: 'POLM' },
-  { key: 'polotence_l',  label: 'Полотенце L',  prefix: 'POLL' },
+  { key: 'navolochka',      label: 'Наволочка',       prefix: 'NAV'  },
+  { key: 'pododeyalnik',    label: 'Пододеяльник',    prefix: 'POD'  },
+  { key: 'pododeyalnik_s',  label: 'Пододеяльник S',  prefix: 'PODS' },
+  { key: 'prostynya',       label: 'Простыня',        prefix: 'PRO'  },
+  { key: 'prostynya_s',     label: 'Простыня S',      prefix: 'PROS' },
+  { key: 'polotence_s',     label: 'Полотенце S',     prefix: 'POLS' },
+  { key: 'polotence_m',     label: 'Полотенце M',     prefix: 'POLM' },
+  { key: 'polotence_l',     label: 'Полотенце L',     prefix: 'POLL' },
 ];
 
 export const LINEN_STATUSES = [
@@ -125,8 +127,49 @@ export async function listNorms(apartmentId) {
 }
 
 /**
- * Возвращает норму по типу для квартиры. Если явно не задана — считает по умолчанию
- * от числа спальных мест: sleepingCapacity × 3 (1 на смене + 1 запас + 1 в стирке).
+ * Расчёт нормы по типу из параметров квартиры.
+ *
+ * apt: { beds: [{type:'single'|'double'}], linenReserve: {pillow, bed_s, bed_full, towel} }
+ *   • на каждое односпальное место:  1 гость, 1 подушка
+ *   • на каждое двуспальное место:   2 гостя, 2 подушки
+ *   • комплект белья (пододеяльник+простыня) отдельно S и обычный
+ *   • 2 комплекта белья на спальное место, 2 комплекта полотенец на гостя
+ *   • + резервы (в комплектах): pillow → +НАВ; bed_s → +ПОД S/ПРО S; bed_full → +ПОД/ПРО (по 2×резерв наволочек); towel → +полотенца
+ */
+export function computeNorms(apt) {
+  const beds = Array.isArray(apt?.beds) ? apt.beds : [];
+  const singles = beds.filter((b) => b?.type === 'single').length;
+  const doubles = beds.filter((b) => b?.type === 'double').length;
+  const pillows = singles + doubles * 2; // всего подушек
+  const guests  = singles + doubles * 2; // макс. гостей
+  const r = apt?.linenReserve || {};
+  const rPillow  = Math.max(0, Math.trunc(Number(r.pillow   || 0)));
+  const rBedS    = Math.max(0, Math.trunc(Number(r.bed_s    || 0)));
+  const rBedFull = Math.max(0, Math.trunc(Number(r.bed_full || 0)));
+  const rTowel   = Math.max(0, Math.trunc(Number(r.towel    || 0)));
+  // Семантика резерва:
+  //  • pillow  = N → +N наволочек
+  //  • bed_s   = N → +⌈N/2⌉ комплектов S: +1 пододеяльник S на каждую пару, +1 простыня S, +1 наволочка
+  //    (по твоей формуле: «резерв 2 → +1 наволочка, 1 пододеяльник s, 1 простыня s»)
+  //  • bed_full = N → +⌈N/2⌉ комплектов двуспальных: +1 пододеяльник, +1 простыня, +2 наволочки
+  //    («резерв 2 → +4 наволочки, 2 пододеяльника, 2 простыни» — т.е. на каждый комплект 2 наволочки)
+  //  • towel   = N → +N полотенец каждого размера
+  const setsS    = Math.ceil(rBedS    / 2);
+  const setsFull = Math.ceil(rBedFull / 2);
+  return {
+    navolochka:     2 * pillows + rPillow + setsS + setsFull * 2,
+    pododeyalnik:   2 * doubles + setsFull,
+    pododeyalnik_s: 2 * singles + setsS,
+    prostynya:      2 * doubles + setsFull,
+    prostynya_s:    2 * singles + setsS,
+    polotence_s:    2 * guests  + rTowel,
+    polotence_m:    2 * guests  + rTowel,
+    polotence_l:    2 * guests  + rTowel,
+  };
+}
+
+/**
+ * @deprecated Старая формула (sleepingCapacity × 3). Оставлена для обратной совместимости.
  */
 export function defaultNormFor(sleepingCapacity) {
   const cap = Math.max(0, Math.trunc(Number(sleepingCapacity || 0)));
@@ -317,12 +360,11 @@ export async function listEvents(apartmentId, { limit = 50 } = {}) {
 }
 
 /**
- * Свод по квартире: массив { type, label, norm, ready, in_use, laundry, total, deficit }.
- * norm — из apartment_linen_norms (или defaultNormFor(sleepingCapacity), если пусто).
- * total — все НЕ retired.
- * deficit — max(0, norm - ready).
+ * Свод по квартире: массив { type, label, norm, have, stained, stainedIds }.
+ * norm — из apartment_linen_norms (если задана явно) или computeNorms(apt) по параметрам квартиры.
+ * Передавать можно либо объект apt (новый API), либо sleepingCapacity (старый вызов).
  */
-export async function getSummary(apartmentId, sleepingCapacity) {
+export async function getSummary(apartmentId, aptOrCap) {
   const [items, norms] = await Promise.all([
     listItems(apartmentId, { includeRetired: false }),
     listNorms(apartmentId),
@@ -343,12 +385,19 @@ export async function getSummary(apartmentId, sleepingCapacity) {
       });
     }
   });
-  const defaultNorm = defaultNormFor(sleepingCapacity);
+  // Нормы: если передан apt-объект — считаем по computeNorms; если число — старая формула.
+  const perType = (typeof aptOrCap === 'object' && aptOrCap !== null)
+    ? computeNorms(aptOrCap)
+    : null;
+  const legacyNorm = defaultNormFor(aptOrCap);
   return LINEN_TYPES.map((t) => {
     const b = buckets[t.key];
-    const norm = Object.prototype.hasOwnProperty.call(norms, t.key)
+    const explicit = Object.prototype.hasOwnProperty.call(norms, t.key)
       ? Number(norms[t.key] || 0)
-      : defaultNorm;
+      : null;
+    const norm = explicit != null
+      ? explicit
+      : (perType ? Number(perType[t.key] || 0) : legacyNorm);
     return { type: t.key, label: t.label, norm, have: b.have, stained: b.stained, stainedIds: b.stainedIds };
   });
 }

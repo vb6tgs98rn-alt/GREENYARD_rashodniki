@@ -339,7 +339,9 @@ async function resolveApartmentIdByRealty(userId: string, realtyId: number | nul
 const LINEN_TYPE_LABELS: Record<string, string> = {
   navolochka: "Наволочки",
   pododeyalnik: "Пододеяльники",
+  pododeyalnik_s: "Пододеяльники S",
   prostynya: "Простыни",
+  prostynya_s: "Простыни S",
   polotence_s: "Полотенца S",
   polotence_m: "Полотенца M",
   polotence_l: "Полотенца L",
@@ -356,6 +358,9 @@ const LINEN_STATUS_LABELS: Record<string, string> = {
 function detectLinenType(text: string): string | null {
   const t = (text || "").toLowerCase();
   if (/\bnav|наволоч/.test(t)) return "navolochka";
+  // СНАЧАЛА проверяем _s-варианты (чтобы не поесть их общим паттерном).
+  if (/\bpods\b|пододеял.*\bs\b|пододеял.*(односпал|мал)/.test(t)) return "pododeyalnik_s";
+  if (/\bpros\b|простын.*\bs\b|простын.*(односпал|мал)/.test(t)) return "prostynya_s";
   if (/\bpod\b|пододеял/.test(t)) return "pododeyalnik";
   if (/\bpro\b|простын/.test(t)) return "prostynya";
   if (/\bpols\b|полотен.*\bs\b|полотен.*мал/.test(t)) return "polotence_s";
@@ -405,7 +410,7 @@ async function buildLinenSummary(userId: string, apartmentId: string | null): Pr
   }
 
   const lines: string[] = ["🛏 <b>Бельё квартиры</b>"];
-  const orderedTypes = ["navolochka", "pododeyalnik", "prostynya", "polotence_s", "polotence_m", "polotence_l"];
+  const orderedTypes = ["navolochka", "pododeyalnik", "pododeyalnik_s", "prostynya", "prostynya_s", "polotence_s", "polotence_m", "polotence_l"];
   for (const t of orderedTypes) {
     const b = byType.get(t);
     if (!b || b.have.length === 0) continue;

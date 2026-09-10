@@ -1632,6 +1632,84 @@ function bindApartmentRealtyId() {
   };
   dom.apartmentSleepingCapacitySaveBtn?.addEventListener('click', saveSleepingCapacity);
   dom.apartmentSleepingCapacity?.addEventListener('change', saveSleepingCapacity);
+
+  // ─── Спальные места и резерв (новый блок) ───
+  const addBed = (type) => {
+    const apt = currentApartment();
+    if (!apt) return;
+    updateState((state) => {
+      const a = (state.apartments || []).find((x) => x.id === apt.id);
+      if (!a) return;
+      if (!Array.isArray(a.beds)) a.beds = [];
+      a.beds.push({ type: type === 'single' ? 'single' : 'double' });
+    });
+    rerender('Спальное место добавлено');
+  };
+  dom.apartmentBedsAddSingle?.addEventListener('click', () => addBed('single'));
+  dom.apartmentBedsAddDouble?.addEventListener('click', () => addBed('double'));
+
+  // Делегированный click/change на список: удаление и смена типа конкретной кровати.
+  dom.apartmentBedsList?.addEventListener('click', (e) => {
+    const btn = e.target?.closest?.('[data-bed-remove-idx]');
+    if (!btn) return;
+    const idx = Number(btn.getAttribute('data-bed-remove-idx'));
+    const apt = currentApartment();
+    if (!apt || !Number.isFinite(idx)) return;
+    updateState((state) => {
+      const a = (state.apartments || []).find((x) => x.id === apt.id);
+      if (!a || !Array.isArray(a.beds)) return;
+      a.beds.splice(idx, 1);
+    });
+    rerender('Спальное место удалено');
+  });
+  dom.apartmentBedsList?.addEventListener('change', (e) => {
+    const sel = e.target?.closest?.('[data-bed-type-idx]');
+    if (!sel) return;
+    const idx = Number(sel.getAttribute('data-bed-type-idx'));
+    const val = sel.value === 'single' ? 'single' : 'double';
+    const apt = currentApartment();
+    if (!apt || !Number.isFinite(idx)) return;
+    updateState((state) => {
+      const a = (state.apartments || []).find((x) => x.id === apt.id);
+      if (!a || !Array.isArray(a.beds) || !a.beds[idx]) return;
+      a.beds[idx].type = val;
+    });
+    rerender('Тип спального места изменён');
+  });
+
+  // Кнопка «Сохранить» в блоке спальных мест — просто перерисовка с подтверждением (состояние уже сохраняется при каждом действии).
+  dom.apartmentBedsSaveBtn?.addEventListener('click', () => rerender('Параметры спальных мест сохранены'));
+
+  // Модалка резерва.
+  const openReserveModal = () => {
+    const apt = currentApartment();
+    if (!apt) return;
+    const r = apt.linenReserve || {};
+    if (dom.apartmentReservePillow)  dom.apartmentReservePillow.value  = Number(r.pillow   || 0) > 0 ? String(r.pillow)   : '';
+    if (dom.apartmentReserveBedS)    dom.apartmentReserveBedS.value    = Number(r.bed_s    || 0) > 0 ? String(r.bed_s)    : '';
+    if (dom.apartmentReserveBedFull) dom.apartmentReserveBedFull.value = Number(r.bed_full || 0) > 0 ? String(r.bed_full) : '';
+    if (dom.apartmentReserveTowel)   dom.apartmentReserveTowel.value   = Number(r.towel    || 0) > 0 ? String(r.towel)    : '';
+    openModal('apartmentReserveModal');
+  };
+  const closeReserveModal = () => closeModal('apartmentReserveModal');
+  dom.apartmentBedsReserveBtn?.addEventListener('click', openReserveModal);
+  dom.apartmentReserveClose?.addEventListener('click', closeReserveModal);
+  dom.apartmentReserveCancel?.addEventListener('click', closeReserveModal);
+  dom.apartmentReserveSave?.addEventListener('click', async () => {
+    const apt = currentApartment();
+    if (!apt) return;
+    const pillow   = Math.max(0, Math.trunc(Number(dom.apartmentReservePillow?.value   || 0)));
+    const bed_s    = Math.max(0, Math.trunc(Number(dom.apartmentReserveBedS?.value     || 0)));
+    const bed_full = Math.max(0, Math.trunc(Number(dom.apartmentReserveBedFull?.value  || 0)));
+    const towel    = Math.max(0, Math.trunc(Number(dom.apartmentReserveTowel?.value    || 0)));
+    updateState((state) => {
+      const a = (state.apartments || []).find((x) => x.id === apt.id);
+      if (!a) return;
+      a.linenReserve = { pillow, bed_s, bed_full, towel };
+    });
+    closeReserveModal();
+    await rerender('Резерв сохранён');
+  });
   dom.apartmentCleaningPriceEditBtn?.addEventListener('click', () => {
     // Переводим в режим редактирования
     if (dom.apartmentCleaningPrice) {

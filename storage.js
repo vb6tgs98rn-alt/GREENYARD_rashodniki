@@ -85,6 +85,21 @@ export function setStorageMode(nextMode, user = null) {
 
 // ─── Утилиты ──────────────────────────────────────────────────────────────────
 
+// Нормализация списка спальных мест.
+// Если apartment.beds — массив, оставляем только валидные элементы.
+// Иначе миграция: sleepingCapacity=N → N двуспальных мест
+// (так безопаснее: макс. гостей = 2N, а не N; пользователь переставит в UI).
+function normalizeBeds(apartment) {
+  const raw = apartment?.beds;
+  if (Array.isArray(raw)) {
+    return raw
+      .map((b) => ({ type: (b?.type === 'single') ? 'single' : 'double' }))
+      .slice(0, 50); // защита от мусора
+  }
+  const cap = Math.max(0, Math.trunc(Number(apartment?.sleepingCapacity || 0)));
+  return Array.from({ length: cap }, () => ({ type: 'double' }));
+}
+
 function notify(setStatus, text, silent = false) {
   if (!silent && typeof setStatus === 'function') setStatus(text);
 }
@@ -127,8 +142,15 @@ export function normalizeImportedState(raw) {
       active: apartment?.unitEcoReports?.active || null,
       history: Array.isArray(apartment?.unitEcoReports?.history) ? apartment.unitEcoReports.history : [],
     },
-    // Спальные места — база для дефолтной нормы белья (× 3).
+    // Спальные места — легаси (оставляем для миграции); новый API — beds[].
     sleepingCapacity: Math.max(0, Math.trunc(Number(apartment?.sleepingCapacity || 0))),
+    beds: normalizeBeds(apartment),
+    linenReserve: {
+      pillow:   Math.max(0, Math.trunc(Number(apartment?.linenReserve?.pillow   || 0))),
+      bed_s:    Math.max(0, Math.trunc(Number(apartment?.linenReserve?.bed_s    || 0))),
+      bed_full: Math.max(0, Math.trunc(Number(apartment?.linenReserve?.bed_full || 0))),
+      towel:    Math.max(0, Math.trunc(Number(apartment?.linenReserve?.towel    || 0))),
+    },
   }));
 
   return {

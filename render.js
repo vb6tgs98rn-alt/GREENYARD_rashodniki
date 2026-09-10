@@ -94,6 +94,21 @@ function renderInventory(state) {
     const cap = Number(apartment.sleepingCapacity || 0);
     dom.apartmentSleepingCapacity.value = cap > 0 ? String(cap) : '';
   }
+  // Список спальных мест (новый блок).
+  if (dom.apartmentBedsList) {
+    const beds = Array.isArray(apartment.beds) ? apartment.beds : [];
+    dom.apartmentBedsList.innerHTML = beds.length ? beds.map((b, i) => `
+      <div class="history-row" data-bed-idx="${i}" style="align-items:center;">
+        <div><strong>${i + 1}.</strong>
+          <select data-bed-type-idx="${i}" style="margin-left:.35rem;">
+            <option value="single"${b.type === 'single' ? ' selected' : ''}>Односпальное</option>
+            <option value="double"${b.type === 'double' ? ' selected' : ''}>Двуспальное</option>
+          </select>
+        </div>
+        <button class="btn btn-secondary" type="button" data-bed-remove-idx="${i}" style="padding:.15rem .5rem;font-size:.8rem;">Удалить</button>
+      </div>
+    `).join('') : '<div class="empty small" style="margin:.35rem 0;">Нет спальных мест. Добавь кнопками ниже.</div>';
+  }
   if (dom.apartmentCleaningPrice) {
     const hasPrice = Number(apartment.cleaningPrice) > 0;
     dom.apartmentCleaningPrice.value = hasPrice ? String(apartment.cleaningPrice) : '';

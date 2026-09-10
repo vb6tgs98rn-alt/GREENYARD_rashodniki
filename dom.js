@@ -157,5 +157,19 @@ const dom = {
   // Спальные места — для нормы белья/полотенец (квартира)
   apartmentSleepingCapacity: byId('apartmentSleepingCapacity'),
   apartmentSleepingCapacitySaveBtn: byId('apartmentSleepingCapacitySaveBtn'),
+  // Новый блок: список спальных мест и резерв.
+  apartmentBedsList:          byId('apartmentBedsList'),
+  apartmentBedsAddSingle:     byId('apartmentBedsAddSingle'),
+  apartmentBedsAddDouble:     byId('apartmentBedsAddDouble'),
+  apartmentBedsReserveBtn:    byId('apartmentBedsReserveBtn'),
+  apartmentBedsSaveBtn:       byId('apartmentBedsSaveBtn'),
+  apartmentReserveModal:      byId('apartmentReserveModal'),
+  apartmentReserveClose:      byId('apartmentReserveClose'),
+  apartmentReserveCancel:     byId('apartmentReserveCancel'),
+  apartmentReserveSave:       byId('apartmentReserveSave'),
+  apartmentReservePillow:     byId('apartmentReservePillow'),
+  apartmentReserveBedS:       byId('apartmentReserveBedS'),
+  apartmentReserveBedFull:    byId('apartmentReserveBedFull'),
+  apartmentReserveTowel:      byId('apartmentReserveTowel'),
 };
 export default dom;
