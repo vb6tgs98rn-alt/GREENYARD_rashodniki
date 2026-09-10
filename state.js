@@ -123,6 +123,9 @@ export function ensureStateShape(rawState) {
       active: apartment?.unitEcoReports?.active || null,
       history: Array.isArray(apartment?.unitEcoReports?.history) ? apartment.unitEcoReports.history : [],
     },
+    // Число спальных мест в квартире. Используется как база для расчёта нормы белья/полотенец
+    // (норма по типу = sleepingCapacity × 3: 1 на смене + 1 запас + 1 в стирке).
+    sleepingCapacity: Math.max(0, Math.trunc(Number(apartment?.sleepingCapacity || 0))),
   }));
   return next;
 }

@@ -127,6 +127,8 @@ export function normalizeImportedState(raw) {
       active: apartment?.unitEcoReports?.active || null,
       history: Array.isArray(apartment?.unitEcoReports?.history) ? apartment.unitEcoReports.history : [],
     },
+    // Спальные места — база для дефолтной нормы белья (× 3).
+    sleepingCapacity: Math.max(0, Math.trunc(Number(apartment?.sleepingCapacity || 0))),
   }));
 
   return {

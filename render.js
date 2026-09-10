@@ -90,6 +90,10 @@ function renderInventory(state) {
   dom.apartmentName.value = apartment.name;
   // ID объекта в RealtyCalendar (легаси-поле в «Параметры квартиры», если осталось)
   if (dom.apartmentRealtyId) dom.apartmentRealtyId.value = apartment.externalIds?.realtyCalendarUnitId || '';
+  if (dom.apartmentSleepingCapacity) {
+    const cap = Number(apartment.sleepingCapacity || 0);
+    dom.apartmentSleepingCapacity.value = cap > 0 ? String(cap) : '';
+  }
   if (dom.apartmentCleaningPrice) {
     const hasPrice = Number(apartment.cleaningPrice) > 0;
     dom.apartmentCleaningPrice.value = hasPrice ? String(apartment.cleaningPrice) : '';
@@ -384,7 +388,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-09-10.33';
+      const BUILD_VERSION = 'v.2026-09-10.34';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
@@ -469,7 +473,7 @@ async function _renderFinanceByCyclesAsync() {
   if (myToken !== _financeAptSummaryToken) return;
   if (!dom.financeByApartment) return;
 
-  const BUILD_VERSION = 'v.2026-09-10.33';
+  const BUILD_VERSION = 'v.2026-09-10.34';
   const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
   const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

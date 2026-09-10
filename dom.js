@@ -153,5 +153,9 @@ const dom = {
   apartmentRentAmountRow: byId('apartmentRentAmountRow'),
   apartmentRentAmount: byId('apartmentRentAmount'),
   apartmentBusinessModelSaveBtn: byId('apartmentBusinessModelSaveBtn'),
+
+  // Спальные места — для нормы белья/полотенец (квартира)
+  apartmentSleepingCapacity: byId('apartmentSleepingCapacity'),
+  apartmentSleepingCapacitySaveBtn: byId('apartmentSleepingCapacitySaveBtn'),
 };
 export default dom;

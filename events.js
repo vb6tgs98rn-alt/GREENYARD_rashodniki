@@ -1617,6 +1617,21 @@ function bindApartmentRealtyId() {
     await rerender(val > 0 ? 'Цена уборки сохранена' : 'Цена уборки очищена');
   };
   dom.apartmentCleaningPriceSaveBtn?.addEventListener('click', saveCleaningPrice);
+
+  // Спальные места — база для дефолтной нормы белья (sleepingCapacity × 3).
+  const saveSleepingCapacity = async () => {
+    const apt = currentApartment();
+    if (!apt) return;
+    const val = Math.max(0, Math.trunc(Number(dom.apartmentSleepingCapacity?.value || 0)));
+    updateState((state) => {
+      const a = (state.apartments || []).find((x) => x.id === apt.id);
+      if (!a) return;
+      a.sleepingCapacity = val;
+    });
+    await rerender(val > 0 ? 'Спальные места сохранены' : 'Спальные места очищены');
+  };
+  dom.apartmentSleepingCapacitySaveBtn?.addEventListener('click', saveSleepingCapacity);
+  dom.apartmentSleepingCapacity?.addEventListener('change', saveSleepingCapacity);
   dom.apartmentCleaningPriceEditBtn?.addEventListener('click', () => {
     // Переводим в режим редактирования
     if (dom.apartmentCleaningPrice) {
