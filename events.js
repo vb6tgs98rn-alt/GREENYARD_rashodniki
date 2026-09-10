@@ -1648,8 +1648,22 @@ function bindApartmentRealtyId() {
   dom.apartmentBedsAddSingle?.addEventListener('click', () => addBed('single'));
   dom.apartmentBedsAddDouble?.addEventListener('click', () => addBed('double'));
 
+  // Автосписание позиций, которые стали неактуальными после изменения спальных мест.
+  async function autoRetireIrrelevant(aptId) {
+    try {
+      const { retireIrrelevantForApt } = await import('./linen.js');
+      const { findApartmentById } = await import('./state.js');
+      const fresh = findApartmentById(aptId);
+      if (!fresh) return 0;
+      return await retireIrrelevantForApt(aptId, fresh);
+    } catch (err) {
+      console.warn('[events] autoRetireIrrelevant error:', err);
+      return 0;
+    }
+  }
+
   // Делегированный click/change на список: удаление и смена типа конкретной кровати.
-  dom.apartmentBedsList?.addEventListener('click', (e) => {
+  dom.apartmentBedsList?.addEventListener('click', async (e) => {
     const btn = e.target?.closest?.('[data-bed-remove-idx]');
     if (!btn) return;
     const idx = Number(btn.getAttribute('data-bed-remove-idx'));
@@ -1660,9 +1674,10 @@ function bindApartmentRealtyId() {
       if (!a || !Array.isArray(a.beds)) return;
       a.beds.splice(idx, 1);
     });
-    rerender('Спальное место удалено');
+    const retired = await autoRetireIrrelevant(apt.id);
+    rerender(retired > 0 ? `Спальное место удалено. Автосписано позиций: ${retired}` : 'Спальное место удалено');
   });
-  dom.apartmentBedsList?.addEventListener('change', (e) => {
+  dom.apartmentBedsList?.addEventListener('change', async (e) => {
     const sel = e.target?.closest?.('[data-bed-type-idx]');
     if (!sel) return;
     const idx = Number(sel.getAttribute('data-bed-type-idx'));
@@ -1674,7 +1689,8 @@ function bindApartmentRealtyId() {
       if (!a || !Array.isArray(a.beds) || !a.beds[idx]) return;
       a.beds[idx].type = val;
     });
-    rerender('Тип спального места изменён');
+    const retired = await autoRetireIrrelevant(apt.id);
+    rerender(retired > 0 ? `Тип сменён. Автосписано позиций: ${retired}` : 'Тип спального места изменён');
   });
 
   // Кнопка «Сохранить» в блоке спальных мест — просто перерисовка с подтверждением (состояние уже сохраняется при каждом действии).

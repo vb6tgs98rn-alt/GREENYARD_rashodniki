@@ -169,6 +169,26 @@ export function computeNorms(apt) {
 }
 
 /**
+ * Автосписание позиций типов, которые больше не актуальны в квартире (norm=0, но позиции есть).
+ * Списываем без автозаявки (тип больше не нужен).
+ * Возвращает общее число списанных позиций.
+ */
+export async function retireIrrelevantForApt(apartmentId, apt, { actor = 'owner', reason = 'спальное место удалено' } = {}) {
+  const norms = computeNorms(apt);
+  const irrelevantTypes = LINEN_TYPES.filter((t) => Number(norms[t.key] || 0) === 0).map((t) => t.key);
+  if (irrelevantTypes.length === 0) return 0;
+  const items = await listItems(apartmentId, { includeRetired: false });
+  const toRetire = items.filter((it) => irrelevantTypes.includes(it.type));
+  let retired = 0;
+  for (const it of toRetire) {
+    // eslint-disable-next-line no-await-in-loop
+    await setStatus(it.id, 'retired', { actor, note: reason, retiredReason: reason });
+    retired += 1;
+  }
+  return retired;
+}
+
+/**
  * @deprecated Старая формула (sleepingCapacity × 3). Оставлена для обратной совместимости.
  */
 export function defaultNormFor(sleepingCapacity) {

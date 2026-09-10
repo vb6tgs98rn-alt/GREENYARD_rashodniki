@@ -28,7 +28,7 @@ import { currentApartment, updateState, getDisplayApartmentName } from './state.
 import {
   LINEN_TYPES, LINEN_STATUSES, typeLabel, statusLabel,
   getSummary, listItems, createItem, bulkCreate, setStatus, markLaundered, listEvents,
-  inventorySet, unstain,
+  inventorySet, unstain, computeNorms,
 } from './linen.js';
 import { openModal, closeModal } from './render.js';
 import { addHistory } from './actions.js';
@@ -191,7 +191,11 @@ function bedsHintHtml(apt) {
 }
 
 function summaryTableHtml(summary) {
-  const rows = summary.map((r) => {
+  // Скрываем типы, которые в квартире не актуальны: norm=0 и позиций нет.
+  // Если позиции есть (have > 0) при norm=0 — показываем, чтобы пользователь видел старые запасы.
+  const visible = summary.filter((r) => Number(r.norm || 0) > 0 || Number(r.have || 0) > 0);
+  if (visible.length === 0) return '<div class="empty small" style="margin:.5rem 0;">Нет актуальных типов. Задай спальные места в параметрах квартиры.</div>';
+  const rows = visible.map((r) => {
     // Дефицит считаем как norm − have («есть» включает всё, кроме списанных).
     const deficit = Math.max(0, Number(r.norm || 0) - Number(r.have || 0));
     const low = deficit > 0;
@@ -290,7 +294,11 @@ function openInventoryModal() {
   if (label) label.textContent = `Квартира: ${getDisplayApartmentName(apt.name)}. Введи текущее количество, приложение создаст позиции с ID автоматически.`;
   const grid = document.getElementById('linenInventoryGrid');
   if (grid) {
-    grid.innerHTML = LINEN_TYPES.map((t) => `
+    // Показываем только актуальные для квартиры типы (норма > 0).
+    const norms = computeNorms(apt);
+    const relevant = LINEN_TYPES.filter((t) => Number(norms[t.key] || 0) > 0);
+    const list = relevant.length ? relevant : LINEN_TYPES; // если спальные места не заданы — покажем все, чтобы не блокировать первую инвентаризацию
+    grid.innerHTML = list.map((t) => `
       <label>
         <span class="small">${t.label}</span>
         <input type="number" min="0" step="1" data-inv-type="${t.key}" placeholder="0" />
