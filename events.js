@@ -1060,6 +1060,7 @@ function bindFinanceModals() {
     // Финансы: переключение режима таблицы + стрелки месяца.
     if (action === 'fin-mode-common') {
       updateState((s) => { s.ui = s.ui || {}; s.ui.finance = s.ui.finance || {}; s.ui.finance.cyclesMode = false; });
+      persistState(setStatus, true).catch((e) => console.warn('[events] persistState (fin-mode-common):', e));
       await rerender('Режим: общий период');
     }
     if (action === 'fin-mode-cycles') {
@@ -1068,6 +1069,7 @@ function bindFinanceModals() {
         s.ui.finance.cyclesMode = true;
         if (s.ui.finance.cyclesMonthOffset == null) s.ui.finance.cyclesMonthOffset = 0;
       });
+      persistState(setStatus, true).catch((e) => console.warn('[events] persistState (fin-mode-cycles):', e));
       // Регенерация автосписаний на текущий открытый месяц (offset 0) уже была выполнена при открытии Финансов.
       await rerender('Режим: по циклам оплаты');
     }
@@ -1093,6 +1095,7 @@ function bindFinanceModals() {
         const cur = Number(s.ui.finance.cyclesOffsetByApt[aptId] || 0);
         s.ui.finance.cyclesOffsetByApt[aptId] = cur + delta;
       });
+      persistState(setStatus, true).catch((e) => console.warn('[events] persistState (fin-apt-cycle):', e));
       await rerender('Цикл смещён');
     }
 

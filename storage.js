@@ -170,6 +170,10 @@ export function normalizeImportedState(raw) {
           source: raw?.ui?.finance?.unitFilters?.source || 'all',
           status: raw?.ui?.finance?.unitFilters?.status || 'active',
         },
+        // Переключатели вкладки «Итоги по квартирам»: режим и смещения цикла.
+        cyclesMode: raw?.ui?.finance?.cyclesMode === true,
+        cyclesMonthOffset: Number.isFinite(raw?.ui?.finance?.cyclesMonthOffset) ? Number(raw.ui.finance.cyclesMonthOffset) : 0,
+        cyclesOffsetByApt: (raw?.ui?.finance?.cyclesOffsetByApt && typeof raw.ui.finance.cyclesOffsetByApt === 'object') ? raw.ui.finance.cyclesOffsetByApt : {},
       },
     },
   };

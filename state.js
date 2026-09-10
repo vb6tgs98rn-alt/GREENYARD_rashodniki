@@ -99,6 +99,10 @@ export function ensureStateShape(rawState) {
   if (typeof next.ui.finance.unitFilters.category !== 'string') next.ui.finance.unitFilters.category = 'all';
   if (typeof next.ui.finance.unitFilters.source !== 'string') next.ui.finance.unitFilters.source = 'all';
   if (typeof next.ui.finance.unitFilters.status !== 'string') next.ui.finance.unitFilters.status = 'active';
+  // Переключатели таблицы «Итоги по квартирам».
+  if (typeof next.ui.finance.cyclesMode !== 'boolean') next.ui.finance.cyclesMode = false;
+  if (typeof next.ui.finance.cyclesMonthOffset !== 'number') next.ui.finance.cyclesMonthOffset = 0;
+  if (!next.ui.finance.cyclesOffsetByApt || typeof next.ui.finance.cyclesOffsetByApt !== 'object') next.ui.finance.cyclesOffsetByApt = {};
   next.apartments = next.apartments.map((apartment, index) => ({
     ...apartment,
     name: apartment?.name || `Квартира ${index + 1}`,
