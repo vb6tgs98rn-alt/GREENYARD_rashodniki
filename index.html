@@ -136,6 +136,7 @@
         <div class="stack">
           <section class="subsection"><div class="accordion-group"><article class="accordion-card"><button class="accordion-trigger" type="button" data-toggle-target="linenSectionBody" aria-expanded="true"><span class="accordion-label"><strong>Не одноразовые расходники</strong></span><span class="small">Бельё, полотенца и похожие позиции</span></button><div class="accordion-body open" id="linenSectionBody"><div id="linenList"></div></div></article></div></section>
           <section class="subsection"><div class="accordion-group"><article class="accordion-card"><button class="accordion-trigger" type="button" data-toggle-target="guestSectionBody" aria-expanded="true"><span class="accordion-label"><strong>Одноразовые расходники</strong></span><span class="small">Тапочки, щётки, шампуни и другое</span></button><div class="accordion-body open" id="guestSectionBody"><div id="guestList"></div></div></article></div></section>
+          <section class="subsection"><div class="accordion-group"><article class="accordion-card"><button class="accordion-trigger" type="button" data-toggle-target="linenNewBody" aria-expanded="true"><span class="accordion-label"><strong>Бельё и полотенца</strong></span><span class="small">Поштучный учёт с ID: сводка, статусы, история</span></button><div class="accordion-body open" id="linenNewBody"><div id="linenNewRoot"><div class="empty">Загрузка…</div></div></div></article></div></section>
         </div>
       </section>
     <div class="modal-backdrop" id="financeEntryModal" aria-hidden="true">
@@ -454,6 +455,52 @@
       </div>
     </div>
   </div>
+
+  <!-- Модалка: стартовая инвентаризация белья (6 полей на квартиру) -->
+  <div class="modal-backdrop" id="linenInventoryModal" aria-hidden="true">
+    <div class="modal" style="width:min(560px,100%)">
+      <div class="section-head">
+        <div><h2 class="modal-title">Стартовая инвентаризация</h2><p class="muted" id="linenInventoryApartmentLabel">Сколько сейчас в квартире каждого типа. Приложение создаст позиции с ID.</p></div>
+        <button class="menu-toggle" id="linenInventoryClose" type="button" aria-label="Закрыть">✕</button>
+      </div>
+      <div id="linenInventoryGrid" class="deduction-grid"></div>
+      <div class="actions" style="justify-content:flex-end;margin-top:1rem;gap:.5rem;">
+        <button class="btn btn-secondary" id="linenInventoryCancel" type="button">Отмена</button>
+        <button class="btn btn-primary" id="linenInventorySave" type="button">Создать позиции</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модалка: списание позиции (по ID) -->
+  <div class="modal-backdrop" id="linenRetireModal" aria-hidden="true">
+    <div class="modal" style="width:min(520px,100%)">
+      <div class="section-head">
+        <div><h2 class="modal-title">Списать позицию</h2><p class="muted">Выбери ID и укажи причину. Автоматически создастся заявка на замену.</p></div>
+        <button class="menu-toggle" id="linenRetireClose" type="button" aria-label="Закрыть">✕</button>
+      </div>
+      <div class="request-grid">
+        <label><span class="small">Тип</span><select id="linenRetireType"></select></label>
+        <label><span class="small">ID позиции</span><select id="linenRetireItemId"></select></label>
+        <label><span class="small">Причина</span><input id="linenRetireReason" type="text" placeholder="Несмываемое пятно, дырка…" /></label>
+      </div>
+      <div class="actions" style="justify-content:flex-end;margin-top:1rem;gap:.5rem;">
+        <button class="btn btn-secondary" id="linenRetireCancel" type="button">Отмена</button>
+        <button class="btn btn-danger" id="linenRetireConfirm" type="button">Списать</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модалка: история по белью -->
+  <div class="modal-backdrop" id="linenHistoryModal" aria-hidden="true">
+    <div class="modal" style="width:min(720px,100%);max-height:90dvh;display:flex;flex-direction:column;">
+      <div class="section-head">
+        <div><h2 class="modal-title">История белья</h2><p class="muted" id="linenHistoryApartmentLabel">Последние события по выбранной квартире</p></div>
+        <button class="menu-toggle" id="linenHistoryClose" type="button" aria-label="Закрыть">✕</button>
+      </div>
+      <div id="linenHistoryList" style="overflow-y:auto;"></div>
+    </div>
+  </div>
+
   <script type="module" src="./app.js?v=20260831-20"></script>
 </body>
 </html>
