@@ -138,17 +138,9 @@ function renderInventory(state) {
   dom.apartmentsList.innerHTML = filteredApartments.length
     ? filteredApartments.map((a) => apartmentButton(a, state.activeApartmentId)).join('')
     : '<div class="empty">Ничего не найдено.</div>';
-  const linenItems = apartment.items.filter((i) => i.category === 'linen');
-  const guestItems = apartment.items.filter((i) => i.category === 'guest');
-  dom.linenList.innerHTML = linenItems.length ? `<div class="grid">${linenItems.map(itemCard).join('')}</div>` : '<div class="empty">Нет позиций.</div>';
-  dom.guestList.innerHTML = guestItems.length ? `<div class="grid">${guestItems.map(itemCard).join('')}</div>` : '<div class="empty">Нет позиций.</div>';
-  const total = apartment.items.length;
-  const low = apartment.items.filter((i) => statusBy(i).cls === 'low').length;
-  const warn = apartment.items.filter((i) => statusBy(i).cls === 'warn').length;
-  const ok = apartment.items.filter((i) => statusBy(i).cls === 'ok').length;
-  dom.statsGrid.innerHTML = `<article class="stat"><span>Всего позиций</span><strong>${total}</strong></article><article class="stat"><span>Низкий остаток</span><strong>${low}</strong></article><article class="stat"><span>В зоне внимания</span><strong>${warn}</strong></article><article class="stat"><span>В норме</span><strong>${ok}</strong></article>`;
-  // Блоки «Ежедневный расход», «Комплекты» и «Покрытие запасов» убраны:
-  // расход на заезд и размер комплекта теперь правятся прямо в карточке позиции.
+  // Старые списки расходников (linenList/guestList) и виджет statsGrid убраны вместе с UI:
+  // весь учёт белья/полотенец теперь ведётся через новый модуль linenUI (ниже).
+  if (dom.statsGrid) dom.statsGrid.innerHTML = '';
   // Раздел «Бельё и полотенца» (новый учёт с ID через Supabase). Ошибки внутри
   // не должны валить основной рендер — модуль сам обрабатывает исключения.
   try {
@@ -396,7 +388,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-09-10.35';
+      const BUILD_VERSION = 'v.2026-09-10.36';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
@@ -481,7 +473,7 @@ async function _renderFinanceByCyclesAsync() {
   if (myToken !== _financeAptSummaryToken) return;
   if (!dom.financeByApartment) return;
 
-  const BUILD_VERSION = 'v.2026-09-10.35';
+  const BUILD_VERSION = 'v.2026-09-10.36';
   const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
   const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
