@@ -28,9 +28,15 @@ import { currentApartment, updateState, getDisplayApartmentName } from './state.
 import {
   LINEN_TYPES, LINEN_STATUSES, typeLabel, statusLabel,
   getSummary, listItems, createItem, bulkCreate, setStatus, markLaundered, listEvents,
+  inventorySet, unstain,
 } from './linen.js';
 import { openModal, closeModal } from './render.js';
 import { addHistory } from './actions.js';
+
+// Короткий ID для отображения: short_id, если есть, иначе весь id.
+function dispId(it) {
+  return String(it && (it.short_id || it.id) || '');
+}
 
 // ─── Anti-race: только последний ререндер актуален ────────────────────────────
 let _renderToken = 0;
@@ -90,6 +96,82 @@ export async function renderLinenSection() {
   wireSummaryButtons(summary);
   wireActionButtons();
   wireLaundryChips();
+  wireStainedButtons(summary);
+}
+
+// Список ID в статусе «пятно» — в модалке по клику на число в колонке «Пятно».
+function wireStainedButtons(summary) {
+  document.querySelectorAll('[data-linen-stained]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const typeKey = btn.getAttribute('data-linen-stained');
+      const row = summary.find((r) => r.type === typeKey);
+      if (!row) return;
+      openStainedModal(row);
+    });
+  });
+}
+
+function openStainedModal(row) {
+  const label = typeLabel(row.type);
+  const list = (row.stainedIds || []).map((it) => {
+    const when = it.updated_at ? new Date(it.updated_at).toLocaleString('ru-RU') : '';
+    const note = it.note ? ` · ${escapeHtml(it.note)}` : '';
+    return `
+      <div class="history-row">
+        <div><strong>${escapeHtml(it.short_id || it.id)}</strong><div class="small muted">${escapeHtml(when)}${note}</div></div>
+        <div style="display:flex;gap:.35rem;">
+          <button class="btn btn-secondary" data-linen-unstain="${escapeHtml(it.id)}" type="button" style="padding:.15rem .5rem;font-size:.8rem;">Отстиралось</button>
+          <button class="btn btn-secondary" data-linen-retire-one="${escapeHtml(it.id)}" type="button" style="padding:.15rem .5rem;font-size:.8rem;">Списать</button>
+        </div>
+      </div>`;
+  }).join('') || '<div class="empty">Нет позиций с пятном.</div>';
+  const html = `
+    <div class="modal" id="linenStainedModal" role="dialog" aria-modal="true">
+      <div class="modal__backdrop" data-close></div>
+      <div class="modal__card" style="max-width:520px;">
+        <div class="modal__header">
+          <h2>Пятно — ${escapeHtml(label)}</h2>
+          <button class="modal__close" type="button" data-close aria-label="Закрыть">×</button>
+        </div>
+        <div class="modal__body">${list}</div>
+        <div class="modal__footer"><button class="btn btn-secondary" type="button" data-close>Закрыть</button></div>
+      </div>
+    </div>`;
+  document.getElementById('linenStainedModal')?.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+  const modal = document.getElementById('linenStainedModal');
+  const close = () => { modal?.remove(); };
+  modal?.querySelectorAll('[data-close]').forEach((el) => el.addEventListener('click', close));
+  modal?.querySelectorAll('[data-linen-unstain]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-linen-unstain');
+      btn.setAttribute('disabled', 'disabled');
+      try {
+        await unstain(id);
+        addHistory('Бельё отстиралось', id, 'update');
+        close();
+        renderLinenSection();
+      } catch (e) {
+        alert('Не удалось: ' + (e?.message || e));
+        btn.removeAttribute('disabled');
+      }
+    });
+  });
+  modal?.querySelectorAll('[data-linen-retire-one]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-linen-retire-one');
+      btn.setAttribute('disabled', 'disabled');
+      try {
+        await setStatus(id, 'retired', { actor: 'owner', retiredReason: 'пятно не отстиралось' });
+        addHistory('Списание белья', `${id} · пятно`, 'writeoff');
+        close();
+        renderLinenSection();
+      } catch (e) {
+        alert('Не удалось: ' + (e?.message || e));
+        btn.removeAttribute('disabled');
+      }
+    });
+  });
 }
 
 // ─── Внутренние помощники: HTML ────────────────────────────────────────────────
@@ -109,20 +191,22 @@ function capacityHintHtml(cap) {
 
 function summaryTableHtml(summary) {
   const rows = summary.map((r) => {
-    const deficit = Math.max(0, r.deficit || 0);
+    // Дефицит считаем как norm − have («есть» включает всё, кроме списанных).
+    const deficit = Math.max(0, Number(r.norm || 0) - Number(r.have || 0));
     const low = deficit > 0;
     const bg = low ? 'background:color-mix(in oklab,var(--color-error) 8%,transparent);' : '';
     const reqBtn = low
       ? `<button class="btn btn-secondary" data-linen-request="${r.type}" data-qty="${deficit}" type="button" style="padding:.15rem .5rem;font-size:.8rem;">+ заявка ${deficit}</button>`
       : `<span class="small muted">—</span>`;
+    const stainedCell = Number(r.stained || 0) > 0
+      ? `<button class="btn-link" data-linen-stained="${r.type}" type="button" style="background:none;border:0;padding:0;color:var(--color-warning);font-weight:600;cursor:pointer;text-decoration:underline;">${r.stained}</button>`
+      : `<span>${r.stained || 0}</span>`;
     return `
       <tr style="${bg}">
         <td style="padding:.35rem .5rem;"><strong>${typeLabel(r.type)}</strong></td>
         <td class="num" style="padding:.35rem .5rem;">${r.norm}</td>
-        <td class="num" style="padding:.35rem .5rem;color:var(--color-success);"><strong>${r.ready}</strong></td>
-        <td class="num" style="padding:.35rem .5rem;">${r.in_use}</td>
-        <td class="num" style="padding:.35rem .5rem;">${r.laundry}</td>
-        <td class="num" style="padding:.35rem .5rem;">${r.total}</td>
+        <td class="num" style="padding:.35rem .5rem;color:var(--color-success);"><strong>${r.have}</strong></td>
+        <td class="num" style="padding:.35rem .5rem;">${stainedCell}</td>
         <td style="padding:.35rem .5rem;text-align:right;">${reqBtn}</td>
       </tr>
     `;
@@ -134,10 +218,8 @@ function summaryTableHtml(summary) {
           <tr style="text-align:left;color:var(--color-text-muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.03em;">
             <th style="padding:.35rem .5rem;">Тип</th>
             <th class="num" style="padding:.35rem .5rem;text-align:right;">Норма</th>
-            <th class="num" style="padding:.35rem .5rem;text-align:right;">Готово</th>
-            <th class="num" style="padding:.35rem .5rem;text-align:right;">В исп.</th>
-            <th class="num" style="padding:.35rem .5rem;text-align:right;">В стирке</th>
-            <th class="num" style="padding:.35rem .5rem;text-align:right;">Всего</th>
+            <th class="num" style="padding:.35rem .5rem;text-align:right;">Есть</th>
+            <th class="num" style="padding:.35rem .5rem;text-align:right;">Пятно</th>
             <th></th>
           </tr>
         </thead>
@@ -151,7 +233,7 @@ function laundryBlockHtml(items) {
   if (!items.length) return '';
   const chips = items.map((it) => {
     const stainMark = it.stain_note ? ' 🟡' : '';
-    return `<button class="history-chip" data-linen-laundered="${escapeHtml(it.id)}" type="button" title="Отметить постиранным">${escapeHtml(it.id)}${stainMark}</button>`;
+    return `<button class="history-chip" data-linen-laundered="${escapeHtml(it.id)}" type="button" title="Отметить постиранным">${escapeHtml(dispId(it))}${stainMark}</button>`;
   }).join(' ');
   return `
     <div class="subsection" style="margin-top:1rem;">
@@ -246,16 +328,26 @@ document.addEventListener('click', async (e) => {
   if (total === 0) { alert('Введи хотя бы одно количество.'); return; }
   target.setAttribute('disabled', 'disabled');
   try {
-    for (const p of plan) {
+    // Инвентаризация = УСТАНОВИТЬ итоговое кол-во (а не прибавлять).
+    // План строим по всем типам — пустое поле = 0 (т.е. «списать всё» по этому типу).
+    const fullPlan = Array.from(document.querySelectorAll('#linenInventoryGrid input[data-inv-type]')).map((inp) => ({
+      type: inp.getAttribute('data-inv-type'),
+      qty: Math.max(0, Math.trunc(Number(inp.value || 0))),
+    }));
+    let created = 0;
+    let retired = 0;
+    for (const p of fullPlan) {
       // eslint-disable-next-line no-await-in-loop
-      await bulkCreate(apt.id, p.type, p.qty);
+      const res = await inventorySet(apt.id, p.type, p.qty);
+      created += res.created;
+      retired += res.retired;
     }
-    addHistory('Стартовая инвентаризация белья', `Создано позиций: ${total}`, 'create');
+    addHistory('Инвентаризация белья', `Создано: ${created}, списано: ${retired}`, 'update');
     closeModal('linenInventoryModal');
     renderLinenSection();
   } catch (err) {
     console.warn('[linenUI] inventory error:', err);
-    alert('Ошибка создания: ' + (err?.message || err));
+    alert('Ошибка сохранения: ' + (err?.message || err));
   } finally {
     target.removeAttribute('disabled');
   }
@@ -295,7 +387,7 @@ async function openRetireModal() {
     const items = await listItems(apt.id);
     const filtered = items.filter((it) => it.type === typeKey && it.status !== 'retired');
     idSelect.innerHTML = filtered.length
-      ? filtered.map((it) => `<option value="${escapeHtml(it.id)}">${escapeHtml(it.id)} · ${statusLabel(it.status)}</option>`).join('')
+      ? filtered.map((it) => `<option value="${escapeHtml(it.id)}">${escapeHtml(dispId(it))} · ${statusLabel(it.status)}</option>`).join('')
       : '<option value="">— нет активных позиций —</option>';
   };
   typeSelect.onchange = fillIds;
@@ -320,12 +412,13 @@ document.addEventListener('click', async (e) => {
     const items = await listItems(apt.id, { includeRetired: true });
     const item = items.find((it) => it.id === itemId);
     const label = item ? typeLabel(item.type) : itemId;
+    const shownId = item ? dispId(item) : itemId;
     await setStatus(itemId, 'retired', {
       actor: 'owner',
       retiredReason: reason,
-      onAutoRequest: () => createPurchaseRequestForLinen(item?.type || '', 1, label, `Замена ${itemId}`),
+      onAutoRequest: () => createPurchaseRequestForLinen(item?.type || '', 1, label, `Замена ${shownId}`),
     });
-    addHistory('Списание белья', `${itemId} · ${label}${reason ? ' · ' + reason : ''}`, 'writeoff');
+    addHistory('Списание белья', `${shownId} · ${label}${reason ? ' · ' + reason : ''}`, 'writeoff');
     closeModal('linenRetireModal');
     renderLinenSection();
   } catch (err) {
@@ -377,7 +470,9 @@ async function openHistoryModal() {
       const to = statusLabel(e.to_status);
       const note = e.note ? ` · ${escapeHtml(e.note)}` : '';
       const photo = e.photo_url ? ` · <a href="${escapeHtml(e.photo_url)}" target="_blank" rel="noopener">📷 фото</a>` : '';
-      return `<div class="history-row"><div><strong>${escapeHtml(e.item_id)}</strong><div class="small">${from}${to}${note}${photo}</div></div><div class="small">${actor} · ${when}</div></div>`;
+      // Подменим длинный item_id (NAV-XXXX-0001) на короткий для отображения.
+      const shortId = String(e.item_id || '').match(/(\d+)\s*$/)?.[1] || e.item_id;
+      return `<div class="history-row"><div><strong>${escapeHtml(shortId)}</strong><div class="small">${from}${to}${note}${photo}</div></div><div class="small">${actor} · ${when}</div></div>`;
     }).join('');
   } catch (err) {
     if (list) list.innerHTML = `<div class="empty">Ошибка загрузки: ${escapeHtml(String(err?.message || err))}</div>`;

@@ -318,6 +318,119 @@ async function notifyGuestCleaningDone(userId: string, bookingId: string | null)
   await sendMessage({ channel, chatId }, html, { botProfile: "default" });
 }
 
+// ─── Бельё: поиск apartment_id и сводка ─────────────────────────────────
+
+/**
+ * Возвращает apartment_id квартиры по realty_id, читая клиентский app_state.
+ * Точно так же делает telegram-bot/resolveApartmentId. Без apartment_id мы
+ * не сможем прочитать таблицы linen_items/linen_events/apartment_linen_norms.
+ */
+async function resolveApartmentIdByRealty(userId: string, realtyId: number | null): Promise<string | null> {
+  if (!realtyId) return null;
+  const sb = svc();
+  const { data, error } = await sb.from("app_state").select("state").eq("user_id", userId).maybeSingle();
+  if (error || !data?.state) return null;
+  const apts = (data.state?.apartments ?? []) as any[];
+  const found = apts.find((a) => String(a?.externalIds?.realtyCalendarUnitId ?? "") === String(realtyId));
+  return found?.id ? String(found.id) : null;
+}
+
+/** Человеческие подписи типов белья (те же, что в клиентском linen.js). */
+const LINEN_TYPE_LABELS: Record<string, string> = {
+  navolochka: "Наволочки",
+  pododeyalnik: "Пододеяльники",
+  prostynya: "Простыни",
+  polotence_s: "Полотенца S",
+  polotence_m: "Полотенца M",
+  polotence_l: "Полотенца L",
+};
+const LINEN_STATUS_LABELS: Record<string, string> = {
+  ready: "готово",
+  in_use: "в исп.",
+  laundry: "в стирке",
+  stained: "пятно",
+  retired: "списано",
+};
+
+/** Словарь ключевых слов для распознавания типа белья в тексте клинера. */
+function detectLinenType(text: string): string | null {
+  const t = (text || "").toLowerCase();
+  if (/\bnav|наволоч/.test(t)) return "navolochka";
+  if (/\bpod\b|пододеял/.test(t)) return "pododeyalnik";
+  if (/\bpro\b|простын/.test(t)) return "prostynya";
+  if (/\bpols\b|полотен.*\bs\b|полотен.*мал/.test(t)) return "polotence_s";
+  if (/\bpolm\b|полотен.*\bm\b|полотен.*сред/.test(t)) return "polotence_m";
+  if (/\bpoll\b|полотен.*\bl\b|полотен.*больш/.test(t)) return "polotence_l";
+  return null;
+}
+
+/** Извлечь все короткие цифровые ID (1–6 цифр) из текста, нормализовать в 4 цифры. */
+function extractShortIds(text: string): string[] {
+  const matches = String(text || "").match(/\b\d{1,6}\b/g) || [];
+  const norm = matches.map((m) => m.padStart(4, "0"));
+  return Array.from(new Set(norm));
+}
+
+/**
+ * Читает состояние белья квартиры и возвращает готовый HTML-фрагмент.
+ * Если apartment_id не найден — возвращает предупреждающий текст.
+ * Не бросает исключений: любую ошибку конвертирует в подсказку.
+ */
+async function buildLinenSummary(userId: string, apartmentId: string | null): Promise<string> {
+  if (!apartmentId) return "ℹ️ Учёт белья не подключён для этой квартиры.";
+  const sb = svc();
+  const { data: items, error } = await sb
+    .from("linen_items")
+    .select("id, short_id, type, status")
+    .eq("user_id", userId)
+    .eq("apartment_id", apartmentId)
+    .neq("status", "retired")
+    .order("type", { ascending: true })
+    .order("short_id", { ascending: true });
+  if (error) {
+    console.error("[maid-bot] buildLinenSummary:", error.message);
+    return "⚠️ Не удалось загрузить бельё.";
+  }
+  if (!items || items.length === 0) return "ℹ️ Учёт белья для этой квартиры ещё не заведён.";
+
+  // Группируем по типу: в «есть» — все не-retired ID; в «пятно» — только stained.
+  const byType = new Map<string, { have: string[]; stained: string[] }>();
+  for (const it of items as any[]) {
+    const key = String(it.type);
+    if (!byType.has(key)) byType.set(key, { have: [], stained: [] });
+    const bucket = byType.get(key)!;
+    const shownId = String(it.short_id || it.id);
+    bucket.have.push(shownId);
+    if (String(it.status) === "stained") bucket.stained.push(shownId);
+  }
+
+  const lines: string[] = ["🛏 <b>Бельё квартиры</b>"];
+  const orderedTypes = ["navolochka", "pododeyalnik", "prostynya", "polotence_s", "polotence_m", "polotence_l"];
+  for (const t of orderedTypes) {
+    const b = byType.get(t);
+    if (!b || b.have.length === 0) continue;
+    const label = LINEN_TYPE_LABELS[t] || t;
+    lines.push(
+      `\n<b>${htmlEscape(label)}</b> — есть ${b.have.length}` +
+      `\n  ID: ${htmlEscape(b.have.join(", "))}` +
+      (b.stained.length ? `\n  ⚠️ пятно: ${htmlEscape(b.stained.join(", "))}` : "")
+    );
+  }
+  if (lines.length === 1) return "ℹ️ Все позиции белья списаны.";
+  return lines.join("\n");
+}
+
+/**
+ * Кнопки для сообщения о принятой уборке: показать бельё + сообщить о проблеме.
+ * Обе кнопки безопасны — ничего в базе не меняют без явного подтверждения.
+ */
+function linenActionButtons(cleaningId: string): Btn[] {
+  return [
+    { text: "📋 Бельё", data: `linen_show:${cleaningId}` },
+    { text: "⚠️ Проблема с ID", data: `linen_report:${cleaningId}` },
+  ];
+}
+
 /** Обработка нажатий кнопок горничной. */
 async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messageId: string | null): Promise<boolean> {
   const sb = svc();
@@ -364,7 +477,12 @@ async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messa
       }
     }
 
-    await sendMaid(to, `✅ Спасибо. Уборка <b>${fmtDateShort(cleaning.scheduled_date)}</b> за вами.`);
+    // Подтверждение принятия уборки + кнопки «Бельё» и «Проблема с ID».
+    await sendMaid(
+      to,
+      `✅ Спасибо. Уборка <b>${fmtDateShort(cleaning.scheduled_date)}</b> за вами.`,
+      [linenActionButtons(cleaning.id)],
+    );
     await notifyManager(maid.user_id, `✅ <b>${htmlEscape(maid.name)}</b> сможет убраться <b>${fmtDateShort(cleaning.scheduled_date)}</b> (${htmlEscape(cleaning.apartment_title || "")}).`, "notify_on_cleaning_response");
     return true;
   }
@@ -399,7 +517,10 @@ async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messa
       on_site_at: new Date().toISOString(),
     }).eq("id", cleaning.id);
 
-    const kb: Btn[][] = [[{ text: "✅ Уборка завершена", data: `maid_completed:${cleaning.id}` }]];
+    const kb: Btn[][] = [
+      [{ text: "✅ Уборка завершена", data: `maid_completed:${cleaning.id}` }],
+      linenActionButtons(cleaning.id),
+    ];
     await sendMaid(to, `🏠 Отмечено: вы на месте.\n📍 ${htmlEscape(cleaning.apartment_title || "")}\n\nКогда закончите — нажмите кнопку ниже.`, kb);
     await notifyManager(maid.user_id, `🏠 Горничная <b>${htmlEscape(maid.name)}</b> на месте: ${htmlEscape(cleaning.apartment_title || "")}.`, "notify_on_cleaning_response");
     return true;
@@ -440,6 +561,59 @@ async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messa
       text: `awaiting_supply:${cleaning.id}`,
     });
     await sendMaid(to, `📦 Напишите, что нужно докупить — можно текстом и/или фото.\nВаше следующее сообщение будет отправлено менеджеру как заявка.`);
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Обработка кнопок белья (`linen_show`, `linen_report`).
+ * Важно: в базе ничего не меняем — только пересылка владельцу.
+ * Списание делает только владелец в веб-приложении.
+ */
+async function handleLinenCallback(maid: Maid, to: Recipient, data: string): Promise<boolean> {
+  const [action, cleaningId] = data.split(":");
+  if (!cleaningId) return false;
+  const sb = svc();
+
+  const { data: cleaning } = await sb
+    .from("cleanings")
+    .select("id, user_id, maid_id, apartment_title, realty_id")
+    .eq("id", cleaningId)
+    .maybeSingle();
+  if (!cleaning || cleaning.user_id !== maid.user_id) return false;
+  // Защита от чужой уборки: кнопки видны только «своей», но вдруг кликнул старую.
+  if (cleaning.maid_id && cleaning.maid_id !== maid.id) return false;
+
+  const apartmentId = await resolveApartmentIdByRealty(maid.user_id, cleaning.realty_id ?? null);
+
+  if (action === "linen_show") {
+    const html = await buildLinenSummary(maid.user_id, apartmentId);
+    await sendMaid(to, html);
+    return true;
+  }
+
+  if (action === "linen_report") {
+    if (!apartmentId) {
+      await sendMaid(to, "ℹ️ Учёт белья не подключён для этой квартиры. Сообщите менеджеру обычным сообщением.");
+      return true;
+    }
+    // Ставим ожидание в maid_messages — следующее сообщение клинера будет отчётом о проблеме.
+    await sb.from("maid_messages").insert({
+      user_id: maid.user_id,
+      maid_id: maid.id,
+      tg_chat_id: to.channel === "telegram" ? Number(to.chatId) : null,
+      channel: to.channel,
+      channel_chat_id: to.chatId,
+      direction: "system",
+      sender: "bot",
+      text: `awaiting_linen_report:${cleaning.id}`,
+    });
+    await sendMaid(
+      to,
+      `⚠️ Напишите <b>тип</b> и <b>ID</b> белья с проблемой, например:\n<code>наволочка 0001</code>\n<code>полотенце M 0003</code>\nМожно несколько ID через запятую. Фото — желательно.\n\nСледующее сообщение будет считаться отчётом о пятне.`,
+    );
     return true;
   }
 
@@ -538,9 +712,15 @@ async function showMyCleanings(maid: Maid, to: Recipient) {
         { text: "❌ Отказаться", data: `maid_decline:${c.id}` },
       ]];
     } else if (c.status === "accepted") {
-      kb = [[{ text: "🧹 Приступила к уборке", data: `maid_on_site:${c.id}` }]];
+      kb = [
+        [{ text: "🧹 Приступила к уборке", data: `maid_on_site:${c.id}` }],
+        linenActionButtons(c.id),
+      ];
     } else if (c.status === "on_site") {
-      kb = [[{ text: "✅ Уборка завершена", data: `maid_completed:${c.id}` }]];
+      kb = [
+        [{ text: "✅ Уборка завершена", data: `maid_completed:${c.id}` }],
+        linenActionButtons(c.id),
+      ];
     }
 
     await sendMaid(to, body, kb);
@@ -556,17 +736,84 @@ async function handleMaidFreeText(maid: Maid, to: Recipient, text: string, messa
 
   const sb = svc();
 
-  const { data: sysMsg } = await sb
+  // Ищем любое ожидание от клинера: supply или linen_report.
+  // Берём самое свежее — в выборке оба типа; какой первым — тот и обрабатываем.
+  const { data: sysMsgs } = await sb
     .from("maid_messages")
     .select("id, text")
     .eq("maid_id", maid.id)
     .eq("direction", "system")
-    .like("text", "awaiting_supply:%")
+    .or("text.like.awaiting_supply:%,text.like.awaiting_linen_report:%")
     .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+  const sysMsg = (sysMsgs || [])[0] || null;
 
-  if (sysMsg?.text) {
+  if (sysMsg?.text && String(sysMsg.text).startsWith("awaiting_linen_report:")) {
+    const cleaningId = String(sysMsg.text).replace("awaiting_linen_report:", "");
+    const { data: cleaning } = await sb
+      .from("cleanings")
+      .select("realty_id, apartment_title")
+      .eq("id", cleaningId)
+      .maybeSingle();
+    const apartmentId = await resolveApartmentIdByRealty(maid.user_id, cleaning?.realty_id ?? null);
+    await sb.from("maid_messages").delete().eq("id", sysMsg.id);
+    await logMaidMessage(maid, "inbound", "maid", text, messageId, photoUrl);
+
+    // Парсим текст: тип + один/несколько ID.
+    const typeKey = detectLinenType(text);
+    const shortIds = extractShortIds(text);
+    const marked: string[] = [];
+    const skipped: string[] = [];
+    if (apartmentId && typeKey && shortIds.length > 0) {
+      for (const sid of shortIds) {
+        const { data: rows } = await sb
+          .from("linen_items")
+          .select("id, status")
+          .eq("user_id", maid.user_id)
+          .eq("apartment_id", apartmentId)
+          .eq("type", typeKey)
+          .eq("short_id", sid)
+          .limit(1);
+        const item = (rows || [])[0];
+        if (!item) { skipped.push(sid); continue; }
+        if (item.status === "retired") { skipped.push(sid); continue; }
+        const nowIso = new Date().toISOString();
+        const { error: updErr } = await sb
+          .from("linen_items")
+          .update({ status: "stained", stain_note: text || "", updated_at: nowIso })
+          .eq("id", item.id)
+          .eq("user_id", maid.user_id);
+        if (updErr) { skipped.push(sid); continue; }
+        await sb.from("linen_events").insert({
+          user_id: maid.user_id,
+          item_id: item.id,
+          apartment_id: apartmentId,
+          from_status: item.status,
+          to_status: "stained",
+          actor: "maid",
+          note: text || "",
+          photo_url: photoUrl || "",
+          cleaning_id: cleaningId,
+        });
+        marked.push(sid);
+      }
+    }
+
+    const summaryLine = marked.length
+      ? `✅ Помечено как пятно: ${marked.join(", ")}`
+      : "ℹ️ Не удалось автоматически распознать тип/ID — владелец посмотрит вручную.";
+    const skipLine = skipped.length ? `\n⚠️ Не найдены/списаны: ${skipped.join(", ")}` : "";
+
+    await sendMaid(to, `${summaryLine}${skipLine}\nОтчёт отправлен владельцу.`);
+    await notifyManager(
+      maid.user_id,
+      `⚠️ <b>Проблема с бельём</b>\nОт: <b>${htmlEscape(maid.name)}</b>\nКвартира: ${htmlEscape(cleaning?.apartment_title || "?")}\n${typeKey ? `Тип: <b>${htmlEscape(LINEN_TYPE_LABELS[typeKey] || typeKey)}</b>` : "Тип: не распознан"}${marked.length ? `\nID в статусе «пятно»: <b>${htmlEscape(marked.join(", "))}</b>` : ""}${skipped.length ? `\nНе найдены: ${htmlEscape(skipped.join(", "))}` : ""}\n\n${htmlEscape(text || "(без описания)")}${photoUrl ? `\n<a href="${photoUrl}">фото</a>` : ""}\n\n<i>Решение о списании примите в веб-приложении.</i>`,
+      "notify_on_inbound",
+    );
+    return;
+  }
+
+  if (sysMsg?.text && String(sysMsg.text).startsWith("awaiting_supply:")) {
     const cleaningId = String(sysMsg.text).replace("awaiting_supply:", "");
     const { data: cleaning } = await sb
       .from("cleanings")
@@ -609,10 +856,12 @@ async function handleEvent(ev: InboundEvent) {
     if (ev.callbackId) await answerCallback(ev.channel, ev.callbackId, "", MAID_PROFILE);
     const data = ev.callbackData || "";
 
-    if (data.startsWith("maid_")) {
+    if (data.startsWith("maid_") || data.startsWith("linen_")) {
       const maid = await findMaidByRcpt(to);
       if (maid) {
-        const handled = await handleMaidCallback(maid, to, data, ev.messageId ?? null);
+        const handled = data.startsWith("linen_")
+          ? await handleLinenCallback(maid, to, data)
+          : await handleMaidCallback(maid, to, data, ev.messageId ?? null);
         if (handled) return;
       }
     }

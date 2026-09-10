@@ -22,10 +22,8 @@
  *                to_status, actor, note, photo_url, booking_id, cleaning_id, ts)
  *   apartment_linen_norms(user_id, apartment_id, type, norm_qty)
  *
- * ID позиций — короткие человеко-читаемые: `<PREFIX>-<APT4>-<NN>`.
- * PREFIX: NAV / POD / PRO / POLS / POLM / POLL.
- * APT4 — первые 4 символа id квартиры (для глобальной уникальности между квартирами).
- * NN — сквозная нумерация внутри пары (квартира × тип), с ведущим нулём.
+ * ID позиций — простые 4-значные: 0001, 0002 … внутри пары (квартира × тип).
+ * Пример: наволочка №1 в квартире → id "0001", наволочка №2 → "0002".
  */
 
 import { supabase, requireUser } from './supabase-client.js';
@@ -44,6 +42,7 @@ export const LINEN_STATUSES = [
   { key: 'ready',   label: 'готово'          },
   { key: 'in_use',  label: 'в использовании' },
   { key: 'laundry', label: 'в стирке'        },
+  { key: 'stained', label: 'пятно'           },
   { key: 'retired', label: 'списано'         },
 ];
 
@@ -59,35 +58,38 @@ function typeMeta(typeKey) {
   return LINEN_TYPES.find(x => x.key === typeKey) || null;
 }
 
-// Первые 4 символа id квартиры для короткого суффикса.
-function apartmentShort(apartmentId) {
-  return String(apartmentId || '').replace(/-/g, '').slice(0, 4).toUpperCase();
+// Извлекает числовое значение из id (поддерживает и старые "NAV-XXXX-07",
+// и новые "0001"), чтобы корректно продолжить нумерацию, если что-то осталось.
+function extractIdNumber(id) {
+  const s = String(id || '');
+  const m = s.match(/(\d+)\s*$/);
+  return m ? Number(m[1]) : 0;
 }
 
-// Генерирует следующий id для (квартира × тип): NAV-A1B2-07, POLM-A1B2-01 и т.п.
-async function generateNextId(userId, apartmentId, typeKey) {
+// Следующий short_id (4 цифры) внутри пары (квартира × тип).
+async function generateNextShortId(userId, apartmentId, typeKey) {
   const meta = typeMeta(typeKey);
   if (!meta) throw new Error(`unknown linen type: ${typeKey}`);
-  const prefix = `${meta.prefix}-${apartmentShort(apartmentId)}`;
-  // Достаём все id этой пары (квартира × тип) для этого пользователя,
-  // определяем максимальный порядковый номер и увеличиваем на 1.
   const { data, error } = await supabase
     .from('linen_items')
-    .select('id')
+    .select('short_id, id')
     .eq('user_id', userId)
     .eq('apartment_id', apartmentId)
     .eq('type', typeKey);
   if (error) throw error;
   let max = 0;
   (data || []).forEach((row) => {
-    const m = String(row.id).match(/-(\d+)$/);
-    if (m) {
-      const n = Number(m[1]);
-      if (Number.isFinite(n) && n > max) max = n;
-    }
+    const n = extractIdNumber(row.short_id || row.id);
+    if (Number.isFinite(n) && n > max) max = n;
   });
-  const next = String(max + 1).padStart(2, '0');
-  return `${prefix}-${next}`;
+  return String(max + 1).padStart(4, '0');
+}
+
+// Формирует полный id (PK) из short_id и коротких частей квартиры/типа.
+function makeFullId(apartmentId, typeKey, shortId) {
+  const meta = typeMeta(typeKey) || { prefix: 'X' };
+  const apt4 = String(apartmentId || '').replace(/-/g, '').slice(0, 4).toUpperCase();
+  return `${meta.prefix}-${apt4}-${shortId}`;
 }
 
 /** Список всех позиций квартиры (кроме списанных, если includeRetired=false). */
@@ -172,10 +174,12 @@ async function logEvent({ userId, itemId, apartmentId, fromStatus, toStatus, act
 export async function createItem(apartmentId, typeKey, { status = 'ready', actor = 'owner' } = {}) {
   const user = await requireUser();
   if (!user) throw new Error('нет сессии');
-  const id = await generateNextId(user.id, apartmentId, typeKey);
+  const shortId = await generateNextShortId(user.id, apartmentId, typeKey);
+  const id = makeFullId(apartmentId, typeKey, shortId);
   const now = new Date().toISOString();
   const { error } = await supabase.from('linen_items').insert({
     id,
+    short_id: shortId,
     user_id: user.id,
     apartment_id: apartmentId,
     type: typeKey,
@@ -188,7 +192,7 @@ export async function createItem(apartmentId, typeKey, { status = 'ready', actor
   });
   if (error) throw error;
   await logEvent({ userId: user.id, itemId: id, apartmentId, fromStatus: null, toStatus: status, actor, note: 'создана позиция' });
-  return id;
+  return { id, short_id: shortId };
 }
 
 /**
@@ -200,9 +204,52 @@ export async function bulkCreate(apartmentId, typeKey, count, { actor = 'owner' 
   const ids = [];
   for (let i = 0; i < n; i++) {
     // eslint-disable-next-line no-await-in-loop
-    ids.push(await createItem(apartmentId, typeKey, { actor }));
+    const rec = await createItem(apartmentId, typeKey, { actor });
+    ids.push(rec.id);
   }
   return ids;
+}
+
+/**
+ * Инвентаризация = УСТАНОВИТЬ итог по типу как `targetQty`.
+ * Сейчас больше — лишние списываем (retired, причина в note — «инвентаризация»).
+ * Меньше — дозаводим ready.
+ * Порядок списания: stained → laundry → ready → in_use.
+ */
+export async function inventorySet(apartmentId, typeKey, targetQty, { actor = 'owner' } = {}) {
+  const user = await requireUser();
+  if (!user) throw new Error('нет сессии');
+  const target = Math.max(0, Math.trunc(Number(targetQty || 0)));
+  const { data: current, error } = await supabase
+    .from('linen_items')
+    .select('id, status')
+    .eq('user_id', user.id)
+    .eq('apartment_id', apartmentId)
+    .eq('type', typeKey)
+    .neq('status', 'retired');
+  if (error) throw error;
+  const list = current || [];
+  const now = list.length;
+  let created = 0;
+  let retired = 0;
+  if (target > now) {
+    const need = target - now;
+    for (let i = 0; i < need; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      await createItem(apartmentId, typeKey, { actor });
+      created += 1;
+    }
+  } else if (target < now) {
+    const rank = { stained: 0, laundry: 1, ready: 2, in_use: 3 };
+    const ordered = [...list].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9));
+    const toRetire = ordered.slice(0, now - target);
+    for (const it of toRetire) {
+      // eslint-disable-next-line no-await-in-loop
+      await setStatus(it.id, 'retired', { actor, note: 'инвентаризация' });
+      retired += 1;
+    }
+  }
+  return { created, retired };
 }
 
 /**
@@ -281,14 +328,20 @@ export async function getSummary(apartmentId, sleepingCapacity) {
     listNorms(apartmentId),
   ]);
   const buckets = {};
-  LINEN_TYPES.forEach((t) => { buckets[t.key] = { ready: 0, in_use: 0, laundry: 0, total: 0 }; });
+  LINEN_TYPES.forEach((t) => { buckets[t.key] = { have: 0, stained: 0, stainedIds: [] }; });
   items.forEach((it) => {
     const b = buckets[it.type];
     if (!b) return;
-    b.total += 1;
-    if (it.status === 'ready') b.ready += 1;
-    else if (it.status === 'in_use') b.in_use += 1;
-    else if (it.status === 'laundry') b.laundry += 1;
+    b.have += 1;
+    if (it.status === 'stained') {
+      b.stained += 1;
+      b.stainedIds.push({
+        id: it.id,
+        short_id: it.short_id || it.id,
+        note: it.stain_note || '',
+        updated_at: it.updated_at || null,
+      });
+    }
   });
   const defaultNorm = defaultNormFor(sleepingCapacity);
   return LINEN_TYPES.map((t) => {
@@ -296,7 +349,37 @@ export async function getSummary(apartmentId, sleepingCapacity) {
     const norm = Object.prototype.hasOwnProperty.call(norms, t.key)
       ? Number(norms[t.key] || 0)
       : defaultNorm;
-    const deficit = Math.max(0, norm - b.ready);
-    return { type: t.key, label: t.label, norm, ready: b.ready, in_use: b.in_use, laundry: b.laundry, total: b.total, deficit };
+    return { type: t.key, label: t.label, norm, have: b.have, stained: b.stained, stainedIds: b.stainedIds };
   });
+}
+
+// ─── Обёртки над статусом «пятно» ───────────────────────────────────────
+
+/** Пометить позицию как «пятно» (временно выводится из оборота). */
+export async function markStained(itemId, { actor = 'owner', note = '', photoUrl = '' } = {}) {
+  return setStatus(itemId, 'stained', { actor, note, photoUrl, stainNote: note });
+}
+
+/** Снять пятно (отстиралось) → ready. */
+export async function unstain(itemId, { actor = 'owner' } = {}) {
+  return setStatus(itemId, 'ready', { actor, note: 'пятно отстиралось' });
+}
+
+/** Найти позицию по (apartmentId, type, shortId) — вернёт объект или null. */
+export async function findByShortId(apartmentId, typeKey, shortId) {
+  const user = await requireUser();
+  if (!user) return null;
+  const norm = String(shortId || '').trim();
+  if (!norm) return null;
+  const { data, error } = await supabase
+    .from('linen_items')
+    .select('*')
+    .eq('user_id', user.id)
+    .eq('apartment_id', apartmentId)
+    .eq('type', typeKey)
+    .or(`short_id.eq.${norm},id.like.%-${norm}`)
+    .limit(1)
+    .maybeSingle();
+  if (error) { console.warn('[linen] findByShortId error:', error); return null; }
+  return data || null;
 }
