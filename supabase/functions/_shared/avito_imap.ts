@@ -211,6 +211,73 @@ export class ImapClient {
     return out;
   }
 
+  // Тела писем (TEXT) для набора UID. Возвращает map uid → сниппет тела (первые ~8 КБ).
+  // Декодирует quoted-printable/base64, если указан Content-Transfer-Encoding.
+  // Ошибки на конкретном UID не валят всю выборку — просто пропускаем.
+  async fetchBodies(uids: number[]): Promise<Map<number, string>> {
+    const out = new Map<number, string>();
+    if (uids.length === 0) return out;
+    // Тянем по одному, чтобы литералы гарантированно совпали с UID.
+    for (const uid of uids) {
+      try {
+        const r = await this.command(`UID FETCH ${uid} (BODY.PEEK[TEXT]<0.8192> BODY.PEEK[HEADER.FIELDS (CONTENT-TRANSFER-ENCODING CONTENT-TYPE)])`);
+        if (!r.ok || r.literals.length === 0) continue;
+        // Обычно два литерала: header (первым или вторым — по формату сервера) и body.
+        // Определяем body как самый длинный литерал.
+        let bodyRaw = r.literals[0];
+        let headerRaw = "";
+        if (r.literals.length >= 2) {
+          if (r.literals[1].length > r.literals[0].length) {
+            bodyRaw = r.literals[1];
+            headerRaw = r.literals[0];
+          } else {
+            headerRaw = r.literals[1];
+          }
+        }
+        const h = parseHeaderBlock(headerRaw);
+        const enc = String(h["content-transfer-encoding"] || "").toLowerCase();
+        const ctype = String(h["content-type"] || "").toLowerCase();
+        const charsetMatch = ctype.match(/charset\s*=\s*"?([^";]+)"?/);
+        const charset = (charsetMatch ? charsetMatch[1] : "utf-8").trim();
+        let decoded = bodyRaw;
+        try {
+          if (enc === "base64") {
+            const bin = atob(bodyRaw.replace(/\s+/g, ""));
+            const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+            decoded = new TextDecoder(charset).decode(bytes);
+          } else if (enc === "quoted-printable") {
+            const bytes: number[] = [];
+            const s = bodyRaw.replace(/=\r?\n/g, "");
+            for (let i = 0; i < s.length; i++) {
+              if (s[i] === "=" && i + 2 < s.length) {
+                bytes.push(parseInt(s.substr(i + 1, 2), 16));
+                i += 2;
+              } else {
+                bytes.push(s.charCodeAt(i));
+              }
+            }
+            decoded = new TextDecoder(charset).decode(Uint8Array.from(bytes));
+          } else if (charset && charset !== "utf-8") {
+            const bytes = Uint8Array.from(bodyRaw, (c) => c.charCodeAt(0));
+            decoded = new TextDecoder(charset).decode(bytes);
+          }
+        } catch { /* оставляем bodyRaw как есть */ }
+        // Убираем HTML-теги и лишние пробелы, чтобы упростить поиск ключевых фраз.
+        const plain = decoded
+          .replace(/<style[\s\S]*?<\/style>/gi, " ")
+          .replace(/<script[\s\S]*?<\/script>/gi, " ")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/&nbsp;/g, " ")
+          .replace(/&amp;/g, "&")
+          .replace(/&quot;/g, '"')
+          .replace(/\s+/g, " ")
+          .trim();
+        out.set(uid, plain.slice(0, 4000));
+      } catch { /* пропускаем письмо */ }
+    }
+    return out;
+  }
+
   async logout(): Promise<void> {
     try { await this.command("LOGOUT"); } catch { /* ignore */ }
     try { this.conn?.close(); } catch { /* ignore */ }
@@ -218,16 +285,56 @@ export class ImapClient {
   }
 }
 
-// ─── Классификация письма по теме ────────────────────────────────────────────
-export type AvitoKind = "request" | "paid" | "message" | "cancel" | "other";
+// ─── Классификация письма по теме и телу ─────────────────────────────────────
+// Новые типы:
+//   "review"  — гость поставил оценку/оставил отзыв («Вы получили оценку 5», «Новый отзыв»)
+//   "service" — служебное письмо от Авито, о котором пользователю знать не нужно
+//               («Оставьте отзыв о госте», «Ограничения в чате сняты», «В чат вернулись ограничения»)
+export type AvitoKind = "request" | "paid" | "message" | "cancel" | "review" | "service" | "other";
 
+// Классификация по теме (быстрый первый проход, без чтения тела).
 export function classifyAvito(subject: string): AvitoKind {
   const s = (subject || "").toLowerCase();
   if (s.includes("отмен")) return "cancel";          // «Гость отменил бронь», «Бронирование отменено»
   if (s.includes("мгновенн")) return "request";      // «У вас мгновенная бронь»
   if (s.includes("оплат") || s.includes("оплачен")) return "paid"; // «Гость оплатил жильё»
+  // Отзыв/оценка: «Вы получили оценку 5», «Новый отзыв», «Пользователь оставил отзыв».
+  if (s.includes("оценк") || s.includes("отзыв")) return "review";
   if (s.includes("сообщени")) return "message";      // «Вам пришло новое сообщение»
   return "other";
+}
+
+// Уточнение по телу письма: тема «сообщение» может маскировать служебку
+// («Ограничения в чате сняты», «Оставьте отзыв», «В чат вернулись ограничения»).
+// Также извлекаем текст отзыва и оценку для типа "review".
+export interface RefinedKind {
+  kind: AvitoKind;
+  reviewText?: string; // текст отзыва (для review)
+  reviewRating?: number; // оценка 1–5 (для review)
+}
+
+export function refineByBody(kind: AvitoKind, body: string): RefinedKind {
+  const b = (body || "").toLowerCase();
+  // Служебные маркеры (в теле любого письма) — не показываем.
+  const isService =
+    b.includes("ограничения в чате сняты") ||
+    b.includes("в чат вернулись ограничения") ||
+    b.includes("оставьте отзыв о госте") ||
+    b.includes("оставьте отзыв о продавце");
+  if (isService) return { kind: "service" };
+  // Отзыв в теле — гарантия, что это "review" даже если тема была "other".
+  if (b.includes("новый отзыв") || /получили оценку\s+\d/.test(b)) {
+    const ratingMatch = body.match(/оценку\s+([1-5])/i) || body.match(/★{1,5}|\*{1,5}/);
+    const rating = ratingMatch && ratingMatch[1] ? Number(ratingMatch[1]) : undefined;
+    // Пытаемся достать текст отзыва: часто идёт после блока «Сделка состоялась:» + название объявления.
+    // Простая эвристика — берём фразу после последнего «Приедем» или ищем длинный фрагмент между
+    // блоком с объявлением и словом «Ответить». Если не нашли — просто оставим пусто.
+    let text: string | undefined;
+    const m = body.match(/(?:Приедем[^]*?|кровать[^]*?|м²[^]*?)\.\s*([А-ЯЁ][^]{20,400}?)\s*Ответить/i);
+    if (m) text = m[1].trim();
+    return { kind: "review", reviewText: text, reviewRating: rating };
+  }
+  return { kind };
 }
 
 // Проверка, что отправитель действительно с домена avito.ru.
@@ -241,7 +348,9 @@ export function isFromAvito(from: string): boolean {
 }
 
 // Текст уведомления в Telegram (без персональных данных).
-export function notifyText(kind: AvitoKind): string {
+// Возвращает null для типов, которые НЕ нужно показывать пользователю
+// (service, other) — такие письма пропускаются в poll'е.
+export function notifyText(kind: AvitoKind, extra?: { reviewText?: string; reviewRating?: number }): string | null {
   switch (kind) {
     case "request":
       return "🆕 <b>Новая мгновенная бронь на Авито</b>\nГость оставил заявку — ждём предоплату (обычно 2 часа). Напишите гостю, чтобы ускорить решение.";
@@ -251,7 +360,17 @@ export function notifyText(kind: AvitoKind): string {
       return "✉️ <b>Гость ждёт ответа — уже ~15 минут</b> (Авито).\nСообщение осталось без ответа 15 минут. Ответьте сейчас — быстрый ответ часто решает бронь.";
     case "cancel":
       return "❌ <b>Гость отменил бронь</b> (Авито).\nДаты снова свободны — проверьте календарь и при необходимости откройте их для новых броней.";
+    case "review": {
+      const stars = extra?.reviewRating ? "⭐".repeat(Math.max(1, Math.min(5, extra.reviewRating))) : "";
+      const header = extra?.reviewRating
+        ? `👍 <b>Гость оценил проживание: ${extra.reviewRating}/5</b> ${stars} (Авито).`
+        : "👍 <b>Гость оставил отзыв</b> (Авито).";
+      const body = extra?.reviewText ? `\n\n<i>${extra.reviewText.replace(/[<>]/g, "")}</i>` : "";
+      return header + body;
+    }
+    case "service":
+    case "other":
     default:
-      return "🔔 <b>Новое уведомление от Авито</b>.";
+      return null;
   }
 }

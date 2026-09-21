@@ -19,6 +19,7 @@ import {
   ImapClient,
   isFromAvito,
   notifyText,
+  refineByBody,
 } from "../_shared/avito_imap.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -116,11 +117,27 @@ serve(async (req) => {
       const headers = uids.length ? await client.fetchHeaders(uids) : [];
       headers.sort((a, b) => a.uid - b.uid);
 
+      // Тела писем — только для кандидатов, где тема может маскировать другой тип (message/other/review).
+      // Для cancel/paid/request тема достаточно — не качаем тело (экономия IMAP-трафика).
+      const needBodyUids: number[] = [];
+      const preKind = new Map<number, string>();
+      for (const h of headers) {
+        if (!isFromAvito(h.from)) continue;
+        const k = classifyAvito(h.subject);
+        preKind.set(h.uid, k);
+        if (k === "message" || k === "other" || k === "review") needBodyUids.push(h.uid);
+      }
+      const bodies = needBodyUids.length ? await client.fetchBodies(needBodyUids) : new Map<number, string>();
+
       // Докручиваем last_uid только до успешно обработанных писем (без потерь).
       let committed = since;
+      let skippedService = 0;
       for (const h of headers) {
         if (!isFromAvito(h.from)) { committed = h.uid; continue; }
-        const kind = classifyAvito(h.subject);
+        const preK = (preKind.get(h.uid) as any) || classifyAvito(h.subject);
+        const body = bodies.get(h.uid) || "";
+        const refined = body ? refineByBody(preK, body) : { kind: preK };
+        const kind = refined.kind;
         const msgId = h.messageId || `uid:${cfg.user_id}:${h.uid}`;
 
         // Антидубликат: уже отправляли?
@@ -132,7 +149,17 @@ serve(async (req) => {
           .maybeSingle();
         if (seen) { committed = h.uid; continue; }
 
-        const okSend = await sendTelegram(botToken, cfg.telegram_chat_id, notifyText(kind));
+        const text = notifyText(kind, { reviewText: refined.reviewText, reviewRating: refined.reviewRating });
+        if (!text) {
+          // Служебка или непонятное письмо — пропускаем, но всё равно логируем в avito_notify_log,
+          // чтобы не возвращаться к ним при следующем прогоне.
+          await admin.from("avito_notify_log").insert({ user_id: cfg.user_id, msg_id: msgId, kind });
+          committed = h.uid;
+          skippedService++;
+          continue;
+        }
+
+        const okSend = await sendTelegram(botToken, cfg.telegram_chat_id, text);
         if (!okSend) break; // не удалось отправить — оставим на следующий цикл
 
         await admin.from("avito_notify_log").insert({ user_id: cfg.user_id, msg_id: msgId, kind });
@@ -149,6 +176,7 @@ serve(async (req) => {
       }).eq("user_id", cfg.user_id);
 
       summary.push({ user: cfg.user_id, checked: headers.length, sent });
+      // skippedService — число писем, которые мы сознательно пропустили (служебки Авито); в логе помогает валидировать фильтр.
     } catch (e) {
       await admin.from("avito_notify_config").update({
         last_error: String(e).slice(0, 500),
