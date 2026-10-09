@@ -403,7 +403,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-09-10.36';
+      const BUILD_VERSION = 'v.2026-10-10.1';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
@@ -464,7 +464,85 @@ async function _renderFinanceByApartmentAsync() {
             </tfoot>
           </table>
         </div>
+        ${_PAYOUTS_CONTAINER}
       `;
+      _renderPlatformPayoutsAsync();
+}
+
+// Блок «Ожидаемые выплаты площадок» под таблицей итогов (без разбивки по квартирам).
+// Рисуется асинхронно в свой контейнер #platformPayoutsBlock, ошибки не ломают таблицу.
+const _PAYOUTS_CONTAINER = '<div id="platformPayoutsBlock" style="margin-top:1.25rem;"></div>';
+let _payoutsToken = 0;
+async function _renderPlatformPayoutsAsync() {
+  const myToken = ++_payoutsToken;
+  let rows = [];
+  let mod = null;
+  try {
+    mod = await import('./platformPayouts.js');
+    rows = await mod.getPlatformPayoutsAsync();
+  } catch (e) {
+    console.warn('[render] platformPayouts error:', e);
+    return;
+  }
+  if (myToken !== _payoutsToken) return;
+  const host = document.getElementById('platformPayoutsBlock');
+  if (!host) return;
+  // Показываем всё неполученное + полученное за последние 2 отчётных месяца (для прозрачности).
+  const receivedRecent = rows.filter((r) => r.status === 'received').slice(-2);
+  const visible = rows.filter((r) => r.status !== 'received' || receivedRecent.includes(r));
+  const money = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
+  const STATUS = {
+    accruing: { text: 'Месяц идёт', color: 'var(--color-text-muted)' },
+    waiting:  { text: 'Ожидается', color: 'var(--color-text-muted)' },
+    window:   { text: 'Идёт окно выплаты', color: 'var(--color-warning)' },
+    overdue:  { text: 'Окно прошло — проверьте', color: 'var(--color-error)' },
+    received: { text: 'Пришло', color: 'var(--color-success)' },
+  };
+  const actionCell = (r) => {
+    if (r.status === 'received') {
+      const when = r.received?.at ? ` ${mod.fmtDayMonth(String(r.received.at).slice(0, 10))}` : '';
+      return `<span style="color:var(--color-success);font-weight:600">✓ Пришло${when}</span>
+        <button type="button" class="btn ghost xs" data-action="payout-unmark" data-key="${r.key}" title="Снять отметку">✕</button>`;
+    }
+    if (r.status === 'accruing') return '<span class="small muted">—</span>';
+    return `<button type="button" class="btn btn-secondary xs" data-action="payout-mark" data-key="${r.key}" data-net="${r.net.toFixed(2)}">Пришло</button>`;
+  };
+  const pending = rows.filter((r) => r.status !== 'received');
+  const pendingTotal = pending.reduce((s, r) => s + r.net, 0);
+  const body = visible.length ? visible.map((r) => `
+    <tr>
+      <td class="fin-tbl-name">${r.label}</td>
+      <td>${mod.fmtMonthLabel(r.month)}</td>
+      <td class="num">${r.bookings}</td>
+      <td class="num">${money(r.gross)}</td>
+      <td class="num">${money(r.commission)}</td>
+      <td class="num" style="font-weight:600">${money(r.net)}</td>
+      <td>${mod.fmtDayMonth(r.windowFrom)}–${mod.fmtDayMonth(r.windowTo)}</td>
+      <td style="color:${STATUS[r.status].color}">${STATUS[r.status].text}</td>
+      <td style="white-space:nowrap">${actionCell(r)}</td>
+    </tr>`).join('') : '<tr><td colspan="9" class="muted">Нет ожидаемых выплат.</td></tr>';
+  host.innerHTML = `
+    <h4 style="margin:0 0 .35rem 0;">Ожидаемые выплаты площадок</h4>
+    <div class="small muted" style="margin-bottom:.5rem;">Брони, оплаченные гостем на площадке. Отчётный месяц — по дате выезда, окно выплаты ориентировочное (11–15-й рабочий день следующего месяца). Всего не получено: <strong>${money(pendingTotal)}</strong></div>
+    <div class="fin-tbl-wrap">
+      <table class="fin-tbl">
+        <thead>
+          <tr>
+            <th>Площадка</th>
+            <th>Отчётный месяц</th>
+            <th class="num">Броней</th>
+            <th class="num">Сумма броней</th>
+            <th class="num">Комиссия</th>
+            <th class="num">К выплате</th>
+            <th>Окно выплаты</th>
+            <th>Статус</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 // Переключатель «Общий период ↔ По циклам оплаты».
@@ -488,7 +566,7 @@ async function _renderFinanceByCyclesAsync() {
   if (myToken !== _financeAptSummaryToken) return;
   if (!dom.financeByApartment) return;
 
-  const BUILD_VERSION = 'v.2026-09-10.36';
+  const BUILD_VERSION = 'v.2026-10-10.1';
   const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
   const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -586,7 +664,9 @@ async function _renderFinanceByCyclesAsync() {
     <div class="small muted" style="margin-bottom:.5rem;">Режим: расчёт по циклам оплаты (по умолчанию — текущий цикл каждой квартиры). <span style="opacity:.6">${BUILD_VERSION}</span></div>
     ${cyclesBlock}
     ${noDayBlock}
+    ${_PAYOUTS_CONTAINER}
   `;
+  _renderPlatformPayoutsAsync();
 }
 
 // Заглушки-остатки от старого renderFinance — вынесены в renderUnitEconomicsSection.

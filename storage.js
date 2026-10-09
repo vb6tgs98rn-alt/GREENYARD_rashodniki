@@ -171,6 +171,8 @@ export function normalizeImportedState(raw) {
         endpointUrl: raw?.finance?.bookingSync?.endpointUrl || '/api/realtycalendar/bookings',
         importMode: raw?.finance?.bookingSync?.importMode || 'merge',
       },
+      // Отметки «Пришло» по выплатам площадок: { 'ostrovok.ru|2026-09': { at, amount, expected } }.
+      platformPayouts: (raw?.finance?.platformPayouts && typeof raw.finance.platformPayouts === 'object') ? raw.finance.platformPayouts : {},
     },
     ui: {
       historyFilterApartmentId: raw?.ui?.historyFilterApartmentId || 'all',

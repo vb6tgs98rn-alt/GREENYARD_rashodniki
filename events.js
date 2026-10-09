@@ -1084,6 +1084,31 @@ function bindFinanceModals() {
       openFinanceAptDetails({ aptId, kind, from, to, aptName });
       return;
     }
+    // Ожидаемые выплаты площадок: отметка «Пришло» и её снятие.
+    if (action === 'payout-mark' || action === 'payout-unmark') {
+      const key = btn.dataset.key;
+      if (!key) return;
+      if (action === 'payout-mark') {
+        const expected = Number(btn.dataset.net || 0);
+        const input = prompt('Сколько фактически пришло, ₽?', expected.toFixed(2));
+        if (input === null) return;
+        const amount = Number(String(input).replace(/\s/g, '').replace(',', '.'));
+        if (!Number.isFinite(amount) || amount < 0) { alert('Некорректная сумма'); return; }
+        updateState((s) => {
+          s.finance = s.finance || {};
+          s.finance.platformPayouts = s.finance.platformPayouts || {};
+          s.finance.platformPayouts[key] = { at: new Date().toISOString(), amount, expected };
+        });
+      } else {
+        if (!confirm('Снять отметку «Пришло»?')) return;
+        updateState((s) => {
+          if (s.finance?.platformPayouts) delete s.finance.platformPayouts[key];
+        });
+      }
+      persistState(setStatus, true).catch((e) => console.warn('[events] persistState (payout):', e));
+      await rerender(action === 'payout-mark' ? 'Выплата отмечена' : 'Отметка снята');
+      return;
+    }
     // Стрелки per-квартира в режиме циклов.
     if (action === 'fin-apt-cycle-prev' || action === 'fin-apt-cycle-next') {
       const aptId = btn.dataset.aptId;
