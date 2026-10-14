@@ -1084,6 +1084,20 @@ function bindFinanceModals() {
       openFinanceAptDetails({ aptId, kind, from, to, aptName });
       return;
     }
+    // Выплаты площадок: переключение месяца поступления.
+    if (action === 'payout-month-prev' || action === 'payout-month-next') {
+      const cur = btn.dataset.month;
+      if (!/^\d{4}-\d{2}$/.test(cur || '')) return;
+      const [y, m] = cur.split('-').map(Number);
+      const dt = new Date(Date.UTC(y, m - 1 + (action === 'payout-month-prev' ? -1 : 1), 1));
+      const next = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}`;
+      updateState((s) => {
+        s.ui = s.ui || {}; s.ui.finance = s.ui.finance || {};
+        s.ui.finance.payoutsMonth = next;
+      });
+      await rerender('Месяц выплат изменён');
+      return;
+    }
     // Ожидаемые выплаты площадок: отметка «Пришло» и её снятие.
     if (action === 'payout-mark' || action === 'payout-unmark') {
       const key = btn.dataset.key;

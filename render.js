@@ -403,7 +403,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-10-10.1';
+      const BUILD_VERSION = 'v.2026-10-14.1';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
@@ -487,54 +487,80 @@ async function _renderPlatformPayoutsAsync() {
   if (myToken !== _payoutsToken) return;
   const host = document.getElementById('platformPayoutsBlock');
   if (!host) return;
-  // Показываем всё неполученное + полученное за последние 2 отчётных месяца (для прозрачности).
-  const receivedRecent = rows.filter((r) => r.status === 'received').slice(-2);
-  const visible = rows.filter((r) => r.status !== 'received' || receivedRecent.includes(r));
+  // Выбранный месяц поступления (по умолчанию — текущий).
+  const selMonth = getState().ui?.finance?.payoutsMonth || mod.currentMonth();
+  const visible = rows.filter((r) => r.payMonth === selMonth);
   const money = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
   const STATUS = {
-    accruing: { text: 'Месяц идёт', color: 'var(--color-text-muted)' },
+    stay:     { text: 'Идут проживания', color: 'var(--color-text-muted)' },
     waiting:  { text: 'Ожидается', color: 'var(--color-text-muted)' },
-    window:   { text: 'Идёт окно выплаты', color: 'var(--color-warning)' },
-    overdue:  { text: 'Окно прошло — проверьте', color: 'var(--color-error)' },
+    window:   { text: 'Срок выплаты', color: 'var(--color-warning)' },
+    overdue:  { text: 'Срок прошёл — проверьте', color: 'var(--color-error)' },
     received: { text: 'Пришло', color: 'var(--color-success)' },
   };
   const actionCell = (r) => {
     if (r.status === 'received') {
       const when = r.received?.at ? ` ${mod.fmtDayMonth(String(r.received.at).slice(0, 10))}` : '';
-      return `<span style="color:var(--color-success);font-weight:600">✓ Пришло${when}</span>
+      const diff = Number(r.received?.amount ?? r.net) - r.net;
+      const diffTxt = Math.abs(diff) >= 1 ? `<div class="small" style="color:var(--color-warning)">факт ${money(r.received.amount)} (${diff > 0 ? '+' : '−'}${money(Math.abs(diff))})</div>` : '';
+      return `<span style="color:var(--color-success);font-weight:600">✓ Пришло${when}</span>${diffTxt}
         <button type="button" class="btn ghost xs" data-action="payout-unmark" data-key="${r.key}" title="Снять отметку">✕</button>`;
     }
-    if (r.status === 'accruing') return '<span class="small muted">—</span>';
+    if (r.status === 'stay') return '<span class="small muted">—</span>';
     return `<button type="button" class="btn btn-secondary xs" data-action="payout-mark" data-key="${r.key}" data-net="${r.net.toFixed(2)}">Пришло</button>`;
   };
-  const pending = rows.filter((r) => r.status !== 'received');
-  const pendingTotal = pending.reduce((s, r) => s + r.net, 0);
+  // Итоги месяца: всего ожидается, пришло (факт), осталось.
+  const totalNet = visible.reduce((s, r) => s + r.net, 0);
+  const gotRows = visible.filter((r) => r.status === 'received');
+  const gotSum = gotRows.reduce((s, r) => s + Number(r.received?.amount ?? r.net), 0);
+  const leftSum = visible.filter((r) => r.status !== 'received').reduce((s, r) => s + r.net, 0);
+  // Неполученное из прошлых месяцев — чтобы не потерялось при просмотре текущего.
+  const overdueOld = rows.filter((r) => r.status === 'overdue' && r.payMonth < selMonth);
+  const overdueOldSum = overdueOld.reduce((s, r) => s + r.net, 0);
+  const itemsTitle = (r) => r.items.map((i) => `${i.apt}: ${mod.fmtDayMonth(i.begin)}–${mod.fmtDayMonth(i.end)}, ${money(i.amount - i.commission)}`).join('&#10;').replace(/"/g, '&quot;');
+  const dateCell = (r) => r.windowFrom === r.windowTo
+    ? mod.fmtDayMonth(r.windowFrom)
+    : `${mod.fmtDayMonth(r.windowFrom)}–${mod.fmtDayMonth(r.windowTo)}`;
   const body = visible.length ? visible.map((r) => `
     <tr>
-      <td class="fin-tbl-name">${r.label}</td>
-      <td>${mod.fmtMonthLabel(r.month)}</td>
-      <td class="num">${r.bookings}</td>
+      <td style="white-space:nowrap;font-weight:600">${dateCell(r)}</td>
+      <td class="fin-tbl-name">${r.label}<div class="small muted">${r.refLabel}</div></td>
+      <td class="num" title="${itemsTitle(r)}">${r.bookings}</td>
       <td class="num">${money(r.gross)}</td>
       <td class="num">${money(r.commission)}</td>
       <td class="num" style="font-weight:600">${money(r.net)}</td>
-      <td>${mod.fmtDayMonth(r.windowFrom)}–${mod.fmtDayMonth(r.windowTo)}</td>
       <td style="color:${STATUS[r.status].color}">${STATUS[r.status].text}</td>
       <td style="white-space:nowrap">${actionCell(r)}</td>
-    </tr>`).join('') : '<tr><td colspan="9" class="muted">Нет ожидаемых выплат.</td></tr>';
+    </tr>`).join('') : `<tr><td colspan="8" class="muted">В ${mod.fmtMonthPrep(selMonth)} выплат от площадок нет.</td></tr>`;
+  const overdueNote = overdueOld.length
+    ? `<div class="small" style="color:var(--color-error);margin-bottom:.5rem;">Не отмечены за прошлые месяцы: ${overdueOld.length} выпл. на ${money(overdueOldSum)} — листайте назад ‹</div>`
+    : '';
   host.innerHTML = `
-    <h4 style="margin:0 0 .35rem 0;">Ожидаемые выплаты площадок</h4>
-    <div class="small muted" style="margin-bottom:.5rem;">Брони, оплаченные гостем на площадке. Отчётный месяц — по дате выезда, окно выплаты ориентировочное (11–15-й рабочий день следующего месяца). Всего не получено: <strong>${money(pendingTotal)}</strong></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.35rem;">
+      <h4 style="margin:0;">Выплаты площадок</h4>
+      <div class="fin-cycle-period" style="display:flex;align-items:center;gap:.4rem;">
+        <button type="button" class="cycle-arrow" data-action="payout-month-prev" data-month="${selMonth}" title="Предыдущий месяц">‹</button>
+        <span style="min-width:8.5rem;text-align:center;font-weight:600">${mod.fmtMonthLabel(selMonth)}</span>
+        <button type="button" class="cycle-arrow" data-action="payout-month-next" data-month="${selMonth}" title="Следующий месяц">›</button>
+      </div>
+    </div>
+    <div class="small muted" style="margin-bottom:.35rem;">Деньги за брони, оплаченные гостем на площадке. Даты ориентировочные.</div>
+    <div class="small" style="margin-bottom:.5rem;display:flex;gap:1rem;flex-wrap:wrap;">
+      <span>Ожидается: <strong>${money(totalNet)}</strong></span>
+      <span style="color:var(--color-success)">Пришло: <strong>${money(gotSum)}</strong></span>
+      <span>Осталось: <strong>${money(leftSum)}</strong></span>
+    </div>
+    ${overdueNote}
     <div class="fin-tbl-wrap">
       <table class="fin-tbl">
         <thead>
           <tr>
+            <th>Дата</th>
             <th>Площадка</th>
-            <th>Отчётный месяц</th>
             <th class="num">Броней</th>
             <th class="num">Сумма броней</th>
             <th class="num">Комиссия</th>
             <th class="num">К выплате</th>
-            <th>Окно выплаты</th>
             <th>Статус</th>
             <th></th>
           </tr>
@@ -542,6 +568,7 @@ async function _renderPlatformPayoutsAsync() {
         <tbody>${body}</tbody>
       </table>
     </div>
+    <details class="small muted" style="margin-top:.5rem;"><summary>Как считаются даты</summary><ul style="margin:.35rem 0 0 1rem;padding:0;">${mod.getRuleHints().map((h) => `<li>${h}</li>`).join('')}</ul></details>
   `;
 }
 
@@ -566,7 +593,7 @@ async function _renderFinanceByCyclesAsync() {
   if (myToken !== _financeAptSummaryToken) return;
   if (!dom.financeByApartment) return;
 
-  const BUILD_VERSION = 'v.2026-10-10.1';
+  const BUILD_VERSION = 'v.2026-10-14.1';
   const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
   const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
