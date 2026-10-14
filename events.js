@@ -2272,6 +2272,20 @@ function bindAuth() {
     if (!password || password.length < 6) return 'Пароль минимум 6 символов.';
     return null;
   }
+  // Сетевая ошибка (нет связи с сервером), а не отказ сервера.
+  const GATE_NET_MSG = 'Нет связи с сервером. Возможно, мобильный интернет работает по «белым спискам» — подключитесь к Wi‑Fi.';
+  function isNetworkError(e) {
+    if (!e) return false;
+    if (e.name === 'AuthRetryableFetchError' || e.status === 0) return true;
+    return /failed to fetch|load failed|networkerror|network request failed|timeout/i.test(String(e.message || e));
+  }
+  // Ограничение ожидания: если сервер не отвечает, не висим бесконечно.
+  function withTimeout(promise, ms) {
+    return Promise.race([
+      promise,
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms)),
+    ]);
+  }
   async function gateDoSignIn() {
     const email = (gateEmail?.value || '').trim();
     const password = gatePwd?.value || '';
@@ -2280,11 +2294,13 @@ function bindAuth() {
     gateBusy(true);
     setGateMsg('Выполняется вход...');
     try {
-      const { user, session, error } = await signInWithEmail(email, password);
+      const { user, session, error } = await withTimeout(signInWithEmail(email, password), 20000);
       if (error) {
-        const msg = error.message && (error.message.includes('Invalid login') || error.message.includes('invalid_credentials'))
-          ? 'Неверный email или пароль.'
-          : `Ошибка: ${error.message || error}`;
+        const msg = isNetworkError(error)
+          ? GATE_NET_MSG
+          : error.message && (error.message.includes('Invalid login') || error.message.includes('invalid_credentials'))
+            ? 'Неверный email или пароль.'
+            : `Ошибка: ${error.message || error}`;
         setGateMsg(msg, 'error');
       } else {
         setGateMsg('Вход выполнен', 'success');
@@ -2306,7 +2322,7 @@ function bindAuth() {
         }
       }
     } catch (e) {
-      setGateMsg(`Сетевая ошибка: ${e?.message || e}`, 'error');
+      setGateMsg(isNetworkError(e) ? GATE_NET_MSG : `Сетевая ошибка: ${e?.message || e}`, 'error');
     } finally { gateBusy(false); }
   }
   async function gateDoSignUp() {

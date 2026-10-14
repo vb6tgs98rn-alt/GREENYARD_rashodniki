@@ -10,9 +10,10 @@
 /**
  * supabase-client.js
  * Единственное место, где создаётся Supabase клиент.
- * SDK тянем с ESM-CDN — сборщик не нужен.
+ * SDK лежит локально в vendor/ (та же версия 2.49.2, собрана esbuild в один файл),
+ * чтобы приложение загружалось, даже если CDN esm.sh заблокирован («белые списки»).
  */
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.2?bundle';
+import { createClient } from './vendor/supabase-js-2.49.2.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
