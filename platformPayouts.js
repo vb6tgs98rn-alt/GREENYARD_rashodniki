@@ -12,8 +12,12 @@
  *   • Броневик (реестровая оплата): раз в месяц, по дате выезда,
  *     перевод после 7-го числа следующего месяца в течение 2–5 рабочих дней.
  *   • Яндекс Путешествия (апартаменты): по каждой брони отдельно,
- *     через 5 рабочих дней после выезда гостя.
- * Сумма к выплате = сумма брони − комиссия площадки (platform_tax из RealtyCalendar).
+ *     «через 5 рабочих дней после выезда». Факт: выезд 07.10 → деньги 12.10,
+ *     т.е. раньше срока. Поэтому окно: от выезда + 5 календарных дней
+ *     (ближайший рабочий) до 5-го рабочего дня после выезда.
+ *     Сумма: «оплачено» (prepayment) − 17% — при продлениях гость обычно
+ *     доплачивает напрямую, а комиссия в RealtyCalendar после правок неточная.
+ * Остальные площадки: сумма брони − комиссия площадки (platform_tax из RealtyCalendar).
  *
  * Выплаты показываются по месяцу поступления. Отметка «Пришло» хранится в
  * state.finance.platformPayouts[key], где key:
@@ -43,9 +47,17 @@ export const PAYOUT_RULES = {
   'YandexTravel': {
     label: 'Яндекс Путешествия',
     mode: 'per_booking',
-    // Через 5 рабочих дней после даты выезда.
-    payDate: (endDate) => workdayAfter(endDate, 5),
-    hint: 'через 5 рабочих дней после выезда гостя, по каждой брони',
+    // Окно: [выезд + 5 календарных дней → ближайший рабочий; 5-й рабочий день после выезда].
+    payWindow: (endDate) => {
+      const to = workdayAfter(endDate, 5);
+      let from = addDaysIso(endDate, 5);
+      while (!isWorkdayIso(from)) from = addDaysIso(from, 1);
+      return [from < to ? from : to, to];
+    },
+    // Сумма к выплате считается от «оплачено», комиссия фиксированная.
+    useBasePaid: true,
+    commissionRate: 0.17,
+    hint: 'по каждой брони: выезд + 5 дней … 5-й рабочий день после выезда; сумма — «оплачено» минус 17%',
   },
 };
 
@@ -158,7 +170,7 @@ export async function getPlatformPayoutsAsync() {
   const platforms = Object.keys(PAYOUT_RULES);
   const { data, error } = await supabase
     .from('rc_bookings')
-    .select('booking_id, source, apartment_title, begin_date, end_date, amount, platform_tax, status, raw_payload')
+    .select('booking_id, source, apartment_title, begin_date, end_date, amount, prepayment, platform_tax, status, raw_payload')
     .eq('user_id', user.id)
     .in('source', platforms)
     .not('status', 'in', '(canceled,deleted)')
@@ -184,8 +196,9 @@ export async function getPlatformPayoutsAsync() {
       refLabel = `выезды за ${MONTHS_NOM[Number(ym.slice(5)) - 1].toLowerCase()}`;
       stay = ym >= todayYm;
     } else {
-      windowFrom = windowTo = rule.payDate(end);
-      key = `${b.source}|d:${windowFrom}`;
+      [windowFrom, windowTo] = rule.payWindow(end);
+      // Ключ — по последнему дню окна (совместимо с уже поставленными отметками).
+      key = `${b.source}|d:${windowTo}`;
       refLabel = '';
       stay = end > today;
     }
@@ -193,12 +206,18 @@ export async function getPlatformPayoutsAsync() {
       groups.set(key, { key, platform: b.source, label: rule.label, mode: rule.mode, refLabel, windowFrom, windowTo, stay: false, bookings: 0, gross: 0, commission: 0, items: [] });
     }
     const g = groups.get(key);
-    const commission = bookingCommission(b);
+    if (windowFrom < g.windowFrom) g.windowFrom = windowFrom;
+    // База: «оплачено» (для Яндекса) или сумма брони.
+    const paid = Number(b.prepayment || 0);
+    const base = rule.useBasePaid && paid > 0 ? paid : Number(b.amount || 0);
+    const commission = rule.commissionRate != null
+      ? Math.round(base * rule.commissionRate * 100) / 100
+      : bookingCommission(b);
     g.bookings += 1;
-    g.gross += Number(b.amount || 0);
+    g.gross += base;
     g.commission += commission;
     g.stay = g.stay || stay;
-    g.items.push({ apt: b.apartment_title || '', begin: b.begin_date, end, amount: Number(b.amount || 0), commission });
+    g.items.push({ apt: b.apartment_title || '', begin: b.begin_date, end, amount: base, commission });
   });
 
   const rows = [];
