@@ -12,11 +12,13 @@
  *   • Броневик (реестровая оплата): раз в месяц, по дате выезда,
  *     перевод после 7-го числа следующего месяца в течение 2–5 рабочих дней.
  *   • Яндекс Путешествия (апартаменты): по каждой брони отдельно,
- *     «через 5 рабочих дней после выезда». Факт: выезд 07.10 → деньги 12.10,
- *     т.е. раньше срока. Поэтому окно: от выезда + 5 календарных дней
- *     (ближайший рабочий) до 5-го рабочего дня после выезда.
- *     Сумма: «оплачено» (prepayment) − 17% — при продлениях гость обычно
- *     доплачивает напрямую, а комиссия в RealtyCalendar после правок неточная.
+ *     сверка 4 выплат (31.08, 16.09, 24.09, 12.10): деньги приходят в день
+ *     «выезд + 5 календарных дней» (если выходной — ближайший рабочий).
+ *     Сумма: «оплачено» (prepayment) − комиссия RealtyCalendar — совпало с Яндексом
+ *     до копейки во всех 4 случаях (доплаты за продления идут напрямую).
+ *
+ * Дата выезда и суммы берутся из снимка rc_payout_snapshots (фиксируется в момент
+ * поступления брони), чтобы ручное продление не сдвигало выплату.
  * Остальные площадки: сумма брони − комиссия площадки (platform_tax из RealtyCalendar).
  *
  * Выплаты показываются по месяцу поступления. Отметка «Пришло» хранится в
@@ -47,17 +49,17 @@ export const PAYOUT_RULES = {
   'YandexTravel': {
     label: 'Яндекс Путешествия',
     mode: 'per_booking',
-    // Окно: [выезд + 5 календарных дней → ближайший рабочий; 5-й рабочий день после выезда].
+    // Дата: выезд + 5 календарных дней → ближайший рабочий (по факту сверки).
     payWindow: (endDate) => {
-      const to = workdayAfter(endDate, 5);
-      let from = addDaysIso(endDate, 5);
-      while (!isWorkdayIso(from)) from = addDaysIso(from, 1);
-      return [from < to ? from : to, to];
+      let d = addDaysIso(endDate, 5);
+      while (!isWorkdayIso(d)) d = addDaysIso(d, 1);
+      return [d, d];
     },
-    // Сумма к выплате считается от «оплачено», комиссия фиксированная.
+    // Старый ключ отметки (до сверки считали 5-й рабочий день) — чтобы отметки не потерялись.
+    legacyDate: (endDate) => workdayAfter(endDate, 5),
+    // Сумма к выплате считается от «оплачено».
     useBasePaid: true,
-    commissionRate: 0.17,
-    hint: 'по каждой брони: выезд + 5 дней … 5-й рабочий день после выезда; сумма — «оплачено» минус 17%',
+    hint: 'по каждой брони: выезд + 5 дней (если выходной — ближайший рабочий); сумма — «оплачено» минус комиссия',
   },
 };
 
@@ -177,16 +179,32 @@ export async function getPlatformPayoutsAsync() {
     .limit(3000);
   if (error) { console.warn('[payouts] rc_bookings fetch error:', error.message); return []; }
 
+  // Снимки на момент поступления брони: дата выезда и суммы не меняются
+  // при ручных продлениях. Если снимка нет — берём текущие данные брони.
+  const snaps = new Map();
+  {
+    const { data: sData, error: sErr } = await supabase
+      .from('rc_payout_snapshots')
+      .select('booking_id, end_date, amount, prepayment, platform_tax')
+      .eq('user_id', user.id)
+      .in('source', platforms)
+      .limit(3000);
+    if (sErr) console.warn('[payouts] snapshots fetch error:', sErr.message);
+    (sData || []).forEach((s) => snaps.set(String(s.booking_id), s));
+  }
+
   const marks = getState().finance?.platformPayouts || {};
   const today = todayIso();
   const todayYm = today.slice(0, 7);
 
   const groups = new Map();
   (data || []).forEach((b) => {
-    if (!b.end_date || Number(b.amount || 0) <= 0) return;
+    const snap = snaps.get(String(b.booking_id));
+    const endRaw = snap?.end_date || b.end_date;
+    if (!endRaw || Number(b.amount || 0) <= 0) return;
     const rule = PAYOUT_RULES[b.source];
     if (!rule) return;
-    const end = String(b.end_date).slice(0, 10);
+    const end = String(endRaw).slice(0, 10);
     let key; let windowFrom; let windowTo; let refLabel; let stay;
     if (rule.mode === 'monthly') {
       const ym = end.slice(0, 7);
@@ -197,22 +215,21 @@ export async function getPlatformPayoutsAsync() {
       stay = ym >= todayYm;
     } else {
       [windowFrom, windowTo] = rule.payWindow(end);
-      // Ключ — по последнему дню окна (совместимо с уже поставленными отметками).
       key = `${b.source}|d:${windowTo}`;
       refLabel = '';
       stay = end > today;
     }
     if (!groups.has(key)) {
-      groups.set(key, { key, platform: b.source, label: rule.label, mode: rule.mode, refLabel, windowFrom, windowTo, stay: false, bookings: 0, gross: 0, commission: 0, items: [] });
+      groups.set(key, { key, legacyKeys: [], platform: b.source, label: rule.label, mode: rule.mode, refLabel, windowFrom, windowTo, stay: false, bookings: 0, gross: 0, commission: 0, items: [] });
     }
     const g = groups.get(key);
-    if (windowFrom < g.windowFrom) g.windowFrom = windowFrom;
-    // База: «оплачено» (для Яндекса) или сумма брони.
-    const paid = Number(b.prepayment || 0);
-    const base = rule.useBasePaid && paid > 0 ? paid : Number(b.amount || 0);
-    const commission = rule.commissionRate != null
-      ? Math.round(base * rule.commissionRate * 100) / 100
-      : bookingCommission(b);
+    if (rule.legacyDate) g.legacyKeys.push(`${b.source}|d:${rule.legacyDate(end)}`);
+    // База: «оплачено» (для Яндекса) или сумма брони — из снимка, если он есть.
+    const amount = Number(snap?.amount ?? b.amount ?? 0);
+    const paid = Number(snap?.prepayment ?? b.prepayment ?? 0);
+    const base = rule.useBasePaid && paid > 0 ? paid : amount;
+    const snapTax = Number(snap?.platform_tax);
+    const commission = Number.isFinite(snapTax) && snapTax > 0 ? snapTax : bookingCommission(b);
     g.bookings += 1;
     g.gross += base;
     g.commission += commission;
@@ -222,7 +239,14 @@ export async function getPlatformPayoutsAsync() {
 
   const rows = [];
   groups.forEach((g) => {
-    const mark = marks[g.key] || null;
+    const legacy = (g.legacyKeys || []).find((k) => marks[k]);
+    const mark = marks[g.key] || (legacy ? marks[legacy] : null);
+    // Переносим старую отметку на новый ключ (в памяти; сохранится при следующем persist).
+    if (!marks[g.key] && legacy && getState().finance?.platformPayouts) {
+      const store = getState().finance.platformPayouts;
+      store[g.key] = store[legacy];
+      delete store[legacy];
+    }
     let status;
     if (mark) status = 'received';
     else if (g.stay) status = 'stay';
