@@ -65,6 +65,81 @@ function parseHeaderBlock(block: string): Record<string, string> {
   return res;
 }
 
+// ─── Разбор MIME для поиска ключевых фраз в теле письма ─────────────────────────────
+// Письма Авито — multipart (text/plain + text/html), каждая часть со своим
+// Content-Transfer-Encoding. Раньше декодировался только верхний уровень и первые 8 КБ,
+// поэтому фразы вроде «В чат вернулись ограничения» иногда не находились.
+
+function decodeTransfer(raw: string, enc: string, charset: string): string {
+  const cs = (charset || "utf-8").trim() || "utf-8";
+  try {
+    if (enc === "base64") {
+      const bin = atob(raw.replace(/[^A-Za-z0-9+/=]/g, ""));
+      return new TextDecoder(cs).decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+    }
+    if (enc === "quoted-printable") {
+      const s = raw.replace(/=\r?\n/g, "");
+      const bytes: number[] = [];
+      for (let i = 0; i < s.length; i++) {
+        const hex = s.substr(i + 1, 2);
+        if (s[i] === "=" && /^[0-9A-Fa-f]{2}$/.test(hex)) {
+          bytes.push(parseInt(hex, 16));
+          i += 2;
+        } else {
+          // Символы вне ASCII в QP не должны встречаться; на всякий случай кодируем в UTF-8.
+          const code = s.charCodeAt(i);
+          if (code < 128) bytes.push(code);
+          else bytes.push(...new TextEncoder().encode(s[i]));
+        }
+      }
+      return new TextDecoder(cs).decode(Uint8Array.from(bytes));
+    }
+  } catch { /* вернём как есть */ }
+  return raw;
+}
+
+// HTML → простой текст с нормализацией пробелов и сущностей.
+export function htmlToPlain(s: string): string {
+  return s
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&laquo;/gi, "«")
+    .replace(/&raquo;/gi, "»")
+    .replace(/&mdash;|&ndash;/gi, "—")
+    .replace(/&quot;/gi, '"')
+    .replace(/&amp;/gi, "&")
+    .replace(/[\u00a0\u202f\u2007]/g, " ")
+    .replace(/[\u00ad\u200b\u200c\u200d\ufeff]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Рекурсивно достаём весь текст из MIME-сущности (заголовки + тело).
+export function mimeToText(entity: string, depth = 0): string {
+  if (depth > 6) return "";
+  const sep = entity.search(/\r?\n\r?\n/);
+  const headRaw = sep >= 0 ? entity.slice(0, sep) : "";
+  const body = sep >= 0 ? entity.slice(sep).replace(/^\r?\n\r?\n/, "") : entity;
+  const h = parseHeaderBlock(headRaw);
+  const ctype = String(h["content-type"] || "text/plain").toLowerCase();
+  const enc = String(h["content-transfer-encoding"] || "").toLowerCase().trim();
+  if (ctype.startsWith("multipart/")) {
+    const bm = String(h["content-type"] || "").match(/boundary\s*=\s*"?([^";]+)"?/i);
+    if (!bm) return htmlToPlain(body);
+    const boundary = "--" + bm[1].trim();
+    const parts = body.split(boundary).slice(1).filter((p) => !p.startsWith("--"));
+    return parts.map((p) => mimeToText(p.replace(/^\r?\n/, ""), depth + 1)).join(" ");
+  }
+  if (!ctype.startsWith("text/")) return ""; // картинки и вложения не нужны
+  const cm = ctype.match(/charset\s*=\s*"?([^";]+)"?/);
+  const decoded = decodeTransfer(body, enc, cm ? cm[1] : "utf-8");
+  return htmlToPlain(decoded);
+}
+
 export class ImapClient {
   private conn: Deno.TlsConn | null = null;
   private buf = new Uint8Array(0);
@@ -220,6 +295,15 @@ export class ImapClient {
     // Тянем по одному, чтобы литералы гарантированно совпали с UID.
     for (const uid of uids) {
       try {
+        // Всё письмо целиком (до 256 КБ) и полноценный разбор MIME.
+        const full = await this.command(`UID FETCH ${uid} (BODY.PEEK[]<0.262144>)`);
+        if (full.ok && full.literals.length > 0) {
+          const raw = full.literals.reduce((a, b) => (b.length > a.length ? b : a), "");
+          const text = mimeToText(raw);
+          if (text) { out.set(uid, text.slice(0, 20000)); continue; }
+        }
+      } catch { /* пробуем старый способ */ }
+      try {
         const r = await this.command(`UID FETCH ${uid} (BODY.PEEK[TEXT]<0.8192> BODY.PEEK[HEADER.FIELDS (CONTENT-TRANSFER-ENCODING CONTENT-TYPE)])`);
         if (!r.ok || r.literals.length === 0) continue;
         // Обычно два литерала: header (первым или вторым — по формату сервера) и body.
@@ -288,9 +372,10 @@ export class ImapClient {
 // ─── Классификация письма по теме и телу ─────────────────────────────────────
 // Новые типы:
 //   "review"  — гость поставил оценку/оставил отзыв («Вы получили оценку 5», «Новый отзыв»)
+//   "unlocked" — «Ограничения в чате сняты»: теперь доступен телефон гостя
 //   "service" — служебное письмо от Авито, о котором пользователю знать не нужно
-//               («Оставьте отзыв о госте», «Ограничения в чате сняты», «В чат вернулись ограничения»)
-export type AvitoKind = "request" | "paid" | "message" | "cancel" | "review" | "service" | "other";
+//               («Оставьте отзыв о госте», «В чат вернулись ограничения»)
+export type AvitoKind = "request" | "paid" | "message" | "cancel" | "review" | "unlocked" | "service" | "other";
 
 // Классификация по теме (быстрый первый проход, без чтения тела).
 export function classifyAvito(subject: string): AvitoKind {
@@ -314,11 +399,15 @@ export interface RefinedKind {
 }
 
 export function refineByBody(kind: AvitoKind, body: string): RefinedKind {
-  const b = (body || "").toLowerCase();
+  // Нормализация: нижний регистр, ё→е, любые пробелы → один пробел.
+  const b = (body || "").toLowerCase().replace(/ё/g, "е").replace(/[\s\u00a0]+/g, " ");
+  // «Ограничения в чате сняты» — отдельное уведомление про доступный телефон гостя.
+  if (/ограничения в чате сняты/.test(b)) return { kind: "unlocked" };
   // Служебные маркеры (в теле любого письма) — не показываем.
   const isService =
-    b.includes("ограничения в чате сняты") ||
     b.includes("в чат вернулись ограничения") ||
+    b.includes("в чате вернулись ограничения") ||
+    b.includes("ограничения в чате возвращены") ||
     b.includes("оставьте отзыв о госте") ||
     b.includes("оставьте отзыв о продавце");
   if (isService) return { kind: "service" };
@@ -368,6 +457,8 @@ export function notifyText(kind: AvitoKind, extra?: { reviewText?: string; revie
       const body = extra?.reviewText ? `\n\n<i>${extra.reviewText.replace(/[<>]/g, "")}</i>` : "";
       return header + body;
     }
+    case "unlocked":
+      return "📞 <b>Телефон гостя теперь доступен</b> (Авито).\nОграничения в чате сняты — гостю можно позвонить или написать напрямую.";
     case "service":
     case "other":
     default:
