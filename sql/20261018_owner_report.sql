@@ -30,6 +30,12 @@ create table if not exists public.owner_report_log (
 );
 alter table public.owner_report_log enable row level security;
 
+-- Доступ только для сервера (Edge Function работает под service_role).
+grant select, insert, update, delete on public.owner_report_config to service_role;
+grant select, insert, update, delete on public.owner_report_log to service_role;
+revoke all on public.owner_report_config from anon, authenticated;
+revoke all on public.owner_report_log from anon, authenticated;
+
 -- Секреты (создаются один раз; повторный запуск не меняет существующие).
 do $$
 begin
