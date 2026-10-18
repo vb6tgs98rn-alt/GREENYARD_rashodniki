@@ -127,6 +127,17 @@ function bindDrawerModals() {
     }
   });
 
+  // Отчёты по квартирам в Telegram — отдельный бот, PDF в день выплаты
+  byId('openOwnerReport')?.addEventListener('click', async () => {
+    closeDrawer();
+    try {
+      const { openOwnerReportModal } = await import('./ownerReport.js?v=20261018-1');
+      await openOwnerReportModal();
+    } catch (err) {
+      setStatus('Ошибка открытия: ' + (err?.message || err));
+    }
+  });
+
   // RealtyCalendar — открываем финансовый модал сразу на настройках интеграции
   byId('openRealtyIntegration')?.addEventListener('click', () => {
     ensureFinanceGeneratedForCurrentMonth();
@@ -1121,6 +1132,26 @@ function bindFinanceModals() {
       }
       persistState(setStatus, true).catch((e) => console.warn('[events] persistState (payout):', e));
       await rerender(action === 'payout-mark' ? 'Выплата отмечена' : 'Отметка снята');
+      return;
+    }
+    // PDF-отчёт по квартире за показанный период (собирается на сервере).
+    if (action === 'fin-apt-report-pdf') {
+      const { aptId, from, to } = btn.dataset;
+      if (!aptId || !from || !to) return;
+      if (btn.disabled) return;
+      btn.disabled = true;
+      const prevText = btn.textContent;
+      btn.textContent = '…';
+      try {
+        const { downloadOwnerReport } = await import('./ownerReport.js?v=20261018-1');
+        await downloadOwnerReport(aptId, from, to);
+        setStatus('Отчёт сформирован');
+      } catch (err) {
+        setStatus('Ошибка отчёта: ' + (err?.message || err));
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prevText;
+      }
       return;
     }
     // Стрелки per-квартира в режиме циклов.

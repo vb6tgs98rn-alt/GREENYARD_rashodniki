@@ -403,7 +403,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-10-14.3';
+      const BUILD_VERSION = 'v.2026-10-18.1';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
@@ -593,7 +593,7 @@ async function _renderFinanceByCyclesAsync() {
   if (myToken !== _financeAptSummaryToken) return;
   if (!dom.financeByApartment) return;
 
-  const BUILD_VERSION = 'v.2026-10-14.3';
+  const BUILD_VERSION = 'v.2026-10-18.1';
   const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
   const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -618,7 +618,7 @@ async function _renderFinanceByCyclesAsync() {
   const periodCell = (r) => {
     const badge = r.offset === 0 ? '' : `<sup class="small muted">${r.offset > 0 ? '+' : ''}${r.offset}</sup>`;
     return `<td class="fin-cycle-period small muted">
-      <button type="button" class="cycle-arrow" data-action="fin-apt-cycle-prev" data-apt-id="${r.apartmentId}" title="Предыдущий цикл">‹</button><span class="cycle-range">${fmtRange(r.period.from, r.period.to)}${badge}</span><button type="button" class="cycle-arrow" data-action="fin-apt-cycle-next" data-apt-id="${r.apartmentId}" title="Следующий цикл">›</button>
+      <button type="button" class="cycle-arrow" data-action="fin-apt-cycle-prev" data-apt-id="${r.apartmentId}" title="Предыдущий цикл">‹</button><span class="cycle-range">${fmtRange(r.period.from, r.period.to)}${badge}</span><button type="button" class="cycle-arrow" data-action="fin-apt-cycle-next" data-apt-id="${r.apartmentId}" title="Следующий цикл">›</button><button type="button" class="cycle-arrow cycle-pdf" data-action="fin-apt-report-pdf" data-apt-id="${r.apartmentId}" data-from="${r.period?.from || ''}" data-to="${r.period?.to || ''}" title="Скачать PDF-отчёт за этот период">PDF</button>
     </td>`;
   };
 

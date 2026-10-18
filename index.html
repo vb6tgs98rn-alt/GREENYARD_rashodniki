@@ -16,7 +16,7 @@
   <title>Green Yard</title>
   <!-- Шрифт грузится неблокирующе: если fontshare недоступен, страница не зависает (системный шрифт). -->
   <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-  <link rel="stylesheet" href="./styles.css?v=20260831-20" />
+  <link rel="stylesheet" href="./styles.css?v=20261018-1" />
 </head>
 <body class="is-guest">
   <!-- ─── Экран входа для гостя (виден только при body.is-guest) ────────── -->
@@ -66,6 +66,7 @@
     <button class="drawer-item" id="openOkidokiSettings"><span>Договоры (Okidoki)</span><span class="small">Электронная подпись договоров</span></button>
     <button class="drawer-item" id="openRealtyIntegration"><span>RealtyCalendar</span><span class="small">Синхронизация бронирований</span></button>
     <button class="drawer-item" id="openAvitoNotify"><span>Уведомления Авито</span><span class="small">Быстрые уведомления в Telegram из почты</span></button>
+    <button class="drawer-item" id="openOwnerReport"><span>Отчёты в Telegram</span><span class="small">PDF-отчёт по квартире в день выплаты</span></button>
     <div class="theme-switch">
       <div><strong>Тема</strong><div class="small" id="themeLabel">Светлая</div></div>
       <button class="switch" id="drawerThemeToggle" aria-label="Сменить тему"></button>
@@ -327,6 +328,21 @@
       <div id="avitoNotifyMsg" class="auth-dropdown-msg" role="status" aria-live="polite" style="margin-top:.5rem;"></div>
     </div>
   </div>
+  <div class="modal-backdrop" id="ownerReportModal" aria-hidden="true">
+    <div class="modal" style="width:min(560px,100%);max-height:90dvh;overflow:auto;">
+      <div class="section-head">
+        <div><h2 class="modal-title">Отчёты в Telegram</h2><p class="muted">PDF-отчёт по квартире за цикл оплаты</p></div>
+        <button class="menu-toggle" id="closeOwnerReport" aria-label="Закрыть">✕</button>
+      </div>
+      <div class="hint" style="margin-bottom:1rem;">
+        <p class="small" style="margin:0;">В день выплаты в 09:00 МСК отдельный бот присылает PDF-отчёт по каждой квартире за закончившийся цикл оплаты. Отчёт за любой цикл можно скачать кнопкой «PDF» в таблице «По циклам оплаты».</p>
+      </div>
+      <div id="ownerReportBotSetup" style="margin-bottom:1rem;" hidden></div>
+      <div id="ownerReportStatus" class="status-box" style="margin-bottom:1rem;">…</div>
+      <div id="ownerReportLinkWrap" style="margin-bottom:1rem;"></div>
+      <div id="ownerReportMsg" class="auth-dropdown-msg" role="status" aria-live="polite" style="margin-top:.5rem;"></div>
+    </div>
+  </div>
   <div class="modal-backdrop" id="historyModal" aria-hidden="true"><div class="modal" style="width:min(820px,100%)"><div class="section-head" style="align-items:flex-start;"><div style="flex:1"><h2 class="modal-title">История списаний</h2><p class="muted">Все действия фиксируются автоматически.</p><div class="history-filter" id="historyApartmentFilter"></div></div><button class="menu-toggle" id="closeHistoryModal" aria-label="Закрыть">✕</button></div><div class="history-modal-list" id="historyModalList"></div></div></div>
   <div class="modal-backdrop" id="purchaseRequestsModal" aria-hidden="true"><div class="modal" style="width:min(900px,100%)"><div class="section-head"><div><h2 class="modal-title">Заявки на закупку</h2><p class="muted">Создавай новые закупки по квартирам и нескольким расходникам сразу.</p></div><button class="menu-toggle" id="closePurchaseRequestsModal" aria-label="Закрыть">✕</button></div><button class="btn btn-primary" id="openNewPurchaseRequest" style="margin-bottom:.9rem;">Новая заявка</button><div class="theme-switch" style="margin-bottom:1rem;"><div><strong>Авто-заявка при списании</strong><div class="small" id="autoRequestLabel">Только не одноразовые расходники</div></div><button class="switch" id="autoRequestToggle" aria-label="Переключить авто-заявку"></button></div><div class="request-summary" id="purchaseRequestsList"></div></div></div>
   <div class="modal-backdrop" id="newPurchaseRequestModal" aria-hidden="true"><div class="modal" style="width:min(860px,100%)"><div class="section-head"><div><h2 class="modal-title">Новая заявка</h2><p class="muted">Сначала выбери квартиру, затем отметь нужные расходники и количество.</p></div><button class="btn btn-secondary" id="closeNewPurchaseRequestModal">Закрыть</button></div><div class="request-grid" style="margin-bottom:1rem;"><label><span class="small">Квартира</span><select id="purchaseApartmentSelect"></select></label><div class="status-box" id="purchaseApartmentHint">Выбери квартиру, чтобы посмотреть только её записи.</div></div><div id="purchaseItemsWrap"></div><div class="purchase-custom" style="margin-top:1rem;padding-top:1rem;border-top:1px solid color-mix(in oklab,var(--color-text) 8%,transparent)"><div class="small" style="font-weight:700;margin-bottom:.5rem">Свои позиции (не из списка расходников)</div><div id="purchaseCustomList"></div><button type="button" class="btn btn-secondary" id="addCustomPurchaseRow" style="margin-top:.5rem">+ Своя позиция</button></div><div class="actions" style="justify-content:flex-end;margin-top:1rem;"><button class="btn btn-secondary" id="cancelNewPurchaseRequest">Отмена</button><button class="btn btn-primary" id="saveNewPurchaseRequest">Создать заявку</button></div></div></div>
@@ -526,6 +542,6 @@
     </div>
   </div>
 
-  <script type="module" src="./app.js?v=20261014-1"></script>
+  <script type="module" src="./app.js?v=20261018-1"></script>
 </body>
 </html>
