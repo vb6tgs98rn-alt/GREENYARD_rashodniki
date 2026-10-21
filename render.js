@@ -309,29 +309,87 @@ function recurringRuleCard(rule) {
   </article>`;
 }
 
+// Группирует регулярные правила: правила с одним meta.splitGroupId — один общий расход.
+// Порядок сохраняется по первому правилу группы.
+function groupRecurringRules(rules) {
+  const groups = [];
+  const byId = new Map();
+  for (const r of rules) {
+    const gid = r.meta?.splitGroupId || '';
+    if (gid && byId.has(gid)) { byId.get(gid).rules.push(r); continue; }
+    const g = { groupId: gid, rules: [r] };
+    if (gid) byId.set(gid, g);
+    groups.push(g);
+  }
+  return groups;
+}
+
+function recurringGroupCard(group) {
+  // Одиночное правило — прежняя карточка.
+  if (!group.groupId || group.rules.length < 2) return recurringRuleCard(group.rules[0]);
+  const rules = group.rules;
+  const first = rules[0];
+  const typeLabel = first.type === 'income' ? 'Доход' : 'Расход';
+  const typeClass = first.type === 'income' ? 'income' : 'expense';
+  const sign = typeLabel === 'Доход' ? '+' : '−';
+  const sum = Math.round(rules.reduce((s, r) => s + (Number(r.amount) || 0), 0) * 100) / 100;
+  const total = Number(first.meta?.splitTotal) || sum;
+  const active = rules.some((r) => r.active);
+  // Сумма на квартиру: если доли равны — одно число, иначе (копеечный остаток) — минимальная доля.
+  const shares = rules.map((r) => Number(r.amount) || 0);
+  const per = Math.min(...shares);
+  const names = rules.map((r) => r.apartmentName).join(', ');
+  return `<article class="recurring-card ${active ? '' : 'inactive'}" data-group-id="${group.groupId}">
+    <div class="recurring-card-top">
+      <div>
+        <div class="recurring-title">${first.title || 'Правило'}</div>
+        <div class="finance-card-meta">
+          <span>${rules.length} кв.</span>
+          <span class="sep">·</span>
+          <span>${first.dayOfMonth} число</span>
+          ${first.category ? `<span class="sep">·</span><span>${first.category}</span>` : ''}
+        </div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        <div class="finance-amount ${typeClass}" style="font-size:var(--text-base)">${sign}${fmt(total)} ₽</div>
+        <div class="small" style="margin-top:.2rem">${active ? '● Активно' : '○ Отключено'}</div>
+      </div>
+    </div>
+    <div class="small recurring-split-line">${sign}${per.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ₽ на каждую квартиру</div>
+    <div class="small recurring-split-apts">${names}</div>
+    <div class="finance-card-actions">
+      <button class="btn-chip" data-action="toggle-recurring" data-group-id="${group.groupId}" data-active="${active ? '1' : '0'}">${active ? 'Отключить' : 'Включить'}</button>
+      <button class="btn-chip btn-del" data-action="delete-recurring" data-group-id="${group.groupId}">✕ Удалить</button>
+    </div>
+  </article>`;
+}
+
 function renderFinance(state) {
-  if (!dom.financeApartmentFilter) return;
+  // Раздел «Финансы» (список проводок с фильтрами) удалён — ориентируемся на модалку финансов.
+  if (!dom.financeByApartment && !dom.recurringExpensesList) return;
   const filter = state.ui?.finance || {};
   const summary = getFinanceSummary();
   const entries = summary.entries;
 
-  // Фильтры
-  const apartmentOptions = [
-    `<option value="all">Все квартиры</option>`,
-    ...state.apartments.map((a) => `<option value="${a.id}">${getDisplayApartmentName(a.name)}</option>`),
-  ].join('');
-  dom.financeApartmentFilter.innerHTML = apartmentOptions;
-  dom.financeApartmentFilter.value = filter.apartmentFilter || 'all';
-  dom.financeTypeFilter.value = filter.typeFilter || 'all';
+  // Фильтры старого списка проводок (если блок ещё есть в разметке).
+  if (dom.financeApartmentFilter) {
+    const apartmentOptions = [
+      `<option value="all">Все квартиры</option>`,
+      ...state.apartments.map((a) => `<option value="${a.id}">${getDisplayApartmentName(a.name)}</option>`),
+    ].join('');
+    dom.financeApartmentFilter.innerHTML = apartmentOptions;
+    dom.financeApartmentFilter.value = filter.apartmentFilter || 'all';
+  }
+  if (dom.financeTypeFilter) dom.financeTypeFilter.value = filter.typeFilter || 'all';
   if (dom.financeMonthFilter) dom.financeMonthFilter.value = filter.month || '';
   if (dom.financeDateFrom) dom.financeDateFrom.value = filter.dateFrom || '';
   if (dom.financeDateTo) dom.financeDateTo.value = filter.dateTo || '';
-  dom.financeOnlyPending.checked = !!filter.showOnlyPending;
+  if (dom.financeOnlyPending) dom.financeOnlyPending.checked = !!filter.showOnlyPending;
 
   // Итоговые статы: валовый и чистый доход / прибыль
   const netProfitColor = summary.netProfit >= 0 ? 'var(--color-success)' : 'var(--color-error)';
   const showGross = summary.income !== summary.netIncome;
-  dom.financeSummary.innerHTML = `
+  if (dom.financeSummary) dom.financeSummary.innerHTML = `
     <article class="stat">
       <span>Чистый доход</span>
       <strong style="color:var(--color-success)">${fmt(summary.netIncome)} ₽</strong>
@@ -371,17 +429,20 @@ function renderFinance(state) {
   }
 
   // Список проводок
-  dom.financeEntriesList.innerHTML = entries.length
+  if (dom.financeEntriesList) dom.financeEntriesList.innerHTML = entries.length
     ? entries.map(financeEntryCard).join('')
     : '<div class="empty">Нет записей по фильтрам.</div>';
 
-  // Регулярные расходы
-  dom.recurringExpensesList.innerHTML = state.finance.recurringRules.length
-    ? state.finance.recurringRules.map(recurringRuleCard).join('')
-    : '<div class="empty">Регулярные расходы ещё не настроены.</div>';
+  // Регулярные расходы: правила одной группы (meta.splitGroupId) показываем одной карточкой.
+  if (dom.recurringExpensesList) {
+    const groups = groupRecurringRules(state.finance.recurringRules || []);
+    dom.recurringExpensesList.innerHTML = groups.length
+      ? groups.map(recurringGroupCard).join('')
+      : '<div class="empty">Регулярные расходы ещё не настроены.</div>';
+  }
 
   renderRcIntegration(state);
-  renderUnitEconomicsSection(state);
+  renderFinanceFormSelects(state);
 }
 
 // Отдельный async-рендер таблицы «Итоги по квартирам» — читает rc_bookings.
@@ -403,7 +464,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-10-18.1';
+      const BUILD_VERSION = 'v.2026-10-21.1';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
@@ -593,7 +654,7 @@ async function _renderFinanceByCyclesAsync() {
   if (myToken !== _financeAptSummaryToken) return;
   if (!dom.financeByApartment) return;
 
-  const BUILD_VERSION = 'v.2026-10-18.1';
+  const BUILD_VERSION = 'v.2026-10-21.1';
   const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
   const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -696,29 +757,42 @@ async function _renderFinanceByCyclesAsync() {
   _renderPlatformPayoutsAsync();
 }
 
-// Заглушки-остатки от старого renderFinance — вынесены в renderUnitEconomicsSection.
-function renderUnitEconomicsSection(state) {
-  void renderUnitEconomics(state);
+// Список галочек «Несколько квартир»: сохраняет уже отмеченные квартиры при перерисовке.
+function renderAptMultiList(host, apartments) {
+  if (!host) return;
+  const checked = new Set([...host.querySelectorAll('input[type=checkbox]:checked')].map((i) => i.value));
+  host.innerHTML = apartments
+    .filter((a) => !a.archived)
+    .map((a) => `<label class="apt-multi-item"><input type="checkbox" value="${a.id}" ${checked.has(a.id) ? 'checked' : ''}><span>${getDisplayApartmentName(a.name)}</span></label>`)
+    .join('');
+}
 
-  // Селекты квартир в модалках
-  // В модалке «Новая запись» дополнительно есть опция «Все квартиры» — сумма делится поровну.
+// Селекты квартир в модалках «Новая запись» и «Регулярный расход».
+// Раньше жили в renderUnitEconomicsSection; раздел «Юнит экономика» удалён.
+function renderFinanceFormSelects(state) {
+  // «Все квартиры» и «Несколько квартир» — сумма делится поровну между выбранными квартирами.
+  const groupOptions =
+    `<option value="__all__">Все квартиры (разделить поровну)</option>` +
+    `<option value="__multi__">Несколько квартир…</option>`;
   if (dom.financeEntryApartment) {
     const prev = dom.financeEntryApartment.value;
-    dom.financeEntryApartment.innerHTML =
-      `<option value="__all__">Все квартиры (разделить поровну)</option>` +
+    // Скрытость групповых опций (режим редактирования) сохраняем при перерисовке.
+    const groupHidden = !!dom.financeEntryApartment.querySelector('option[value="__all__"]')?.hidden;
+    dom.financeEntryApartment.innerHTML = groupOptions +
       state.apartments.map((a) => `<option value="${a.id}">${getDisplayApartmentName(a.name)}</option>`).join('');
+    if (groupHidden) dom.financeEntryApartment.querySelectorAll('option[value^="__"]').forEach((o) => { o.hidden = true; });
     dom.financeEntryApartment.value = prev || state.activeApartmentId || '__all__';
   }
   if (dom.recurringApartment) {
     const prev = dom.recurringApartment.value;
-    // В модалке «Регулярный расход» также есть опция «Все квартиры» — создаётся по одному правилу на каждую квартиру,
-    // сумма делится поровну.
-    dom.recurringApartment.innerHTML =
-      `<option value="__all__">Все квартиры (разделить поровну)</option>` +
+    // Для групповых опций создаётся по одному правилу на квартиру с общим splitGroupId.
+    dom.recurringApartment.innerHTML = groupOptions +
       state.apartments.map((a) => `<option value="${a.id}">${getDisplayApartmentName(a.name)}</option>`).join('');
     if (!prev) dom.recurringApartment.value = state.activeApartmentId || '__all__';
     else dom.recurringApartment.value = prev;
   }
+  renderAptMultiList(document.getElementById('financeEntryAptMulti'), state.apartments || []);
+  renderAptMultiList(document.getElementById('recurringAptMulti'), state.apartments || []);
   if (dom.financeEntryDate && !dom.financeEntryDate.value) dom.financeEntryDate.value = new Date().toISOString().slice(0, 10);
   if (dom.recurringStartDate && !dom.recurringStartDate.value) dom.recurringStartDate.value = new Date().toISOString().slice(0, 10);
 }

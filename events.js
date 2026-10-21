@@ -9,7 +9,7 @@
  */
 import dom, { byId } from './dom.js';
 import { fetchRealtyCalendarBookings, fetchRealtyCalendarLog, fetchRealtyCalendarIntegration, saveRealtyCalendarIntegration, disconnectRealtyCalendar, buildFinanceWebhookExample, getWebhookUrl } from './api.js';
-import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport, dedupeFinanceEntriesByExternalId, regenerateAutoRentEntriesForAllApartments, cleanupManualRentEntries, STATUS_LABELS, FINANCE_TYPES } from './finance.js';
+import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, deleteRecurringGroup, setRecurringGroupActive, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport, dedupeFinanceEntriesByExternalId, regenerateAutoRentEntriesForAllApartments, cleanupManualRentEntries, STATUS_LABELS, FINANCE_TYPES } from './finance.js';
 import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus, setAuthMsg } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, setState, updateState } from './state.js';
 import { persistState, exportJson, importJson, fetchCloudState } from './storage.js';
@@ -876,13 +876,12 @@ function bindFinanceModals() {
   const financeEntryModalEl = document.getElementById('financeEntryModal');
   const financeEntryTitleEl = financeEntryModalEl?.querySelector('.modal-title');
 
-  // Подсказка под селектом: показывается, когда выбрано «Все квартиры» (только для создания новой).
+  // Подсказка под селектом и список галочек: для «Все квартиры» / «Несколько квартир»
+  // (только при создании новой записи).
   function updateFinanceEntryApartmentHint() {
-    const hint = document.getElementById('financeEntrySplitHint');
-    if (!hint) return;
     const isEdit = !!(financeEntryModalEl && financeEntryModalEl.dataset.editId);
-    const isAll = !isEdit && dom.financeEntryApartment?.value === '__all__';
-    hint.style.display = isAll ? '' : 'none';
+    const v = dom.financeEntryApartment?.value;
+    updateSplitUi('financeEntrySplitHint', 'financeEntryAptMulti', isEdit ? '' : v);
   }
   dom.financeEntryApartment?.addEventListener('change', updateFinanceEntryApartmentHint);
 
@@ -901,14 +900,20 @@ function bindFinanceModals() {
     resetFinanceEntryForm();
     if (financeEntryModalEl) financeEntryModalEl.dataset.editId = '';
     if (financeEntryTitleEl) financeEntryTitleEl.textContent = 'Новая запись';
-    // Перевключаем опцию «Все квартиры»: в режиме создания — показываем, в режиме редактирования — скрываем.
-    const allOpt = dom.financeEntryApartment?.querySelector('option[value="__all__"]');
-    if (allOpt) allOpt.hidden = false;
+    // Групповые опции («Все» / «Несколько квартир»): в режиме создания — показываем.
+    dom.financeEntryApartment?.querySelectorAll('option[value^="__"]').forEach((o) => { o.hidden = false; });
+    _reopenAptDetails = false;
     updateFinanceEntryApartmentHint();
     openModal('financeEntryModal');
   });
-  dom.cancelFinanceEntry?.addEventListener('click', () => closeModal('financeEntryModal'));
-  document.getElementById('cancelFinanceEntry2')?.addEventListener('click', () => closeModal('financeEntryModal'));
+  // Закрытие без сохранения: если пришли из детализации — возвращаемся в неё.
+  const cancelFinanceEntryModal = () => {
+    closeModal('financeEntryModal');
+    if (financeEntryModalEl) financeEntryModalEl.dataset.editId = '';
+    reopenAptDetailsIfNeeded();
+  };
+  dom.cancelFinanceEntry?.addEventListener('click', cancelFinanceEntryModal);
+  document.getElementById('cancelFinanceEntry2')?.addEventListener('click', cancelFinanceEntryModal);
   dom.saveFinanceEntry?.addEventListener('click', async () => {
     const amount = Number(dom.financeEntryAmount?.value || 0);
     if (!amount) { setStatus('Укажите сумму'); return; }
@@ -931,6 +936,7 @@ function bindFinanceModals() {
       if (financeEntryModalEl) financeEntryModalEl.dataset.editId = '';
       closeModal('financeEntryModal');
       await rerender('Запись обновлена');
+      reopenAptDetailsIfNeeded();
       return;
     }
     const _selectedApt = dom.financeEntryApartment?.value || '';
@@ -945,12 +951,17 @@ function bindFinanceModals() {
       source: 'manual',
       status: _status,
     };
-    if (_selectedApt === '__all__') {
-      // «Все квартиры»: делим сумму поровну между всеми неархивными квартирами
+    if (_selectedApt === '__all__' || _selectedApt === '__multi__') {
+      // «Все квартиры» / «Несколько квартир»: делим сумму поровну между выбранными квартирами
       // и создаём по записи на каждую (объединены splitGroupId в meta).
-      const _st = getState();
-      const apts = (_st.apartments || []).filter((a) => !a.archived);
-      if (!apts.length) { setStatus('Нет квартир для распределения'); return; }
+      const apts = resolveSplitApartments(_selectedApt, 'financeEntryAptMulti');
+      if (!apts) return;
+      if (apts.length === 1) {
+        addFinanceEntry({ ..._commonPayload, apartmentId: apts[0].id, amount });
+        closeModal('financeEntryModal');
+        await rerender('Запись добавлена');
+        return;
+      }
       const per = Math.round((amount / apts.length) * 100) / 100;
       let residue = Math.round((amount - per * apts.length) * 100) / 100; // копеечный остаток от округления
       const groupId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
@@ -983,11 +994,9 @@ function bindFinanceModals() {
     const titleField = dom.recurringTitle?.closest('label');
     if (titleField) titleField.style.display = (kind === 'other') ? '' : 'none';
   };
-  // Подсказка «Сумма будет поровну разделена…» — показывается при выборе «Все квартиры».
+  // Подсказка «Сумма будет поровну разделена…» и галочки для «Несколько квартир».
   function updateRecurringApartmentHint() {
-    const hint = document.getElementById('recurringSplitHint');
-    if (!hint) return;
-    hint.style.display = dom.recurringApartment?.value === '__all__' ? '' : 'none';
+    updateSplitUi('recurringSplitHint', 'recurringAptMulti', dom.recurringApartment?.value);
   }
   dom.recurringApartment?.addEventListener('change', updateRecurringApartmentHint);
   dom.financeAddRecurringBtn?.addEventListener('click', () => {
@@ -1023,12 +1032,17 @@ function bindFinanceModals() {
       notes: dom.recurringNotes?.value,
       type: dom.recurringType?.value || 'expense',
     };
-    if (selectedApt === '__all__') {
-      // «Все квартиры»: делим сумму поровну между всеми неархивными квартирами
+    if (selectedApt === '__all__' || selectedApt === '__multi__') {
+      // «Все квартиры» / «Несколько квартир»: делим сумму поровну между выбранными квартирами
       // и создаём по правилу на каждую (объединены splitGroupId в meta).
-      const st = getState();
-      const apts = (st.apartments || []).filter((a) => !a.archived);
-      if (!apts.length) { setStatus('Нет квартир для распределения'); return; }
+      const apts = resolveSplitApartments(selectedApt, 'recurringAptMulti');
+      if (!apts) return;
+      if (apts.length === 1) {
+        addRecurringRule({ ...commonPayload, apartmentId: apts[0].id, amount });
+        closeModal('recurringExpenseModal');
+        await rerender('Регулярное правило создано');
+        return;
+      }
       const per = Math.round((amount / apts.length) * 100) / 100;
       const residue = Math.round((amount - per * apts.length) * 100) / 100;
       const groupId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
@@ -1066,6 +1080,8 @@ function bindFinanceModals() {
       if (!confirm('Удалить запись?')) return;
       deleteFinanceEntry(id);
       await rerender('Запись удалена');
+      // Удалили из детализации — обновляем её список.
+      if (btn.dataset.fromDetails === '1' && _lastAptDetails) openFinanceAptDetails(_lastAptDetails);
     }
 
     // Финансы: переключение режима таблицы + стрелки месяца.
@@ -1184,11 +1200,12 @@ function bindFinanceModals() {
       if (dom.financeEntryNotes) dom.financeEntryNotes.value = entry.notes || '';
       if (financeEntryModalEl) financeEntryModalEl.dataset.editId = id;
       if (financeEntryTitleEl) financeEntryTitleEl.textContent = 'Редактирование записи';
-      // При редактировании скрываем опцию «Все квартиры» — она только для создания новой записи.
-      const allOpt = dom.financeEntryApartment?.querySelector('option[value="__all__"]');
-      if (allOpt) allOpt.hidden = true;
-      const hint = document.getElementById('financeEntrySplitHint');
-      if (hint) hint.style.display = 'none';
+      // При редактировании скрываем групповые опции — они только для создания новой записи.
+      dom.financeEntryApartment?.querySelectorAll('option[value^="__"]').forEach((o) => { o.hidden = true; });
+      updateSplitUi('financeEntrySplitHint', 'financeEntryAptMulti', '');
+      // Открыто из детализации «Итоги по квартирам»: прячем её и вернём после сохранения/отмены.
+      _reopenAptDetails = btn.dataset.fromDetails === '1';
+      if (_reopenAptDetails) closeModal('financeAptDetailsModal');
       openModal('financeEntryModal');
     }
 
@@ -1200,6 +1217,13 @@ function bindFinanceModals() {
     }
 
     if (action === 'delete-recurring') {
+      // Общий расход на несколько квартир удаляется целиком.
+      if (btn.dataset.groupId) {
+        if (!confirm('Удалить регулярный расход по всем его квартирам?')) return;
+        deleteRecurringGroup(btn.dataset.groupId);
+        await rerender('Правило удалено');
+        return;
+      }
       const id = btn.dataset.id;
       if (!id) return;
       deleteRecurringRule(id);
@@ -1207,6 +1231,11 @@ function bindFinanceModals() {
     }
 
     if (action === 'toggle-recurring') {
+      if (btn.dataset.groupId) {
+        setRecurringGroupActive(btn.dataset.groupId, btn.dataset.active !== '1');
+        await rerender('Правило обновлено');
+        return;
+      }
       const id = btn.dataset.id;
       if (!id) return;
       toggleRecurringRule(id);
@@ -1259,7 +1288,45 @@ function bindFinanceModals() {
 // ─── Модалка детализации доходов/расходов по квартире за период ─────────────
 // Выбираем записи из state.finance.entries по apartmentId + типу + дате, исключаем отменённые
 // и те же источники, что в таблице (auto-owner-payout в расходах не учитывается).
+// Последняя открытая детализация «Итоги по квартирам» — чтобы вернуться в неё после редактирования расхода.
+let _lastAptDetails = null;
+let _reopenAptDetails = false;
+
+function reopenAptDetailsIfNeeded() {
+  if (!_reopenAptDetails) return;
+  _reopenAptDetails = false;
+  if (_lastAptDetails) openFinanceAptDetails(_lastAptDetails);
+}
+
+// Подсказка под селектом квартиры и список галочек «Несколько квартир».
+function updateSplitUi(hintId, multiId, value) {
+  const hint = document.getElementById(hintId);
+  const multi = document.getElementById(multiId);
+  if (hint) {
+    hint.style.display = (value === '__all__' || value === '__multi__') ? '' : 'none';
+    hint.textContent = value === '__multi__'
+      ? 'Отметьте квартиры — сумма будет поровну разделена между ними.'
+      : 'Сумма будет поровну разделена на все квартиры.';
+  }
+  if (multi) multi.hidden = value !== '__multi__';
+}
+
+// Квартиры для деления суммы: все неархивные или отмеченные галочками. null — если нечего делить.
+function resolveSplitApartments(value, multiId) {
+  const all = (getState().apartments || []).filter((a) => !a.archived);
+  let apts = all;
+  if (value === '__multi__') {
+    const host = document.getElementById(multiId);
+    const ids = new Set([...(host?.querySelectorAll('input[type=checkbox]:checked') || [])].map((i) => i.value));
+    apts = all.filter((a) => ids.has(a.id));
+    if (!apts.length) { setStatus('Отметьте хотя бы одну квартиру'); return null; }
+  }
+  if (!apts.length) { setStatus('Нет квартир для распределения'); return null; }
+  return apts;
+}
+
 function openFinanceAptDetails({ aptId, kind, from, to, aptName }) {
+  _lastAptDetails = { aptId, kind, from, to, aptName };
   const body = document.getElementById('financeAptDetailsBody');
   const titleEl = document.getElementById('financeAptDetailsTitle');
   const subEl = document.getElementById('financeAptDetailsSubtitle');
@@ -1387,9 +1454,14 @@ function openFinanceAptDetails({ aptId, kind, from, to, aptName }) {
           <span class="finance-status ${st.cls}" style="margin-top:.2rem">${st.label}</span>
         `;
       } else {
+        // Расход можно изменить или удалить прямо из детализации.
         amountBlock = `
           <div class="finance-amount ${e.type}">${sign}${fmt(e.amount)} ₽</div>
           <span class="finance-status ${st.cls}">${st.label}</span>
+          <div class="finance-card-actions" style="margin-top:.3rem">
+            <button class="btn-chip" type="button" data-action="edit-entry" data-id="${e.id}" data-from-details="1">Изменить</button>
+            <button class="btn-chip btn-del" type="button" data-action="delete-entry" data-id="${e.id}" data-from-details="1">✕</button>
+          </div>
         `;
       }
 

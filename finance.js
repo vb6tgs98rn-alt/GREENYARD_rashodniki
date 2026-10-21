@@ -154,6 +154,37 @@ export function toggleRecurringRule(id) {
   });
 }
 
+// Группа правил, созданных одним расходом на несколько квартир (meta.splitGroupId).
+function _ruleIdsOfGroup(state, groupId) {
+  return new Set(
+    state.finance.recurringRules
+      .filter((r) => r.meta?.splitGroupId === groupId)
+      .map((r) => r.id)
+  );
+}
+
+// Удаляет все правила группы и их запланированные записи (как deleteRecurringRule для одного).
+export function deleteRecurringGroup(groupId) {
+  if (!groupId) return;
+  updateState((state) => {
+    const ids = _ruleIdsOfGroup(state, groupId);
+    state.finance.recurringRules = state.finance.recurringRules.filter((r) => !ids.has(r.id));
+    state.finance.entries = state.finance.entries.filter(
+      (e) => !(e.source === 'recurring' && ids.has(e.meta?.ruleId) && e.status === 'planned')
+    );
+  });
+}
+
+// Включает/отключает все правила группы разом.
+export function setRecurringGroupActive(groupId, active) {
+  if (!groupId) return;
+  updateState((state) => {
+    state.finance.recurringRules.forEach((r) => {
+      if (r.meta?.splitGroupId === groupId) r.active = !!active;
+    });
+  });
+}
+
 export function generateRecurringEntriesForMonth(month) {
   if (!month) return [];
   const created = [];
@@ -941,7 +972,9 @@ export async function getFinanceApartmentSummaryAsync() {
     return rows.get(id);
   };
 
-  const aptFilter = filter.apartmentFilter && filter.apartmentFilter !== 'all' ? filter.apartmentFilter : '';
+  // Фильтры раздела «Финансы» удалены вместе с разделом — итоги всегда по всем квартирам,
+  // иначе сохранённый старый фильтр незаметно скрывал бы часть данных.
+  const aptFilter = '';
   // Карта realty_id → apartment.
   const rcMap = new Map();
   (state.apartments || []).forEach((a) => {
@@ -1091,8 +1124,8 @@ export function getFinanceApartmentSummary() {
     return rows.get(id);
   };
 
-  // Статус фильтра по квартире — если выбрана одна, остальные в таблице не показываем.
-  const aptFilter = filter.apartmentFilter && filter.apartmentFilter !== 'all' ? filter.apartmentFilter : '';
+  // Фильтры раздела «Финансы» удалены — таблица всегда по всем квартирам.
+  const aptFilter = '';
   // Сначала добавляем ВСЕ (не архивные) квартиры — чтобы квартиры без броней тоже попадали в таблицу.
   (state.apartments || []).forEach((a) => {
     if (a.archived) return;
@@ -1107,7 +1140,7 @@ export function getFinanceApartmentSummary() {
     if (aptFilter && e.apartmentId !== aptFilter) return;
 
     // Мелкий фильтр по типу (если пользователь выбрал «только доходы» или «только расходы»).
-    const typeFilter = filter.typeFilter && filter.typeFilter !== 'all' ? filter.typeFilter : '';
+    const typeFilter = '';
     if (typeFilter && e.type !== typeFilter) return;
 
     // Исключаем отменённые/удалённые брони (не считаются как доход).

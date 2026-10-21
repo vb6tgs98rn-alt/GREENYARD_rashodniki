@@ -1092,3 +1092,12 @@ body.is-guest .modal-backdrop{display:none !important}
 .summary-period-field input[type="date"]{display:block;width:100%;box-sizing:border-box;min-height:2.4rem;padding:.45rem .6rem;border-radius:var(--radius-md);border:1px solid var(--color-border);background:var(--color-surface-1);color:var(--color-text);font:inherit;-webkit-appearance:none;appearance:none}
 .summary-period-presets{display:flex;flex-wrap:wrap;gap:.4rem}
 .summary-period-btn{padding:.4rem .7rem;font-size:.85rem;flex:0 1 auto}
+
+/* «Несколько квартир» в модалках расхода: список галочек */
+.apt-multi{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:.4rem .5rem;padding:.6rem .7rem;border-radius:var(--radius-lg);background:var(--color-surface-2)}
+.apt-multi[hidden]{display:none}
+.apt-multi .apt-multi-item{display:inline-flex !important;flex-direction:row;align-items:center;gap:.4rem;width:auto;margin:0;padding:.3rem .65rem;border-radius:var(--radius-full);background:var(--color-bg);border:1px solid rgba(60,60,60,.12);font-size:var(--text-sm);white-space:nowrap;cursor:pointer}
+.apt-multi .apt-multi-item input{width:auto;min-width:0;height:auto;margin:0;padding:0;flex:0 0 auto}
+/* Регулярный расход на несколько квартир: сумма на квартиру и список квартир */
+.recurring-split-line{margin-top:.35rem;color:var(--color-text);font-weight:600}
+.recurring-split-apts{margin-top:.1rem;color:var(--color-text-muted)}
