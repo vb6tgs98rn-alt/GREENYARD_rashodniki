@@ -9,7 +9,7 @@
  */
 import dom, { byId } from './dom.js';
 import { fetchRealtyCalendarBookings, fetchRealtyCalendarLog, fetchRealtyCalendarIntegration, saveRealtyCalendarIntegration, disconnectRealtyCalendar, buildFinanceWebhookExample, getWebhookUrl } from './api.js';
-import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, deleteRecurringGroup, setRecurringGroupActive, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport, dedupeFinanceEntriesByExternalId, regenerateAutoRentEntriesForAllApartments, cleanupManualRentEntries, STATUS_LABELS, FINANCE_TYPES } from './finance.js';
+import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, deleteRecurringGroup, setRecurringGroupActive, updateRecurringRules, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport, dedupeFinanceEntriesByExternalId, regenerateAutoRentEntriesForAllApartments, cleanupManualRentEntries, STATUS_LABELS, FINANCE_TYPES } from './finance.js';
 import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus, setAuthMsg } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, setState, updateState } from './state.js';
 import { persistState, exportJson, importJson, fetchCloudState } from './storage.js';
@@ -1000,6 +1000,9 @@ function bindFinanceModals() {
   }
   dom.recurringApartment?.addEventListener('change', updateRecurringApartmentHint);
   dom.financeAddRecurringBtn?.addEventListener('click', () => {
+    setRecurringModalMode(null);
+    const typeSel = document.getElementById('recurringType');
+    if (typeSel) typeSel.value = 'expense';
     if (dom.recurringApartment) dom.recurringApartment.value = currentApartment()?.id || '__all__';
     if (dom.recurringKind) dom.recurringKind.value = 'rent';
     if (dom.recurringTitle) dom.recurringTitle.value = '';
@@ -1030,8 +1033,27 @@ function bindFinanceModals() {
       startDate: dom.recurringStartDate?.value,
       endDate: dom.recurringEndDate?.value,
       notes: dom.recurringNotes?.value,
-      type: dom.recurringType?.value || 'expense',
+      type: document.getElementById('recurringType')?.value || 'expense',
     };
+    // Режим редактирования: меняем правило (группу), прошедшие оплаты не трогаем.
+    const editIds = (document.getElementById('recurringExpenseModal')?.dataset.editIds || '')
+      .split(',').filter(Boolean);
+    if (editIds.length) {
+      let apts;
+      if (selectedApt === '__all__' || selectedApt === '__multi__') {
+        apts = resolveSplitApartments(selectedApt, 'recurringAptMulti');
+        if (!apts) return;
+      } else {
+        const apt = (getState().apartments || []).find((a) => a.id === selectedApt);
+        if (!apt) { setStatus('Выберите квартиру'); return; }
+        apts = [apt];
+      }
+      updateRecurringRules({ ruleIds: editIds, apartments: apts, payload: commonPayload, amount });
+      setRecurringModalMode(null);
+      closeModal('recurringExpenseModal');
+      await rerender('Регулярный расход изменён — прошедшие оплаты не тронуты');
+      return;
+    }
     if (selectedApt === '__all__' || selectedApt === '__multi__') {
       // «Все квартиры» / «Несколько квартир»: делим сумму поровну между выбранными квартирами
       // и создаём по правилу на каждую (объединены splitGroupId в meta).
@@ -1230,6 +1252,17 @@ function bindFinanceModals() {
       await rerender('Правило удалено');
     }
 
+    if (action === 'edit-recurring') {
+      // Открываем модалку регулярного расхода, заполненную текущими значениями.
+      const rulesAll = getState().finance?.recurringRules || [];
+      const rules = btn.dataset.groupId
+        ? rulesAll.filter((r) => r.meta?.splitGroupId === btn.dataset.groupId)
+        : rulesAll.filter((r) => r.id === btn.dataset.id);
+      if (!rules.length) return;
+      openRecurringEdit(rules);
+      return;
+    }
+
     if (action === 'toggle-recurring') {
       if (btn.dataset.groupId) {
         setRecurringGroupActive(btn.dataset.groupId, btn.dataset.active !== '1');
@@ -1296,6 +1329,56 @@ function reopenAptDetailsIfNeeded() {
   if (!_reopenAptDetails) return;
   _reopenAptDetails = false;
   if (_lastAptDetails) openFinanceAptDetails(_lastAptDetails);
+}
+
+// Режим модалки регулярного расхода: null — создание, массив id правил — редактирование.
+function setRecurringModalMode(editIds) {
+  const modal = document.getElementById('recurringExpenseModal');
+  if (!modal) return;
+  const editing = Array.isArray(editIds) && editIds.length > 0;
+  modal.dataset.editIds = editing ? editIds.join(',') : '';
+  const titleEl = modal.querySelector('.modal-title');
+  const subEl = modal.querySelector('.section-head .muted');
+  const saveBtn = document.getElementById('saveRecurringExpense');
+  if (titleEl) titleEl.textContent = editing ? 'Редактирование регулярного расхода' : 'Регулярный расход';
+  if (subEl) subEl.textContent = editing
+    ? 'Изменения коснутся только предстоящих оплат — прошедшие останутся без изменений'
+    : 'Автоматически появится в нужную дату каждого месяца';
+  if (saveBtn) saveBtn.textContent = editing ? 'Сохранить изменения' : 'Сохранить правило';
+}
+
+// Заполнение модалки данными редактируемого правила (или группы правил на несколько квартир).
+function openRecurringEdit(rules) {
+  const first = rules[0];
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v ?? ''; };
+  const total = rules.length > 1
+    ? (Number(first.meta?.splitTotal) || rules.reduce((s, r) => s + (Number(r.amount) || 0), 0))
+    : Number(first.amount) || 0;
+  set('recurringType', first.type || 'expense');
+  set('recurringKind', first.kind || 'other');
+  set('recurringTitle', first.title || '');
+  set('recurringCategory', first.category || '');
+  set('recurringAmount', String(Math.round(total * 100) / 100));
+  set('recurringDayOfMonth', String(first.dayOfMonth || 1));
+  set('recurringStartDate', first.startDate || '');
+  set('recurringEndDate', first.endDate || '');
+  set('recurringNotes', first.notes || '');
+
+  // Квартиры: одна — выбираем её; несколько — «Несколько квартир…» с галочками.
+  const sel = document.getElementById('recurringApartment');
+  const aptIds = new Set(rules.map((r) => r.apartmentId));
+  let value = rules.length > 1 ? '__multi__' : first.apartmentId;
+  if (sel && !Array.from(sel.options).some((o) => o.value === value)) value = '__multi__';
+  if (sel) sel.value = value;
+  const host = document.getElementById('recurringAptMulti');
+  host?.querySelectorAll('input[type=checkbox]').forEach((cb) => { cb.checked = aptIds.has(cb.value); });
+  updateSplitUi('recurringSplitHint', 'recurringAptMulti', value);
+
+  const titleField = document.getElementById('recurringTitle')?.closest('label');
+  if (titleField) titleField.style.display = ((first.kind || 'other') === 'other') ? '' : 'none';
+
+  setRecurringModalMode(rules.map((r) => r.id));
+  openModal('recurringExpenseModal');
 }
 
 // Подсказка под селектом квартиры и список галочек «Несколько квартир».

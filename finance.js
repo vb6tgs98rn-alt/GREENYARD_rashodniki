@@ -185,21 +185,119 @@ export function setRecurringGroupActive(groupId, active) {
   });
 }
 
+// Редактирование регулярного расхода (одного правила или группы на несколько квартир).
+//   ruleIds    — редактируемые правила;
+//   apartments — квартиры после редактирования (сумма делится между ними поровну);
+//   payload    — общие поля (kind, title, category, type, dayOfMonth, startDate, endDate, notes);
+//   amount     — полная сумма расхода.
+// Уже прошедшие оплаты (записи с датой раньше сегодняшней или подтверждённые) не меняются;
+// предстоящие запланированные записи пересчитываются по новым условиям.
+export function updateRecurringRules({ ruleIds = [], apartments = [], payload = {}, amount = 0 } = {}) {
+  // Сегодняшняя дата по местному времени (а не UTC), формат ГГГГ-ММ-ДД.
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const total = Math.round((Number(amount) || 0) * 100) / 100;
+  const n = apartments.length;
+  if (!n) return;
+  const per = Math.round((total / n) * 100) / 100;
+  const residue = Math.round((total - per * n) * 100) / 100;
+  const kind = payload.kind || 'other';
+  const title = kind === 'other'
+    ? (payload.title || 'Правило')
+    : (RECURRING_KIND_LABELS[kind] || payload.title || 'Правило');
+  const category = payload.category || (kind !== 'other' ? RECURRING_KIND_LABELS[kind] : '');
+  const day = Math.min(Math.max(Number(payload.dayOfMonth) || 1, 1), 28);
+
+  updateState((state) => {
+    const idSet = new Set(ruleIds);
+    const oldRules = state.finance.recurringRules.filter((r) => idSet.has(r.id));
+    const oldGroupId = oldRules.find((r) => r.meta?.splitGroupId)?.meta?.splitGroupId || '';
+    const groupId = n > 1 ? (oldGroupId || crypto.randomUUID()) : '';
+    const byApt = new Map(oldRules.map((r) => [r.apartmentId, r]));
+    const keepIds = new Set();
+
+    // Предстоящая запись правила: запланирована и дата не раньше сегодня.
+    const isUpcoming = (e, ids) => e.source === 'recurring' && ids.has(e.meta?.ruleId)
+      && e.status === 'planned' && String(e.date || '') >= today;
+
+    apartments.forEach((apt, idx) => {
+      const share = idx === 0 ? Math.round((per + residue) * 100) / 100 : per;
+      const meta = n > 1 ? { splitGroupId: groupId, splitTotal: total, splitCount: n } : {};
+      const common = {
+        apartmentId: apt.id,
+        apartmentName: getDisplayApartmentName(apt.name || '—'),
+        title,
+        kind,
+        category,
+        amount: share,
+        type: payload.type || FINANCE_TYPES.expense,
+        dayOfMonth: day,
+        startDate: payload.startDate || today,
+        endDate: payload.endDate || '',
+        notes: payload.notes || '',
+      };
+      const existing = byApt.get(apt.id);
+      if (existing) {
+        const prevMeta = { ...(existing.meta || {}) };
+        delete prevMeta.splitGroupId; delete prevMeta.splitTotal; delete prevMeta.splitCount;
+        Object.assign(existing, common, { meta: { ...prevMeta, ...meta } });
+        keepIds.add(existing.id);
+      } else {
+        // Новая квартира в расходе — участвует только в предстоящих оплатах.
+        const rule = {
+          ...createRecurringRuleDraft({ ...common, meta, active: oldRules[0]?.active ?? true }),
+          apartmentName: common.apartmentName,
+          startDate: (common.startDate > today ? common.startDate : today),
+        };
+        state.finance.recurringRules.unshift(rule);
+      }
+    });
+
+    // Квартиры, исключённые из расхода: правило удаляем вместе с предстоящими записями,
+    // прошедшие оплаты остаются в финучёте.
+    const removedIds = new Set(oldRules.filter((r) => !keepIds.has(r.id)).map((r) => r.id));
+    if (removedIds.size) {
+      state.finance.recurringRules = state.finance.recurringRules.filter((r) => !removedIds.has(r.id));
+      state.finance.entries = state.finance.entries.filter((e) => !isUpcoming(e, removedIds));
+    }
+
+    // Предстоящие записи оставшихся правил — по новым условиям.
+    const rulesById = new Map(state.finance.recurringRules.map((r) => [r.id, r]));
+    state.finance.entries.forEach((e) => {
+      if (!isUpcoming(e, keepIds)) return;
+      const r = rulesById.get(e.meta.ruleId);
+      if (!r) return;
+      const month = String(e.date).slice(0, 7);
+      e.apartmentId = r.apartmentId;
+      e.apartmentName = r.apartmentName;
+      e.type = r.type;
+      e.title = r.title;
+      e.category = r.category;
+      e.amount = r.amount;
+      e.netAmount = r.amount;
+      e.notes = r.notes;
+      e.date = `${month}-${String(r.dayOfMonth).padStart(2, '0')}`;
+    });
+  });
+}
+
 export function generateRecurringEntriesForMonth(month) {
   if (!month) return [];
   const created = [];
   updateState((state) => {
+    // Одна запись на правило в месяц: ключ — правило + месяц (а не точная дата),
+    // чтобы после смены дня оплаты в текущем месяце не появилась вторая запись.
     const existingKeys = new Set(
       state.finance.entries
         .filter((entry) => entry.source === 'recurring')
-        .map((entry) => `${entry.meta?.ruleId || ''}:${entry.date}`)
+        .map((entry) => `${entry.meta?.ruleId || ''}:${String(entry.date || '').slice(0, 7)}`)
     );
     state.finance.recurringRules.forEach((rule) => {
       if (!rule.active) return;
       const dueDate = `${month}-${String(Math.min(Math.max(rule.dayOfMonth || 1, 1), 28)).padStart(2, '0')}`;
       if (rule.startDate && dueDate < rule.startDate) return;
       if (rule.endDate && dueDate > rule.endDate) return;
-      const key = `${rule.id}:${dueDate}`;
+      const key = `${rule.id}:${month}`;
       if (existingKeys.has(key)) return;
       const entry = createFinanceEntryDraft({
         apartmentId: rule.apartmentId,

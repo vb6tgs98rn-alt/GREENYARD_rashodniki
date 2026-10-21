@@ -303,6 +303,7 @@ function recurringRuleCard(rule) {
       </div>
     </div>
     <div class="finance-card-actions">
+      <button class="btn-chip" data-action="edit-recurring" data-id="${rule.id}">Изменить</button>
       <button class="btn-chip" data-action="toggle-recurring" data-id="${rule.id}">${rule.active ? 'Отключить' : 'Включить'}</button>
       <button class="btn-chip btn-del" data-action="delete-recurring" data-id="${rule.id}">✕ Удалить</button>
     </div>
@@ -358,6 +359,7 @@ function recurringGroupCard(group) {
     <div class="small recurring-split-line">${sign}${per.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ₽ на каждую квартиру</div>
     <div class="small recurring-split-apts">${names}</div>
     <div class="finance-card-actions">
+      <button class="btn-chip" data-action="edit-recurring" data-group-id="${group.groupId}">Изменить</button>
       <button class="btn-chip" data-action="toggle-recurring" data-group-id="${group.groupId}" data-active="${active ? '1' : '0'}">${active ? 'Отключить' : 'Включить'}</button>
       <button class="btn-chip btn-del" data-action="delete-recurring" data-group-id="${group.groupId}">✕ Удалить</button>
     </div>
@@ -464,7 +466,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-10-21.1';
+      const BUILD_VERSION = 'v.2026-10-21.2';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
@@ -654,7 +656,7 @@ async function _renderFinanceByCyclesAsync() {
   if (myToken !== _financeAptSummaryToken) return;
   if (!dom.financeByApartment) return;
 
-  const BUILD_VERSION = 'v.2026-10-21.1';
+  const BUILD_VERSION = 'v.2026-10-21.2';
   const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
   const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
