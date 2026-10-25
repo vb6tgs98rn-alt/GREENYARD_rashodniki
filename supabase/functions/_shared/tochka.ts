@@ -404,6 +404,12 @@ export interface PaymentRequest {
   successUrl?: string | null;
   supplierName?: string | null;
   supplierInn?: string | null;
+  /**
+   * Двухэтапная оплата (холд): деньги замораживаются, списываются методом
+   * Capture Payment. Используется для залогов. СБП холд не поддерживает,
+   * поэтому такая ссылка принимает только карту.
+   */
+  preAuthorization?: boolean;
 }
 
 export interface PaymentResult {
@@ -444,9 +450,10 @@ export async function createPaymentLink(
     customerCode: conn.customer_code,
     amount,
     purpose: req.purpose,
-    paymentMode: ["sbp", "card"],
+    // Для холда — только карта: «Для оплат по СБП двухэтапная оплата не предусмотрена».
+    paymentMode: req.preAuthorization ? ["card"] : ["sbp", "card"],
     merchantId: conn.acquiring_merchant_id,
-    preAuthorization: false,
+    preAuthorization: Boolean(req.preAuthorization),
     ttl: req.ttlMinutes,
   };
   if (req.successUrl) {
@@ -560,6 +567,37 @@ export async function getPaymentStatus(
   const res = await api(sb, conn, `/acquiring/v1.0/payments/${encodeURIComponent(operationId)}`);
   const op = res?.Data?.Operation?.[0] ?? res?.Data ?? {};
   return String(op?.status || "");
+}
+
+/**
+ * Списание замороженных денег при двухэтапной оплате (Capture Payment).
+ * POST /acquiring/v1.0/payments/{operationId}/capture, тела нет — списывается
+ * вся замороженная сумма. Ответ: Data.result (true — команда принята).
+ */
+export async function capturePayment(
+  sb: any,
+  conn: TochkaConnection,
+  operationId: string,
+): Promise<boolean> {
+  const res = await api(sb, conn, `/acquiring/v1.0/payments/${encodeURIComponent(operationId)}/capture`, {
+    method: "POST",
+  });
+  return res?.Data?.result !== false;
+}
+
+/**
+ * Переводит статус операции Точки в статус залога.
+ * AUTHORIZED — деньги заморожены; APPROVED — списаны (штраф);
+ * EXPIRED — ссылка или холд истекли; REFUNDED — деньги вернулись гостю.
+ * Пустая строка — статус не меняем.
+ */
+export function mapDepositStatus(external: string): string {
+  const s = String(external).toUpperCase();
+  if (s === "AUTHORIZED") return "held";
+  if (s === "APPROVED") return "captured";
+  if (s === "EXPIRED") return "expired";
+  if (s === "REFUNDED" || s === "REFUNDED_PARTIALLY" || s === "ON-REFUND") return "released";
+  return "";
 }
 
 /** Статус оплаты QR СБП: NotStarted, Received, InProgress, Accepted, Rejected. */

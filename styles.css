@@ -526,6 +526,29 @@ body:has(.drawer.open){ overflow:hidden; }
 .bk-checkin-email{ display:flex; gap:.5rem; }
 .bk-checkin-email input{ flex:1; min-width:0; }
 .bk-checkin-email .btn{ width:auto; flex:none; }
+.bk-checkin-email.is-solo .btn{ width:100%; flex:1; }
+.bk-checkin-extra{ display:grid; gap:.5rem; }
+.bk-checkin-note{ margin:0; padding:.6rem .75rem; border-radius:10px; background:rgba(60,60,60,.06); color:var(--color-text-muted); line-height:1.45; }
+.bk-checkin-note.is-warn{ background:rgba(179,38,30,.08); color:var(--color-error, #b3261e); }
+
+/* ─── Раздел «Залог» ─── */
+.dp-list{ display:grid; gap:.75rem; }
+.dp-card{ display:grid; gap:.6rem; padding:.9rem 1rem; border:1px solid rgba(60,60,60,.12); border-radius:14px; background:var(--color-surface, #fff); }
+.dp-head{ display:flex; justify-content:space-between; align-items:baseline; gap:.75rem; }
+.dp-guest{ font-weight:600; }
+.dp-amount{ font-weight:700; white-space:nowrap; }
+.dp-meta{ display:grid; gap:.15rem; color:var(--color-text-muted); }
+.dp-actions{ display:grid; grid-template-columns:1fr 1fr; gap:.5rem; }
+.dp-actions .btn{ width:100%; justify-content:center; }
+.dp-pending{ color:var(--color-text-muted); }
+.dp-empty{ padding:2rem 1rem; text-align:center; color:var(--color-text-muted); }
+.dp-confirm-backdrop{ z-index:45; }
+.dp-confirm{ width:min(440px,100%); display:grid; gap:.85rem; }
+.dp-confirm p{ margin:0; line-height:1.45; }
+.dp-confirm-actions{ display:grid; grid-template-columns:1fr 1fr; gap:.5rem; }
+.dp-confirm-actions .btn{ width:100%; justify-content:center; }
+.dp-confirm-status{ min-height:1.2em; }
+.dp-confirm-status.is-error{ color:var(--color-error, #b3261e); }
 .bk-checkin-status{ min-height:1.2em; color:var(--color-text-muted); }
 .bk-checkin-status.is-error{ color:var(--color-error, #b3261e); }
 .bk-checkin .btn.is-sent{

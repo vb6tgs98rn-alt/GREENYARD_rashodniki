@@ -27,8 +27,9 @@ import { getSupabaseClient, waitForAuthReady} from './supabase-client.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { openModal, closeModal, setStatus } from './render.js';
 import { fetchRealtyCalendarBookings } from './api.js';
-import { payForBooking } from './tochka.js';
+import { payForBooking, createDepositLink } from './tochka.js';
 import { createContract } from './okidoki.js';
+import { bindDepositsEvents } from './deposits.js';
 
 // URL Edge Function бота (один webhook для всех пользователей).
 export const TELEGRAM_BOT_USERNAME_DEFAULT = 'greenyard_guests_bot';
@@ -1767,6 +1768,52 @@ async function getPaymentPart(booking, email) {
   throw checkinError('Не удалось создать ссылку на оплату' + (res.reason ? ': ' + res.reason : ''));
 }
 
+// Срок холда залога в Точке и запас — как на сервере (_shared/tochka_deposit.ts).
+const DEPOSIT_HOLD_DAYS = 6;
+const DEPOSIT_SAFE_DAYS = 5;
+
+// Сколько дней осталось до выезда (по календарным датам, местное время).
+function daysToCheckout(booking) {
+  const end = String(booking?.end_date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(end)) return null;
+  const now = new Date();
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const [y, m, d] = end.split('-').map(Number);
+  return Math.round((Date.UTC(y, m - 1, d) - today) / 86400000);
+}
+
+// Предупреждение о сроке хранения залога — показываем перед ручной ссылкой.
+function depositHoldNote(booking) {
+  const days = daysToCheckout(booking);
+  const base = `Обратите внимание: залог хранится ${DEPOSIT_HOLD_DAYS} дней с момента оплаты гостем, потом деньги разморозятся сами и штраф списать уже не получится.`;
+  if (days == null || days < 0) return { text: base, warn: false };
+  if (days > DEPOSIT_SAFE_DAYS) {
+    return {
+      text: `${base} До выезда ${days} дн. — залог может разморозиться раньше выезда. Лучше отправить ссылку не раньше чем за ${DEPOSIT_SAFE_DAYS} дней до выезда.`,
+      warn: true,
+    };
+  }
+  return { text: `${base} До выезда ${days} дн.`, warn: false };
+}
+
+// Ссылка на залог (холд на карте). Сервер сам переиспользует действующую ссылку.
+// Возвращает { amount, url } | { held: true }.
+async function getDepositPart(booking) {
+  let res;
+  try {
+    res = await createDepositLink(booking.booking_id);
+  } catch (e) {
+    throw checkinError('Не удалось создать ссылку на залог: ' + (e?.message || e));
+  }
+  if (res.kind === 'ok' && res.payUrl) return { amount: Number(res.amount || 0), url: res.payUrl };
+  if (res.kind === 'already_held') return { held: true };
+  if (res.kind === 'no_amount') {
+    throw checkinError('У квартиры не указан залог. Заполните «Обеспечительный платёж» в настройках договора квартиры.');
+  }
+  if (res.kind === 'disabled') throw checkinError('Оплата через Точку выключена. Включите её в настройках «Точка Банк».');
+  throw checkinError('Не удалось создать ссылку на залог' + (res.reason ? ': ' + res.reason : ''));
+}
+
 // Ссылка на подписание договора в ОкиДоки. Уже созданный договор не дублируем.
 // Возвращает { url } | { signed: true }.
 async function getContractPart(booking) {
@@ -1790,17 +1837,26 @@ async function getContractPart(booking) {
 
 const fmtRub = (n) => Number(n || 0).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' ₽';
 
-// Текст для гостя. kind: 'all' — договор и оплата, 'pay' — только оплата, 'contract' — только договор.
-// email — почта гостя для чека, введенная вручную (для 'all' и 'pay').
+// Текст для гостя. kind: 'full' — договор, оплата и залог; 'all' — договор и оплата;
+// 'deposit' — только залог; 'pay' — только оплата; 'contract' — только договор.
+// email — почта гостя для чека, введенная вручную (для вариантов с оплатой).
 async function buildCheckinText(booking, state, kind, email) {
-  const needPay = kind === 'all' || kind === 'pay';
-  const needContract = kind === 'all' || kind === 'contract';
-  const [vars, contract, pay] = await Promise.all([
+  const needPay = kind === 'full' || kind === 'all' || kind === 'pay';
+  const needContract = kind === 'full' || kind === 'all' || kind === 'contract';
+  const needDeposit = kind === 'full' || kind === 'deposit';
+  const [vars, contract, pay, deposit] = await Promise.all([
     bookingTextVars(booking, state),
     needContract ? getContractPart(booking) : Promise.resolve(null),
     needPay ? getPaymentPart(booking, email) : Promise.resolve(null),
+    needDeposit ? getDepositPart(booking) : Promise.resolve(null),
   ]);
   const stay = vars.address ? `${vars.address}, ${vars.dates}` : vars.dates;
+  const depositNote = 'Деньги не списываются, а только замораживаются на карте и вернутся после выезда. Оплата — только картой';
+
+  if (kind === 'deposit') {
+    if (deposit.held) throw checkinError('Залог по этой брони уже внесён.');
+    return { text: `${vars.greeting}\nВнесите, пожалуйста, залог (${stay}) — ${fmtRub(deposit.amount)}. ${depositNote}:\n${deposit.url}` };
+  }
 
   if (kind === 'pay') {
     if (pay.paid) throw checkinError('Проживание уже оплачено — ссылка не нужна.');
@@ -1819,7 +1875,12 @@ async function buildCheckinText(booking, state, kind, email) {
       ? `оплатите проживание — ${fmtRub(pay.amount)}:\n${pay.url}`
       : `оплатите проживание — ${fmtRub(pay.amount)} по реквизитам:\n${pay.requisites}`);
   }
-  if (!steps.length) throw checkinError('Договор уже подписан, а проживание оплачено.');
+  if (deposit && !deposit.held) steps.push(`внесите залог — ${fmtRub(deposit.amount)}. ${depositNote}:\n${deposit.url}`);
+  if (!steps.length) {
+    throw checkinError(kind === 'full'
+      ? 'Договор уже подписан, проживание оплачено, а залог внесён.'
+      : 'Договор уже подписан, а проживание оплачено.');
+  }
   const list = steps.length === 1
     ? steps[0].charAt(0).toUpperCase() + steps[0].slice(1)
     : steps.map((s, i) => `${i + 1}. ${s.charAt(0).toUpperCase() + s.slice(1)}`).join('\n\n');
@@ -1850,7 +1911,9 @@ function openCheckinModal(booking, state, onChanged) {
       <p class="small bk-checkin-hint">Вы можете скопировать ссылку на бота, чтобы он помог заселить гостя, либо скопировать ссылки и отправить их самостоятельно</p>
       <div class="bk-checkin-group">${botButtons}</div>
       <div class="bk-checkin-group">
+        <button class="btn btn-secondary" type="button" data-ci-kind="full">Ссылка на оплату, договор и залог</button>
         <button class="btn btn-secondary" type="button" data-ci-kind="all">Ссылка на оплату и договор</button>
+        <button class="btn btn-secondary" type="button" data-ci-kind="deposit">Ссылка на залог</button>
         <button class="btn btn-secondary" type="button" data-ci-kind="pay">Ссылка на оплату</button>
         <button class="btn btn-secondary" type="button" data-ci-kind="contract">Ссылка на договор</button>
       </div>
@@ -1906,8 +1969,9 @@ function openCheckinModal(booking, state, onChanged) {
     const kindBtn = e.target.closest('[data-ci-kind]');
     if (kindBtn) {
       const kind = kindBtn.getAttribute('data-ci-kind');
-      if (kind === 'all' || kind === 'pay') {
-        // Для оплаты сначала спрашиваем почту гостя — поле появляется под кнопкой.
+      if (kind === 'full' || kind === 'all' || kind === 'pay' || kind === 'deposit') {
+        // Для оплаты сначала спрашиваем почту гостя, для залога — напоминаем
+        // про срок хранения. Блок появляется под кнопкой.
         showEmailField(kindBtn, kind);
         return;
       }
@@ -1925,28 +1989,37 @@ function openCheckinModal(booking, state, onChanged) {
   });
   wrap.querySelector('[data-ci-close]')?.focus();
 
-  // Поле почты под нажатой кнопкой оплаты. Одновременно открыто только одно.
+  // Блок под нажатой кнопкой: предупреждение о сроке залога и/или поле почты
+  // с кнопкой «Готово». Одновременно открыт только один.
   function hideEmailField() {
-    wrap.querySelectorAll('.bk-checkin-email').forEach((el) => el.remove());
+    wrap.querySelectorAll('.bk-checkin-extra').forEach((el) => el.remove());
   }
   function showEmailField(btn, kind) {
     hideEmailField();
     showStatus('');
+    const needEmail = kind !== 'deposit';
+    const needNote = kind === 'full' || kind === 'deposit';
+    const note = needNote ? depositHoldNote(booking) : null;
     const box = document.createElement('div');
-    box.className = 'bk-checkin-email';
+    box.className = 'bk-checkin-extra';
     box.dataset.kind = kind;
     box.innerHTML = `
-      <input type="email" inputmode="email" autocomplete="off" placeholder="Почта гостя" aria-label="Почта гостя" />
-      <button class="btn btn-primary" type="button" data-ci-email-done>Готово</button>`;
-    box.querySelector('input').value = booking.client_email || '';
+      ${note ? `<p class="small bk-checkin-note${note.warn ? ' is-warn' : ''}">${esc(note.text)}</p>` : ''}
+      <div class="bk-checkin-email${needEmail ? '' : ' is-solo'}">
+        ${needEmail ? '<input type="email" inputmode="email" autocomplete="off" placeholder="Почта гостя" aria-label="Почта гостя" />' : ''}
+        <button class="btn btn-primary" type="button" data-ci-email-done>Готово</button>
+      </div>`;
+    const input = box.querySelector('input');
+    if (input) input.value = booking.client_email || '';
     btn.insertAdjacentElement('afterend', box);
-    box.querySelector('input').focus();
+    (input || box.querySelector('[data-ci-email-done]')).focus();
   }
-  function submitEmail(box) {
+  function submitEmail(row) {
+    const box = row?.closest('.bk-checkin-extra');
     if (!box) return;
     const input = box.querySelector('input');
-    const email = String(input.value || '').trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    const email = input ? String(input.value || '').trim() : '';
+    if (input && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       showStatus('Введите корректную почту гостя', true);
       input.focus();
       return;
@@ -2047,6 +2120,9 @@ export async function sendTestNotificationToManager() {
 export function bindGuestBotEvents(state) {
   // Drawer-кнопки. Если их нет — создаём.
   ensureDrawerItems();
+
+  // — Залог (отдельный модуль deposits.js)
+  try { bindDepositsEvents(); } catch (e) { console.warn('[deposits] bind:', e?.message || e); }
 
   // — Брони
   document.getElementById('openBookingsSection')?.addEventListener('click', async () => {
@@ -2413,6 +2489,16 @@ function ensureDrawerItems() {
     btn.className = 'drawer-item';
     btn.id = 'openInstructionsSection';
     btn.innerHTML = '<span>Инструкции для гостей</span><span class="small">Что бот говорит гостю</span>';
+    const bk = document.getElementById('openBookingsSection');
+    if (bk?.parentNode) bk.insertAdjacentElement('afterend', btn);
+    else drawer.appendChild(btn);
+  }
+  // «Залог» — между «Брони» и «Инструкции для гостей».
+  if (!document.getElementById('openDepositsSection')) {
+    const btn = document.createElement('button');
+    btn.className = 'drawer-item';
+    btn.id = 'openDepositsSection';
+    btn.innerHTML = '<span>Залог</span><span class="small">Залоги гостей на хранении</span>';
     const bk = document.getElementById('openBookingsSection');
     if (bk?.parentNode) bk.insertAdjacentElement('afterend', btn);
     else drawer.appendChild(btn);

@@ -79,6 +79,24 @@ export async function payForBooking(booking_id, force = false, client_email = ''
   if (client_email) body.client_email = client_email;
   return callApi('/pay', { body });
 }
+// ─── Залоги (холд на карте гостя) ───
+// Создать или получить действующую ссылку на залог по брони.
+export async function createDepositLink(booking_id) {
+  return callApi('/deposit', { body: { booking_id } });
+}
+// Залоги, которые сейчас хранятся.
+export async function fetchDeposits() {
+  return callApi('/deposits', { method: 'GET' });
+}
+// Вернуть залог гостю.
+export async function releaseDeposit(deposit_id) {
+  return callApi('/deposit/release', { body: { deposit_id } });
+}
+// Оштрафовать: списать весь залог на расчётный счёт.
+export async function captureDeposit(deposit_id) {
+  return callApi('/deposit/capture', { body: { deposit_id } });
+}
+
 export async function fetchPayments(booking_id) {
   const q = booking_id ? `?booking_id=${encodeURIComponent(booking_id)}` : '';
   return callApi(`/payments${q}`, { method: 'GET' });

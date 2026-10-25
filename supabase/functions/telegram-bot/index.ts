@@ -35,6 +35,15 @@ import {
   sendMessage,
 } from "../_shared/channels.ts";
 import { ensureBookingPayment, paymentMessage } from "../_shared/tochka_booking.ts";
+import {
+  AUTO_MAX_DAYS,
+  daysFromToday,
+  depositAmountFor,
+  depositMessage,
+  ensureBookingDeposit,
+  HOLD_DAYS,
+  todayMsk,
+} from "../_shared/tochka_deposit.ts";
 
 const TG_SECRET    = Deno.env.get("TELEGRAM_WEBHOOK_SECRET")   ?? "";
 const MAX_SECRET   = Deno.env.get("MAX_WEBHOOK_SECRET")        ?? "";
@@ -1095,6 +1104,79 @@ async function sendPaymentLink(to: Recipient, session: Session, silent: boolean)
   await notifyManager(session.user_id, `💳 Гостю отправлена оплата на <b>${htmlEscape(sum)} ₽</b> (бронь <code>${htmlEscape(String(session.booking_id))}</code>).`);
 }
 
+/**
+ * Отправляет гостю ссылку на залог (холд на карте).
+ * Возвращает true, если сообщение ушло. Ничего не пишет гостю, если у квартиры
+ * не указан залог или оплата через Точку выключена.
+ */
+async function sendDepositLink(to: Recipient, session: Session, source: "bot" | "auto"): Promise<boolean> {
+  const sb = svc();
+  let res;
+  try {
+    res = await ensureBookingDeposit(sb, session.user_id, session.booking_id, { source });
+  } catch (e) {
+    console.error("[bot] ensureBookingDeposit:", (e as Error).message);
+    return false;
+  }
+  if (res.kind === "no_amount" || res.kind === "disabled" || res.kind === "already_held") return false;
+  if (res.kind === "error") {
+    await notifyManager(session.user_id, `❌ Залог по брони <code>${htmlEscape(String(session.booking_id))}</code> не создан: ${htmlEscape(String(res.reason || "").slice(0, 300))}`);
+    return false;
+  }
+  const msg = depositMessage(res, htmlEscape);
+  if (!msg) return false;
+  const r = await sendMessage(to, msg, { preview: false });
+  if (!(r as any)?.ok) return false;
+  await logMessage(session, "bot", msg, { kind: "deposit_link", amount: res.amount, deposit_id: res.depositId ?? null });
+  if (res.depositId) {
+    await sb.from("booking_deposits").update({ sent_at: new Date().toISOString() }).eq("id", res.depositId);
+  }
+  const sum = res.amount.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  await notifyManager(session.user_id, `🔒 Гостю отправлена ссылка на залог <b>${htmlEscape(sum)} ₽</b> (бронь <code>${htmlEscape(String(session.booking_id))}</code>).`);
+  return true;
+}
+
+/**
+ * Залог при запуске бота. Холд живёт 6 дней, запас 1 день — поэтому:
+ *  • до выезда не больше 5 дней — отправляем сразу;
+ *  • гость запустил бота рано, а проживание не дольше 5 дней — ссылку пришлёт
+ *    ежедневная задача в день заезда (/deposit_autosend);
+ *  • проживание дольше 5 дней — автоматически не отправляем, предупреждаем арендодателя.
+ */
+async function maybeSendDepositOnStart(to: Recipient, session: Session): Promise<void> {
+  const sb = svc();
+  const { data: bk } = await sb.from("rc_bookings")
+    .select("realty_id, begin_date, end_date")
+    .eq("user_id", session.user_id)
+    .eq("booking_id", session.booking_id)
+    .maybeSingle();
+  if (!bk) return;
+  const toCheckout = daysFromToday(bk.end_date);
+  if (toCheckout == null || toCheckout < 0) return;
+
+  if (toCheckout <= AUTO_MAX_DAYS) {
+    await sendDepositLink(to, session, "bot");
+    return;
+  }
+
+  const toCheckin = daysFromToday(bk.begin_date);
+  const nights = toCheckin != null ? toCheckout - toCheckin : null;
+  if (toCheckin != null && toCheckin > 0 && nights != null && nights <= AUTO_MAX_DAYS) {
+    return; // отправим в день заезда
+  }
+
+  // Автоматически залог не уйдёт — предупредим арендодателя, если залог вообще настроен.
+  const amount = await depositAmountFor(sb, session.user_id, bk.realty_id ?? null);
+  const ms = await loadManagerSettings(session.user_id);
+  if (!amount || !(ms as any)?.tochka_enabled) return;
+  await notifyManager(
+    session.user_id,
+    `⚠️ Залог по брони <code>${htmlEscape(String(session.booking_id))}</code> не отправлен автоматически: ` +
+      `до выезда больше ${AUTO_MAX_DAYS} дней, а холд держится ${HOLD_DAYS} дней. ` +
+      `При необходимости отправьте ссылку вручную в разделе «Брони».`,
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // СЦЕНАРИИ ГОСТЯ
 // ═══════════════════════════════════════════════════════════════════
@@ -1159,6 +1241,13 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
     await sendPaymentLink(to, session, true);
   } catch (e) {
     console.error("[bot] sendPaymentLink failed:", e);
+  }
+
+  // Залог — после оплаты, если холд точно доживёт до выезда.
+  try {
+    await maybeSendDepositOnStart(to, session);
+  } catch (e) {
+    console.error("[bot] maybeSendDepositOnStart failed:", e);
   }
 }
 
@@ -1778,6 +1867,61 @@ async function endpointCleaningReminders(req: Request): Promise<Response> {
   return json({ ok: true, sent, total: (cleanings || []).length });
 }
 
+/**
+ * Ежедневно (09:00 МСК): залог гостям, у которых сегодня заезд и до выезда
+ * не больше 5 дней. Только тем, кто уже запускал бота, и только если по брони
+ * ещё нет залога. Защита: заголовок x-cron-secret.
+ */
+async function endpointDepositAutosend(req: Request): Promise<Response> {
+  const got = req.headers.get("x-cron-secret") || "";
+  const sb = svc();
+  const { data: cfg } = await sb.from("cron_config").select("secret").eq("key", "deposit_autosend").maybeSingle();
+  const secret = cfg?.secret || "";
+  if (!secret || got !== secret) return json({ ok: false, error: "forbidden" }, 403);
+
+  const today = todayMsk();
+  const { data: bookings } = await sb.from("rc_bookings")
+    .select("user_id, booking_id, end_date")
+    .eq("begin_date", today)
+    .limit(500);
+
+  let sent = 0;
+  let checked = 0;
+  for (const bk of bookings || []) {
+    const toCheckout = daysFromToday(bk.end_date);
+    if (toCheckout == null || toCheckout < 0 || toCheckout > AUTO_MAX_DAYS) continue;
+    checked++;
+
+    // Уже был залог (внесён, возвращён, списан или ссылка действует) — не дублируем.
+    const { data: prev } = await sb.from("booking_deposits")
+      .select("id")
+      .eq("user_id", bk.user_id)
+      .eq("booking_id", bk.booking_id)
+      .not("status", "in", "(canceled,expired,failed)")
+      .limit(1);
+    if (prev && prev.length) continue;
+
+    const { data: session } = await sb.from("guest_sessions")
+      .select(SESSION_COLS)
+      .eq("user_id", bk.user_id)
+      .eq("booking_id", bk.booking_id)
+      .not("started_at", "is", null)
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!session) continue;
+    const to = sessionRcpt(session as Session);
+    if (!to.chatId) continue;
+
+    try {
+      if (await sendDepositLink(to, session as Session, "auto")) sent++;
+    } catch (e) {
+      console.error("[bot] deposit_autosend:", (e as Error).message);
+    }
+  }
+  return json({ ok: true, today, checked, sent });
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // МАРШРУТИЗАЦИЯ
 // ═══════════════════════════════════════════════════════════════════
@@ -1801,6 +1945,7 @@ Deno.serve(async (req) => {
     if (req.method === "POST" && path === "/guest_invite")         return await endpointGuestInvite(req);
     if (req.method === "GET"  && path === "/channels")             return await endpointChannels(req);
     if (req.method === "POST" && path === "/cleaning_reminders")   return await endpointCleaningReminders(req);
+    if (req.method === "POST" && path === "/deposit_autosend")     return await endpointDepositAutosend(req);
     if (req.method === "POST" && path === "/setup_webhook")        return await endpointSetupWebhook(req);
 
     if (req.method === "GET" && (path === "/" || path === "")) {
@@ -1813,7 +1958,7 @@ Deno.serve(async (req) => {
           "POST /", "POST /max", "GET|POST /whatsapp",
           "POST /send", "POST /send_maid", "POST /test",
           "POST /maid_invite", "POST /guest_invite",
-          "GET /channels", "POST /cleaning_reminders", "POST /setup_webhook",
+          "GET /channels", "POST /cleaning_reminders", "POST /deposit_autosend", "POST /setup_webhook",
         ],
       });
     }

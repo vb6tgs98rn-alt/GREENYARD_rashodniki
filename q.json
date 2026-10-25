@@ -1,0 +1,1 @@
+{"project_id": "wpwuxcxmtvdxftqrrxuu", "query": "select column_name,data_type from information_schema.columns where table_name='tochka_payments' order by ordinal_position"}

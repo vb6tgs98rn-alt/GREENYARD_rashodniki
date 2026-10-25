@@ -17,7 +17,11 @@
 //   POST /pay         — создать/получить ссылку на оплату по брони
 //   GET  /payments    — платежи по брони
 //   POST /refresh     — обновить справочники (счёт, ТСП) и вебхук
-//   POST /poll        — сверить статусы неоплаченных ссылок
+//   POST /poll        — сверить статусы неоплаченных ссылок и залогов
+//   POST /deposit          — создать/получить ссылку на залог по брони
+//   GET  /deposits         — залоги, которые сейчас хранятся
+//   POST /deposit/release  — вернуть залог гостю
+//   POST /deposit/capture  — оштрафовать: списать залог на расчётный счёт
 //   ANY  /webhook     — вебхук Точки (тело — JWT, подпись RS256)
 //   GET  /            — пинг
 //
@@ -48,6 +52,15 @@ import {
   verifyWebhook,
 } from "../_shared/tochka.ts";
 import { ensureBookingPayment } from "../_shared/tochka_booking.ts";
+import {
+  AUTO_MAX_DAYS,
+  CAPTURE_FEE_PERCENT,
+  captureDeposit,
+  ensureBookingDeposit,
+  HOLD_DAYS,
+  releaseDeposit,
+  syncDeposit,
+} from "../_shared/tochka_deposit.ts";
 import { htmlEscape, sendMessage } from "../_shared/channels.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -380,6 +393,171 @@ async function handlePayments(req: Request, url: URL): Promise<Response> {
   return json({ ok: true, items: data ?? [] });
 }
 
+// ───────────────────────────────────────────────────────────────
+// Залоги
+// ───────────────────────────────────────────────────────────────
+
+function rub(n: number): string {
+  return Number(n).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** Уведомления арендодателю о смене статуса залога. */
+function depositHooks(sb: any) {
+  return {
+    onHeld: async (d: any) => {
+      await notifyManager(
+        sb,
+        d.user_id,
+        `🔒 Гость внёс залог: <b>${htmlEscape(rub(d.amount))} ₽</b>\nБронь: <code>${htmlEscape(String(d.booking_id))}</code>\n` +
+          `Деньги заморожены на ${HOLD_DAYS} дней.`,
+      );
+    },
+    onCaptured: async (d: any) => {
+      await notifyManager(
+        sb,
+        d.user_id,
+        `💸 Залог <b>${htmlEscape(rub(d.amount))} ₽</b> списан на расчётный счёт.\nБронь: <code>${htmlEscape(String(d.booking_id))}</code>`,
+      );
+    },
+  };
+}
+
+/** Ссылка на залог, созданная арендодателем вручную. */
+async function handleDeposit(req: Request): Promise<Response> {
+  const userId = await userIdFromJwt(req);
+  if (!userId) return json({ ok: false, error: "unauthorized" }, 401);
+  let body: any = {};
+  try {
+    body = await req.json();
+  } catch (_e) { /* пустое тело */ }
+  const bookingId = Number(body?.booking_id || 0);
+  if (!bookingId) return json({ ok: false, error: "booking_id_required" }, 400);
+
+  const res = await ensureBookingDeposit(svc(), userId, bookingId, { source: "manual" });
+  const status = res.kind === "error" ? 502 : 200;
+  return json({
+    ok: res.kind !== "error",
+    ...res,
+    // Текст ошибки — чтобы приложение показало причину, а не «HTTP 502».
+    error: res.kind === "error" ? (res.reason || "deposit_failed") : undefined,
+    hold_days: HOLD_DAYS,
+    auto_max_days: AUTO_MAX_DAYS,
+  }, status);
+}
+
+/** Залоги, которые сейчас хранятся (деньги заморожены), с данными брони. */
+async function handleDeposits(req: Request): Promise<Response> {
+  const userId = await userIdFromJwt(req);
+  if (!userId) return json({ ok: false, error: "unauthorized" }, 401);
+  const sb = svc();
+
+  // Сначала сверяем с банком неоплаченные и замороженные: вебхук мог не дойти.
+  const conn = await loadConnection(sb, userId);
+  if (conn && conn.status === "connected") {
+    const { data: pending } = await sb.from("booking_deposits")
+      .select("*")
+      .eq("user_id", userId)
+      .in("status", ["created", "held", "capturing"])
+      .limit(30);
+    const hooks = depositHooks(sb);
+    await Promise.all((pending ?? []).map(async (d: any) => {
+      try {
+        await syncDeposit(sb, conn, d, hooks);
+      } catch (e) {
+        console.error("[deposit] сверка:", (e as Error).message);
+      }
+    }));
+  }
+
+  const { data: list, error } = await sb.from("booking_deposits")
+    .select("id, booking_id, amount, status, held_at, hold_expires_at")
+    .eq("user_id", userId)
+    .in("status", ["held", "capturing"])
+    .gt("hold_expires_at", new Date().toISOString())
+    .order("hold_expires_at", { ascending: true })
+    .limit(200);
+  if (error) {
+    console.error("[deposit] список:", error.message);
+    return json({ ok: false, error: "query_failed" }, 500);
+  }
+
+  const ids = Array.from(new Set((list ?? []).map((d: any) => Number(d.booking_id))));
+  const byId = new Map<number, any>();
+  if (ids.length) {
+    const { data: bks } = await sb.from("rc_bookings")
+      .select("booking_id, client_fio, begin_date, end_date, apartment_title")
+      .eq("user_id", userId)
+      .in("booking_id", ids);
+    for (const b of bks ?? []) byId.set(Number(b.booking_id), b);
+  }
+
+  // Наружу — только имя гостя, даты и объект: контакты гостя не нужны (152-ФЗ).
+  const items = (list ?? []).map((d: any) => {
+    const b = byId.get(Number(d.booking_id)) || {};
+    return {
+      id: d.id,
+      booking_id: d.booking_id,
+      amount: Number(d.amount),
+      status: d.status,
+      held_at: d.held_at,
+      hold_expires_at: d.hold_expires_at,
+      guest_name: b.client_fio ?? null,
+      begin_date: b.begin_date ?? null,
+      end_date: b.end_date ?? null,
+      apartment_title: b.apartment_title ?? null,
+    };
+  });
+  return json({ ok: true, items, capture_fee_percent: CAPTURE_FEE_PERCENT, hold_days: HOLD_DAYS });
+}
+
+/** Загружает залог арендодателя по id из тела запроса. */
+async function loadOwnDeposit(req: Request): Promise<{ userId: string | null; dep: any; error?: Response }> {
+  const userId = await userIdFromJwt(req);
+  if (!userId) return { userId: null, dep: null, error: json({ ok: false, error: "unauthorized" }, 401) };
+  let body: any = {};
+  try {
+    body = await req.json();
+  } catch (_e) { /* пустое тело */ }
+  const id = String(body?.deposit_id || "");
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    return { userId, dep: null, error: json({ ok: false, error: "deposit_id_required" }, 400) };
+  }
+  const { data: dep } = await svc().from("booking_deposits")
+    .select("*")
+    .eq("id", id)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!dep) return { userId, dep: null, error: json({ ok: false, error: "not_found" }, 404) };
+  return { userId, dep };
+}
+
+async function handleDepositRelease(req: Request): Promise<Response> {
+  const { dep, error } = await loadOwnDeposit(req);
+  if (error) return error;
+  const sb = svc();
+  const res = await releaseDeposit(sb, dep);
+  if (!res.ok) return json({ ok: false, error: res.error }, 409);
+  console.log(`[deposit] залог ${dep.id} возвращён арендодателем`);
+  return json({ ok: true, status: res.dep?.status, hold_expires_at: res.dep?.hold_expires_at });
+}
+
+async function handleDepositCapture(req: Request): Promise<Response> {
+  const { userId, dep, error } = await loadOwnDeposit(req);
+  if (error) return error;
+  const sb = svc();
+  if (dep.status !== "held") return json({ ok: false, error: "not_held" }, 409);
+  if (dep.hold_expires_at && new Date(dep.hold_expires_at).getTime() <= Date.now()) {
+    return json({ ok: false, error: "hold_expired" }, 409);
+  }
+  const conn = await loadConnection(sb, String(userId));
+  if (!conn || conn.status !== "connected") return json({ ok: false, error: "not_connected" }, 409);
+
+  const res = await captureDeposit(sb, conn, dep);
+  if (!res.ok) return json({ ok: false, error: res.error }, res.error === "not_held" ? 409 : 502);
+  if (res.dep?.status === "captured") await depositHooks(sb).onCaptured(res.dep);
+  return json({ ok: true, status: res.dep?.status });
+}
+
 /** Отмечает платёж оплаченным и уведомляет арендодателя. */
 async function markPaid(sb: any, payment: any, source: string): Promise<void> {
   if (payment.status === "paid") return;
@@ -423,6 +601,23 @@ async function handleWebhook(req: Request): Promise<Response> {
     // к брони и арендодателю независимо от имён полей в событии.
     const values = Array.from(collectStrings(claims));
     if (!values.length) return json({ ok: true, note: "нет идентификаторов" });
+
+    // Залог: статус всегда подтверждаем запросом в банк, на слово событию не верим.
+    const { data: depRows } = await sb
+      .from("booking_deposits")
+      .select("*")
+      .in("operation_id", values)
+      .limit(1);
+    const deposit = depRows?.[0] ?? null;
+    if (deposit) {
+      const dconn = await loadConnection(sb, deposit.user_id);
+      if (!dconn || dconn.status !== "connected") {
+        console.error("[deposit] вебхук: Точка не подключена, сверка отложена");
+        return json({ ok: true, note: "залог: сверка недоступна" });
+      }
+      const upd = await syncDeposit(sb, dconn, deposit, depositHooks(sb));
+      return json({ ok: true, deposit_status: upd?.status });
+    }
 
     const { data: byOperation } = await sb
       .from("tochka_payments")
@@ -487,6 +682,23 @@ async function handlePoll(req: Request): Promise<Response> {
     .limit(100);
 
   let updated = 0;
+  // Залоги: неоплаченные ссылки и замороженные деньги.
+  const { data: deps } = await sb
+    .from("booking_deposits")
+    .select("*")
+    .eq("user_id", userId)
+    .in("status", ["created", "held", "capturing"])
+    .limit(100);
+  const hooks = depositHooks(sb);
+  for (const d of deps ?? []) {
+    try {
+      const upd = await syncDeposit(sb, conn, d, hooks);
+      if (upd?.status !== d.status) updated++;
+    } catch (e) {
+      console.error("[deposit] сверка:", (e as Error).message);
+    }
+  }
+
   for (const p of list ?? []) {
     try {
       const external = p.operation_id
@@ -541,6 +753,14 @@ Deno.serve(async (req: Request) => {
         return await handlePayments(req, url);
       case "/poll":
         return await handlePoll(req);
+      case "/deposit":
+        return await handleDeposit(req);
+      case "/deposits":
+        return await handleDeposits(req);
+      case "/deposit/release":
+        return await handleDepositRelease(req);
+      case "/deposit/capture":
+        return await handleDepositCapture(req);
       case "/":
         return json({
           ok: true,
