@@ -576,13 +576,17 @@ function detectBookingStatus(b) {
   if (b.is_deleted || st === 'canceled' || st === 'cancelled' || st === 'deleted' || st === 'removed') {
     return 'cancelled';
   }
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const beg = b.begin_date ? new Date(b.begin_date) : null;
-  const end = b.end_date ? new Date(b.end_date) : null;
+  // Сравниваем календарные даты строками ГГГГ-ММ-ДД по местному времени:
+  // new Date('ГГГГ-ММ-ДД') — это полночь UTC (03:00 по Москве), из-за чего день сдвигался.
+  // День заезда — «Сейчас в квартире», день выезда — «Завершённые».
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const beg = b.begin_date ? String(b.begin_date).slice(0, 10) : '';
+  const end = b.end_date ? String(b.end_date).slice(0, 10) : '';
   if (beg && end) {
     if (today < beg) return 'upcoming';
-    if (today >= beg && today < end) return 'active';
     if (today >= end) return 'past';
+    return 'active';
   }
   return 'upcoming';
 }
