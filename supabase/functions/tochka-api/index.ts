@@ -337,6 +337,24 @@ async function handlePay(req: Request): Promise<Response> {
   if (!bookingId) return json({ ok: false, error: "booking_id_required" }, 400);
 
   const sb = svc();
+
+  // Почта гостя для чека по 54-ФЗ: менеджер вводит её вручную при создании ссылки
+  // в приложении. Сохраняем в бронь (только свою) до создания платежа.
+  if (body?.client_email != null && String(body.client_email).trim() !== "") {
+    const email = String(body.client_email).trim().slice(0, 254);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return json({ ok: false, error: "invalid_email" }, 400);
+    }
+    const { error: upErr } = await sb.from("rc_bookings")
+      .update({ client_email: email })
+      .eq("user_id", userId)
+      .eq("booking_id", bookingId);
+    if (upErr) {
+      console.error("[tochka] не удалось сохранить почту гостя:", upErr.message);
+      return json({ ok: false, error: "email_save_failed" }, 500);
+    }
+  }
+
   const res = await ensureBookingPayment(sb, userId, bookingId, { force: Boolean(body?.force) });
   const status = res.kind === "error" ? 502 : 200;
   return json({ ok: res.kind !== "error", ...res }, status);

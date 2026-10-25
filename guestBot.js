@@ -1742,10 +1742,11 @@ async function bookingTextVars(booking, state) {
 
 // Ссылка на оплату проживания через Точку. Сервер сам переиспользует действующую ссылку.
 // Возвращает { amount, url } | { amount, requisites } | { paid: true }.
-async function getPaymentPart(booking) {
+async function getPaymentPart(booking, email) {
   let res;
   try {
-    res = await payForBooking(booking.booking_id);
+    res = await payForBooking(booking.booking_id, false, email || '');
+    if (email) booking.client_email = email;
   } catch (e) {
     throw checkinError('Не удалось создать ссылку на оплату: ' + (e?.message || e));
   }
@@ -1761,8 +1762,7 @@ async function getPaymentPart(booking) {
   if (res.kind === 'nothing_to_pay') return { paid: true };
   if (res.kind === 'disabled') throw checkinError('Оплата через Точку выключена. Включите её в настройках «Точка Банк».');
   if (res.kind === 'need_email') {
-    throw checkinError('Для чека нужна электронная почта гостя, а в брони её нет. '
-      + 'Отправьте гостю ссылку на бота — он спросит почту и вышлет оплату.', 'need_email');
+    throw checkinError('Для чека нужна электронная почта гостя.', 'need_email');
   }
   throw checkinError('Не удалось создать ссылку на оплату' + (res.reason ? ': ' + res.reason : ''));
 }
@@ -1791,13 +1791,14 @@ async function getContractPart(booking) {
 const fmtRub = (n) => Number(n || 0).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' ₽';
 
 // Текст для гостя. kind: 'all' — договор и оплата, 'pay' — только оплата, 'contract' — только договор.
-async function buildCheckinText(booking, state, kind) {
+// email — почта гостя для чека, введенная вручную (для 'all' и 'pay').
+async function buildCheckinText(booking, state, kind, email) {
   const needPay = kind === 'all' || kind === 'pay';
   const needContract = kind === 'all' || kind === 'contract';
   const [vars, contract, pay] = await Promise.all([
     bookingTextVars(booking, state),
     needContract ? getContractPart(booking) : Promise.resolve(null),
-    needPay ? getPaymentPart(booking) : Promise.resolve(null),
+    needPay ? getPaymentPart(booking, email) : Promise.resolve(null),
   ]);
   const stay = vars.address ? `${vars.address}, ${vars.dates}` : vars.dates;
 
@@ -1895,14 +1896,67 @@ function openCheckinModal(booking, state, onChanged) {
       return;
     }
 
+    // «Готово» в поле почты: поле пропадает, текст со ссылкой на оплату копируется.
+    const doneBtn = e.target.closest('[data-ci-email-done]');
+    if (doneBtn) {
+      submitEmail(doneBtn.closest('.bk-checkin-email'));
+      return;
+    }
+
     const kindBtn = e.target.closest('[data-ci-kind]');
     if (kindBtn) {
       const kind = kindBtn.getAttribute('data-ci-kind');
+      if (kind === 'all' || kind === 'pay') {
+        // Для оплаты сначала спрашиваем почту гостя — поле появляется под кнопкой.
+        showEmailField(kindBtn, kind);
+        return;
+      }
+      hideEmailField();
       runCopy(kindBtn, buildCheckinText(booking, state, kind), 'Текст для гостя скопирован');
     }
   });
-  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  wrap.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { close(); return; }
+    // Enter в поле почты — как нажатие «Готово».
+    if (e.key === 'Enter' && e.target.matches('.bk-checkin-email input')) {
+      e.preventDefault();
+      submitEmail(e.target.closest('.bk-checkin-email'));
+    }
+  });
   wrap.querySelector('[data-ci-close]')?.focus();
+
+  // Поле почты под нажатой кнопкой оплаты. Одновременно открыто только одно.
+  function hideEmailField() {
+    wrap.querySelectorAll('.bk-checkin-email').forEach((el) => el.remove());
+  }
+  function showEmailField(btn, kind) {
+    hideEmailField();
+    showStatus('');
+    const box = document.createElement('div');
+    box.className = 'bk-checkin-email';
+    box.dataset.kind = kind;
+    box.innerHTML = `
+      <input type="email" inputmode="email" autocomplete="off" placeholder="Почта гостя" aria-label="Почта гостя" />
+      <button class="btn btn-primary" type="button" data-ci-email-done>Готово</button>`;
+    box.querySelector('input').value = booking.client_email || '';
+    btn.insertAdjacentElement('afterend', box);
+    box.querySelector('input').focus();
+  }
+  function submitEmail(box) {
+    if (!box) return;
+    const input = box.querySelector('input');
+    const email = String(input.value || '').trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showStatus('Введите корректную почту гостя', true);
+      input.focus();
+      return;
+    }
+    const kind = box.dataset.kind || 'pay';
+    const kindBtn = wrap.querySelector(`[data-ci-kind="${kind}"]`);
+    box.remove();
+    // Копируем синхронно из нажатия «Готово» (важно для iOS).
+    runCopy(kindBtn, buildCheckinText(booking, state, kind, email), 'Текст для гостя скопирован');
+  }
 }
 
 // Legacy fallback через скрытый textarea + execCommand.

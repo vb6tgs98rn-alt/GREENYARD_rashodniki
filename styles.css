@@ -523,6 +523,9 @@ body:has(.drawer.open){ overflow:hidden; }
 .bk-checkin-group{ display:grid; gap:.5rem; }
 .bk-checkin-group .btn{ width:100%; justify-content:center; }
 .bk-checkin-group + .bk-checkin-group{ padding-top:.85rem; border-top:1px solid rgba(60,60,60,.12); }
+.bk-checkin-email{ display:flex; gap:.5rem; }
+.bk-checkin-email input{ flex:1; min-width:0; }
+.bk-checkin-email .btn{ width:auto; flex:none; }
 .bk-checkin-status{ min-height:1.2em; color:var(--color-text-muted); }
 .bk-checkin-status.is-error{ color:var(--color-error, #b3261e); }
 .bk-checkin .btn.is-sent{

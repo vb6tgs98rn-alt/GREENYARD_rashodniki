@@ -73,8 +73,11 @@ export async function startConnect()         { return callApi('/connect'); }
 export async function disconnect()           { return callApi('/disconnect'); }
 export async function refreshIdentifiers()   { return callApi('/refresh'); }
 export async function pollPayments()         { return callApi('/poll'); }
-export async function payForBooking(booking_id, force = false) {
-  return callApi('/pay', { body: { booking_id, force } });
+// client_email — почта гостя для чека (необязательно): сервер сохранит её в бронь.
+export async function payForBooking(booking_id, force = false, client_email = '') {
+  const body = { booking_id, force };
+  if (client_email) body.client_email = client_email;
+  return callApi('/pay', { body });
 }
 export async function fetchPayments(booking_id) {
   const q = booking_id ? `?booking_id=${encodeURIComponent(booking_id)}` : '';
