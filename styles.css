@@ -514,6 +514,21 @@ body:has(.drawer.open){ overflow:hidden; }
   font-size:.8rem;
   padding:.45rem .5rem;
 }
+/* Окно «Оформить заезд». */
+.bk-checkin-backdrop{ z-index:40; }
+.bk-checkin{ width:min(520px,100%); display:grid; gap:.85rem; }
+.bk-checkin .section-head{ margin-bottom:0; align-items:flex-start; }
+.bk-checkin .muted{ margin:0; }
+.bk-checkin-hint{ margin:0; color:var(--color-text-muted); line-height:1.45; }
+.bk-checkin-group{ display:grid; gap:.5rem; }
+.bk-checkin-group .btn{ width:100%; justify-content:center; }
+.bk-checkin-group + .bk-checkin-group{ padding-top:.85rem; border-top:1px solid rgba(60,60,60,.12); }
+.bk-checkin-status{ min-height:1.2em; color:var(--color-text-muted); }
+.bk-checkin-status.is-error{ color:var(--color-error, #b3261e); }
+.bk-checkin .btn.is-sent{
+  background:color-mix(in oklab, var(--color-success, #1a7f37) 18%, var(--color-surface-2));
+  color:var(--color-success, #1a7f37);
+}
 .bk-btn-link.is-sent{
   background:color-mix(in oklab, var(--color-success, #1a7f37) 18%, var(--color-surface-2));
   color:var(--color-success, #1a7f37);

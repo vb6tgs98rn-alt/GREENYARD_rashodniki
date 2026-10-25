@@ -27,6 +27,8 @@ import { getSupabaseClient, waitForAuthReady} from './supabase-client.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { openModal, closeModal, setStatus } from './render.js';
 import { fetchRealtyCalendarBookings } from './api.js';
+import { payForBooking } from './tochka.js';
+import { createContract } from './okidoki.js';
 
 // URL Edge Function бота (один webhook для всех пользователей).
 export const TELEGRAM_BOT_USERNAME_DEFAULT = 'greenyard_guests_bot';
@@ -668,20 +670,14 @@ function renderBookingsList(state) {
          </div>`
       : '';
 
-    // Кнопки копирования ссылки: если настроен один мессенджер — одна кнопка,
-    // если несколько — отдельная кнопка на каждый (гость выбирает, для какого копировать).
-    const channels = (_bookingsChannels && _bookingsChannels.length) ? _bookingsChannels : [{ id: 'telegram', title: 'Telegram' }];
-    const linkButtons = channels.length > 1
-      ? channels.map(c =>
-          `<button class="btn btn-primary bk-btn-link" data-link-booking="${esc(b.booking_id)}" data-channel="${esc(c.id)}" data-secure="${esc(secureId)}">
-             📋 ${esc(c.title || CHANNEL_TITLE[c.id] || c.id)}
-           </button>`).join('')
-      : `<button class="btn btn-primary bk-btn-link ${linkSent ? 'is-sent' : ''}" data-link-booking="${esc(b.booking_id)}" data-channel="${esc(channels[0].id)}" data-secure="${esc(secureId)}">
-           ${linkSent ? '✓ Ссылка скопирована' : '📋 Ссылка гостю'}
-         </button>`;
+    // Одна кнопка «Оформить заезд»: внутри — ссылки на ботов и на оплату/договор.
     const actions = isCancelled
       ? ''
-      : `<div class="bk-card-actions">${linkButtons}</div>`;
+      : `<div class="bk-card-actions">
+           <button class="btn btn-primary bk-btn-link ${linkSent ? 'is-sent' : ''}" type="button" data-checkin-booking="${esc(b.booking_id)}" data-secure="${esc(secureId)}">
+             ${linkSent ? '✓ Оформить заезд' : 'Оформить заезд'}
+           </button>
+         </div>`;
 
     return `
       <div class="bk-card${isCancelled ? ' bk-cancelled' : ''}" data-booking="${esc(b.booking_id)}" style="${isCancelled ? 'opacity:.75;' : ''}">
@@ -1651,10 +1647,20 @@ async function buildInviteText(booking, state, channelOverride) {
  */
 export function copyGuestInviteToClipboard(booking, state, channelOverride) {
   // Готовим Promise<Blob> заранее, ДО await — это ключ к работе на iOS.
-  const dataPromise = buildInviteText(booking, state, channelOverride);
+  return copyPromisedText(buildInviteText(booking, state, channelOverride));
+}
+
+/**
+ * Копирует в буфер текст, который ещё собирается (Promise<{ text, ... }>).
+ * Вызывать СИНХРОННО из обработчика клика (см. пояснение выше про iOS).
+ * Если текст собрать не удалось — отдаёт исходную ошибку сборки (без поля text).
+ */
+function copyPromisedText(dataPromise) {
   const blobPromise = dataPromise.then(({ text }) =>
     new Blob([text], { type: 'text/plain' })
   );
+  // Ошибку сборки обрабатывает вызывающий код — здесь гасим «необработанный reject».
+  blobPromise.catch(() => {});
 
   // Путь A: async clipboard API с ClipboardItem (Safari/Chrome/Edge)
   const hasAsyncClipboard =
@@ -1670,6 +1676,8 @@ export function copyGuestInviteToClipboard(booking, state, channelOverride) {
         return { ok: true, text, link };
       })
       .catch(async (errWrite) => {
+        // Текст не собрался (ошибка сервера и т.п.) — отдаём эту ошибку как есть.
+        await dataPromise;
         // Fallback: writeText (десктоп Chrome, Android)
         try {
           const { text, link } = await dataPromise;
@@ -1700,6 +1708,201 @@ export function copyGuestInviteToClipboard(booking, state, channelOverride) {
       throw e;
     }
   });
+}
+
+// ─── «Оформить заезд»: ссылки на оплату и договор для самостоятельной отправки ───
+
+// Ошибка с кодом (например, need_email) — чтобы окно могло среагировать по-своему.
+function checkinError(message, code) {
+  const e = new Error(message);
+  if (code) e.code = code;
+  return e;
+}
+
+// Имя гостя, даты и адрес для текста сообщения.
+async function bookingTextVars(booking, state) {
+  const apts = state?.apartments || [];
+  const apt = apts.find(a => String(a.externalIds?.realtyCalendarUnitId || '') === String(booking.realty_id || ''));
+  let address = booking.apartment_title || apt?.name || '';
+  if (apt) {
+    try {
+      const instr = await fetchInstructionFor(apt.id);
+      if (instr?.full_address) address = instr.full_address;
+    } catch { /* адрес не обязателен */ }
+  }
+  const fio = String(booking.client_fio || '').trim().split(/\s+/);
+  // В ФИО из RealtyCalendar первым идёт фамилия; если слово одно — это имя.
+  const name = fio.length >= 2 ? fio[1] : (fio[0] || '');
+  return {
+    greeting: name ? `Здравствуйте, ${name}!` : 'Здравствуйте!',
+    dates: `${fmtDate(booking.begin_date)} — ${fmtDate(booking.end_date)}`,
+    address,
+  };
+}
+
+// Ссылка на оплату проживания через Точку. Сервер сам переиспользует действующую ссылку.
+// Возвращает { amount, url } | { amount, requisites } | { paid: true }.
+async function getPaymentPart(booking) {
+  let res;
+  try {
+    res = await payForBooking(booking.booking_id);
+  } catch (e) {
+    throw checkinError('Не удалось создать ссылку на оплату: ' + (e?.message || e));
+  }
+  if (res.kind === 'ok' && res.payUrl) {
+    // Бейдж в карточке сразу покажет «Ожидает оплаты».
+    const prev = _bookingsState.payments.get(booking.booking_id);
+    if (!prev || prev.status !== 'paid') {
+      _bookingsState.payments.set(booking.booking_id, { booking_id: booking.booking_id, status: 'created', amount: res.amount });
+    }
+    return { amount: Number(res.amount || 0), url: res.payUrl };
+  }
+  if (res.kind === 'requisites' && res.requisites) return { amount: Number(res.amount || 0), requisites: res.requisites };
+  if (res.kind === 'nothing_to_pay') return { paid: true };
+  if (res.kind === 'disabled') throw checkinError('Оплата через Точку выключена. Включите её в настройках «Точка Банк».');
+  if (res.kind === 'need_email') {
+    throw checkinError('Для чека нужна электронная почта гостя, а в брони её нет. '
+      + 'Отправьте гостю ссылку на бота — он спросит почту и вышлет оплату.', 'need_email');
+  }
+  throw checkinError('Не удалось создать ссылку на оплату' + (res.reason ? ': ' + res.reason : ''));
+}
+
+// Ссылка на подписание договора в ОкиДоки. Уже созданный договор не дублируем.
+// Возвращает { url } | { signed: true }.
+async function getContractPart(booking) {
+  if (booking.okidoki_contract_id && Number(booking.contract_status_internal) === 2) return { signed: true };
+  if (booking.okidoki_link) return { url: booking.okidoki_link };
+  let res;
+  try {
+    res = await createContract(booking.booking_id);
+  } catch (e) {
+    throw checkinError('Не удалось создать договор: ' + (e?.message || e));
+  }
+  if (!res?.link) throw checkinError('ОкиДоки не вернул ссылку на договор');
+  booking.okidoki_link = res.link;
+  booking.okidoki_contract_id = res.contract_id || booking.okidoki_contract_id;
+  if (res.status) {
+    booking.contract_status = res.status.name || booking.contract_status;
+    booking.contract_status_internal = res.status.internal_id ?? booking.contract_status_internal;
+  }
+  return { url: res.link };
+}
+
+const fmtRub = (n) => Number(n || 0).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' ₽';
+
+// Текст для гостя. kind: 'all' — договор и оплата, 'pay' — только оплата, 'contract' — только договор.
+async function buildCheckinText(booking, state, kind) {
+  const needPay = kind === 'all' || kind === 'pay';
+  const needContract = kind === 'all' || kind === 'contract';
+  const [vars, contract, pay] = await Promise.all([
+    bookingTextVars(booking, state),
+    needContract ? getContractPart(booking) : Promise.resolve(null),
+    needPay ? getPaymentPart(booking) : Promise.resolve(null),
+  ]);
+  const stay = vars.address ? `${vars.address}, ${vars.dates}` : vars.dates;
+
+  if (kind === 'pay') {
+    if (pay.paid) throw checkinError('Проживание уже оплачено — ссылка не нужна.');
+    const how = pay.url ? `по ссылке:\n${pay.url}` : `по реквизитам:\n${pay.requisites}`;
+    return { text: `${vars.greeting}\nОплатите, пожалуйста, проживание (${stay}) — ${fmtRub(pay.amount)} ${how}` };
+  }
+  if (kind === 'contract') {
+    if (contract.signed) throw checkinError('Договор уже подписан.');
+    return { text: `${vars.greeting}\nПодпишите, пожалуйста, договор аренды (${stay}) по ссылке:\n${contract.url}` };
+  }
+
+  const steps = [];
+  if (!contract.signed) steps.push(`подпишите договор аренды:\n${contract.url}`);
+  if (!pay.paid) {
+    steps.push(pay.url
+      ? `оплатите проживание — ${fmtRub(pay.amount)}:\n${pay.url}`
+      : `оплатите проживание — ${fmtRub(pay.amount)} по реквизитам:\n${pay.requisites}`);
+  }
+  if (!steps.length) throw checkinError('Договор уже подписан, а проживание оплачено.');
+  const list = steps.length === 1
+    ? steps[0].charAt(0).toUpperCase() + steps[0].slice(1)
+    : steps.map((s, i) => `${i + 1}. ${s.charAt(0).toUpperCase() + s.slice(1)}`).join('\n\n');
+  return {
+    text: `${vars.greeting}\nЧтобы оформить заезд (${stay}), пожалуйста:\n\n${list}\n\nСпасибо!`,
+  };
+}
+
+// Окно «Оформить заезд» для конкретной брони.
+function openCheckinModal(booking, state, onChanged) {
+  document.getElementById('bkCheckinModal')?.remove();
+  const channels = (_bookingsChannels && _bookingsChannels.length) ? _bookingsChannels : [{ id: 'telegram', title: 'Telegram' }];
+  const botButtons = channels.map(c =>
+    `<button class="btn btn-primary" type="button" data-ci-bot="${esc(c.id)}">Бот в ${esc(c.title || CHANNEL_TITLE[c.id] || c.id)}</button>`).join('');
+
+  const wrap = document.createElement('div');
+  wrap.id = 'bkCheckinModal';
+  wrap.className = 'modal-backdrop open bk-checkin-backdrop';
+  wrap.innerHTML = `
+    <div class="modal bk-checkin" role="dialog" aria-modal="true" aria-labelledby="bkCheckinTitle">
+      <div class="section-head">
+        <div>
+          <h2 class="modal-title" id="bkCheckinTitle">Оформить заезд</h2>
+          <p class="muted">${esc(booking.client_fio || 'Без имени')} · ${esc(fmtDate(booking.begin_date))} — ${esc(fmtDate(booking.end_date))}</p>
+        </div>
+        <button class="btn btn-secondary btn-sm" type="button" data-ci-close aria-label="Закрыть">✕</button>
+      </div>
+      <p class="small bk-checkin-hint">Вы можете скопировать ссылку на бота, чтобы он помог заселить гостя, либо скопировать ссылки и отправить их самостоятельно</p>
+      <div class="bk-checkin-group">${botButtons}</div>
+      <div class="bk-checkin-group">
+        <button class="btn btn-secondary" type="button" data-ci-kind="all">Ссылка на оплату и договор</button>
+        <button class="btn btn-secondary" type="button" data-ci-kind="pay">Ссылка на оплату</button>
+        <button class="btn btn-secondary" type="button" data-ci-kind="contract">Ссылка на договор</button>
+      </div>
+      <div class="small bk-checkin-status" role="status" aria-live="polite"></div>
+    </div>`;
+  document.body.appendChild(wrap);
+
+  const statusEl = wrap.querySelector('.bk-checkin-status');
+
+  const showStatus = (msg, isError) => {
+    statusEl.textContent = msg || '';
+    statusEl.classList.toggle('is-error', !!isError);
+  };
+  const close = () => wrap.remove();
+
+  // Копирование текста по кнопке. Вызывается синхронно из клика (iOS).
+  const runCopy = (btn, dataPromise, okLabel) => {
+    const orig = btn.textContent;
+    btn.disabled = true;
+    showStatus('Готовлю текст…');
+    copyPromisedText(dataPromise).then(() => {
+      btn.textContent = '✓ Скопировано';
+      btn.classList.add('is-sent');
+      showStatus(okLabel);
+      setStatus(okLabel);
+      setTimeout(() => { btn.textContent = orig; }, 1800);
+      onChanged?.();
+    }).catch((err) => {
+      if (err?.text) { showManualCopyModal(err.text); showStatus(''); onChanged?.(); return; }
+      btn.classList.remove('is-sent');
+      showStatus(err?.message || String(err), true);
+    }).finally(() => { btn.disabled = false; });
+  };
+
+  wrap.addEventListener('click', (e) => {
+    if (e.target === wrap || e.target.closest('[data-ci-close]')) { close(); return; }
+
+    const botBtn = e.target.closest('[data-ci-bot]');
+    if (botBtn) {
+      const ch = botBtn.getAttribute('data-ci-bot');
+      const title = CHANNEL_TITLE[ch] || ch;
+      runCopy(botBtn, buildInviteText(booking, state, ch), `Ссылка на бота в ${title} скопирована`);
+      return;
+    }
+
+    const kindBtn = e.target.closest('[data-ci-kind]');
+    if (kindBtn) {
+      const kind = kindBtn.getAttribute('data-ci-kind');
+      runCopy(kindBtn, buildCheckinText(booking, state, kind), 'Текст для гостя скопирован');
+    }
+  });
+  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  wrap.querySelector('[data-ci-close]')?.focus();
 }
 
 // Legacy fallback через скрытый textarea + execCommand.
@@ -1863,6 +2066,16 @@ export function bindGuestBotEvents(state) {
       } catch (err) {
         alert('Не удалось скопировать: ' + (err?.message || err));
       }
+      return;
+    }
+
+    const checkinBtn = e.target.closest('[data-checkin-booking]');
+    if (checkinBtn) {
+      const bid = checkinBtn.getAttribute('data-checkin-booking');
+      const b = _bookingsState.all.find(x => String(x.booking_id) === String(bid));
+      if (!b) return;
+      // После копирования перерисовываем список — обновятся статусы договора/ссылки.
+      openCheckinModal(b, state, () => renderBookingsList(state));
       return;
     }
 
