@@ -457,6 +457,8 @@ export function isFromYandexTravel(from: string): boolean {
 export interface YandexChatMessage {
   booking?: string; // номер брони, например «YA-1765-5417-1273:0»
   text?: string;    // текст сообщения гостя
+  dates?: string;   // «24 октября — 29 октября» (из блока «Даты бронирования»)
+  object?: string;  // название из блока «Объект размещения»
 }
 
 // Возвращает данные сообщения, если письмо — уведомление о новом сообщении гостя; иначе null.
@@ -478,6 +480,18 @@ export function parseYandexChat(subject: string, body: string): YandexChatMessag
     const t = parts[parts.length - 1].replace(/\s+/g, " ").trim();
     if (t) res.text = t.length > 700 ? t.slice(0, 700) + "…" : t;
   }
+
+  // Блок «Подробнее о бронировании»: «Даты бронирования … Тариф … Объект размещения …».
+  const plain = (body || "").replace(/&zwnj;|&zwj;/gi, " ").replace(/\s+/g, " ");
+  const dm = plain.match(/Даты бронирования\s+(.{3,120}?)\s+(?:Тариф|Объект размещения|Гост|Номер бронирования)/i);
+  if (dm) {
+    // Убираем дни недели: «суббота, 24 октября — четверг, 29 октября» → «24 октября — 29 октября».
+    res.dates = dm[1]
+      .replace(/(понедельник|вторник|среда|четверг|пятница|суббота|воскресенье),\s*/gi, "")
+      .trim();
+  }
+  const om = plain.match(/Объект размещения\s+(.{2,200}?)\s+(?:Наш ТГ|Установите приложение|Служба поддержки|Даты бронирования|Тариф|Номер бронирования|©)/i);
+  if (om) res.object = om[1].trim();
   return res;
 }
 
@@ -489,6 +503,8 @@ function escHtml(s: string): string {
 // Текст уведомления о сообщении гостя из Яндекс Путешествий.
 export function yandexNotifyText(m: YandexChatMessage): string {
   let t = "✉️ <b>Новое сообщение от гостя</b> (Яндекс Путешествия)";
+  if (m.object) t += `\nОбъект: ${escHtml(m.object)}`;
+  if (m.dates) t += `\nДаты: ${escHtml(m.dates)}`;
   if (m.booking) t += `\nБронь: <code>${escHtml(m.booking)}</code>`;
   if (m.text) t += `\n\n<i>${escHtml(m.text)}</i>`;
   t += "\n\nОтветить можно в Экстранете или ответом на письмо.";
