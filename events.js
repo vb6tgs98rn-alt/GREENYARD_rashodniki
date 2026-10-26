@@ -444,9 +444,15 @@ function bindItemCards() {
     if (doneBtn) {
       const req = getState().purchaseRequests.find(r => r.id === doneBtn.dataset.doneRequest);
       if (!req) return;
-      if (req.done) { req.done = false; req.pendingCost = false; req.items.forEach(i => delete i.cost); }
+      if (req.done) {
+        // Отмена выполнения: цены стираются — убираем и расходы из финучёта, чтобы не было дублей.
+        req.done = false; req.pendingCost = false; req.items.forEach(i => delete i.cost);
+        removeRequestFinance(req.id);
+        req.financeLinked = false;
+      }
       else { req.pendingCost = true; }
       renderPurchaseModal();
+      render(); // обновляем финучёт
       persistState(setStatus, true);
       return;
     }
@@ -468,30 +474,15 @@ function bindItemCards() {
         const val = parseFloat(input.value);
         if (isNaN(val) || val < 0) { allFilled = false; input.style.borderColor = 'var(--color-error)'; return; }
         input.style.borderColor = '';
-        const item = req.items.find(i => (i.itemId || i.name) === input.dataset.costItemId);
+        // Позиция по индексу: у одинаковых названий цены не перезаписывают друг друга.
+        const byIdx = req.items[Number(input.dataset.costIdx)];
+        const item = byIdx || req.items.find(i => (i.itemId || i.name) === input.dataset.costItemId);
         if (item) item.cost = val;
       });
       if (!allFilled) return;
       req.done = true; req.pendingCost = false;
-      // ─── Синхронизация с финучётом — заносим расход по каждому расходнику ───
-      const today = new Date().toISOString().slice(0, 10);
-      req.items.forEach(item => {
-        const cost = Number(item.cost);
-        if (cost > 0) {
-          addFinanceEntry({
-            apartmentId: req.apartmentId,
-            type: 'expense',
-            category: 'Закупка',
-            title: item.name,
-            amount: cost,
-            date: today,
-            source: 'manual',
-            status: 'confirmed',
-            notes: `Заявка ${req.auto ? '(авто)' : ''}: ${roundSmart(item.qty)} ${item.unit}`,
-            meta: { requestId: req.id, itemId: item.itemId || '' },
-          });
-        }
-      });
+      // ─── Синхронизация с финучётом — по одному расходу на позицию (без дублей) ───
+      syncRequestFinance(req, new Date().toISOString().slice(0, 10));
       // Сохраняем ID финзаписей в заявке для возможного удаления
       req.financeLinked = true;
       renderPurchaseModal();
@@ -721,30 +712,60 @@ function savePurchaseRequestEdit(reqId) {
 
   req.items = items;
 
-  // Заказ уже в финучёте — пересобираем связанные расходы, сохраняя исходную дату.
-  if (done && req.financeLinked) {
-    const linked = (state.finance?.entries || []).filter(e => e.meta && e.meta.requestId === reqId);
-    const date = linked.map(e => e.date).filter(Boolean).sort()[0] || new Date().toISOString().slice(0, 10);
-    linked.forEach(e => deleteFinanceEntry(e.id));
-    req.items.forEach(item => {
-      const cost = Number(item.cost);
-      if (cost > 0) {
-        addFinanceEntry({
-          apartmentId: req.apartmentId,
-          type: 'expense',
-          category: 'Закупка',
-          title: item.name,
-          amount: cost,
-          date,
-          source: 'manual',
-          status: 'confirmed',
-          notes: `Заявка ${req.auto ? '(авто)' : ''}: ${roundSmart(item.qty)} ${item.unit}`,
-          meta: { requestId: req.id, itemId: item.itemId || '' },
-        });
-      }
-    });
+  // Заказ уже в финучёте — приводим связанные расходы к новому составу и ценам.
+  if (done) {
+    syncRequestFinance(req);
+    req.financeLinked = true;
   }
   return true;
+}
+
+// Синхронизация расходов финучёта с позициями заявки (одна запись на позицию с ценой > 0).
+// Существующие записи обновляются на месте (сохраняются id, дата, статус, категория),
+// новые позиции добавляются, удалённые и с нулевой ценой — убираются. Повторный вызов не создаёт дублей.
+function syncRequestFinance(req, defaultDate) {
+  const state = getState();
+  const linked = (state.finance?.entries || []).filter(e => e.meta && e.meta.requestId === req.id);
+  // Дата: как у уже занесённых расходов заявки → переданная → дата создания заявки → сегодня.
+  const date = linked.map(e => e.date).filter(Boolean).sort()[0]
+    || defaultDate
+    || (typeof req.createdAt === 'string' ? req.createdAt.slice(0, 10) : '')
+    || new Date().toISOString().slice(0, 10);
+  const used = new Set();
+  const notesFor = (item) => `Заявка ${req.auto ? '(авто)' : ''}: ${roundSmart(item.qty)} ${item.unit}`;
+  req.items.forEach(item => {
+    const cost = Number(item.cost);
+    if (!(cost > 0)) return;
+    // Ищем незанятую запись этой же позиции (по itemId и названию).
+    const ex = linked.find(e => !used.has(e.id) && (e.meta.itemId || '') === (item.itemId || '') && e.title === item.name);
+    if (ex) {
+      used.add(ex.id);
+      ex.amount = cost;
+      ex.netAmount = cost;
+      ex.notes = notesFor(item);
+      return;
+    }
+    const created = addFinanceEntry({
+      apartmentId: req.apartmentId,
+      type: 'expense',
+      category: 'Закупка',
+      title: item.name,
+      amount: cost,
+      date,
+      source: 'manual',
+      status: 'confirmed',
+      notes: notesFor(item),
+      meta: { requestId: req.id, itemId: item.itemId || '' },
+    });
+    used.add(created.id);
+  });
+  linked.filter(e => !used.has(e.id)).forEach(e => deleteFinanceEntry(e.id));
+}
+
+// Удаляет все расходы финучёта, связанные с заявкой.
+function removeRequestFinance(reqId) {
+  const linked = (getState().finance?.entries || []).filter(e => e.meta && e.meta.requestId === reqId);
+  linked.forEach(e => deleteFinanceEntry(e.id));
 }
 
 function purchaseRequestCard(request) {
@@ -755,7 +776,7 @@ function purchaseRequestCard(request) {
     ? 'background:color-mix(in oklab,var(--color-success) 15%,transparent);color:var(--color-success)'
     : 'background:color-mix(in oklab,var(--color-error) 15%,transparent);color:var(--color-error)';
 
-  const itemsList = request.items.map(item => {
+  const itemsList = request.items.map((item, idx) => {
     if (done) {
       const costStr = item.cost != null && item.cost !== '' ? `${Number(item.cost).toLocaleString('ru-RU')} ₽` : '—';
       return `<div class="line"><div><strong>${item.name}</strong><div class="small">${roundSmart(item.qty)} ${item.unit}</div></div><strong style="color:var(--color-success)">${costStr}</strong></div>`;
@@ -770,7 +791,7 @@ function purchaseRequestCard(request) {
           <input type="number" inputmode="numeric" min="0" step="1" placeholder="0"
             value="${item.cost || ''}"
             class="cost-input-field"
-            data-cost-item="${request.id}" data-cost-item-id="${item.itemId || item.name}" />
+            data-cost-item="${request.id}" data-cost-item-id="${item.itemId || item.name}" data-cost-idx="${idx}" />
           <span class="cost-currency">₽</span>
         </div>
       </div>`;
