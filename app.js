@@ -40,6 +40,10 @@ import {
   getStorageMode,
   setHydrating,
   writeLocalCache,
+  setCloudConflictHandler,
+  hasCloudConflict,
+  isCloudNewer,
+  isHydrating,
 } from './storage.js';
 import { render, setStatus, renderAuthStatus, renderStorageBadge, closeDrawer } from './render.js';
 import { bindEvents } from './events.js';
@@ -309,6 +313,10 @@ async function refreshRealtyCalendarData() {
       fetchRealtyCalendarLog(50).catch(() => []),
     ]);
 
+    // Перед фоновой записью подтягиваем свежие данные (если открыто несколько вкладок/устройств),
+    // чтобы синк броней не записал устаревшую копию.
+    try { await refreshIfCloudNewer(); } catch (e) { console.warn('[rc] refresh before apply:', e); }
+
     updateState((s) => {
       if (!s.integrations) s.integrations = {};
       const prev = s.integrations.realtycalendar || { connected: false, agencyId: '', lastEventAt: null };
@@ -408,6 +416,55 @@ async function _processAuthChange(event, session) {
 // Экспорт бутстрапа в window — чтобы gate-хендлер мог его вызвать при входе
 // (страховка от того, что supabase-js не эмитнет SIGNED_IN event вовремя).
 window.__gy_bootstrapForSignedInUser = (user) => bootstrapForSignedInUser(user, { firstBoot: false });
+
+// ─── Защита от перезаписи данных с другого устройства/вкладки ────────────────────
+// Конфликт версий: сохранение остановлено, показываем плашку с кнопкой «Обновить».
+function showCloudConflictBanner() {
+  if (document.getElementById('cloudConflictBanner')) return;
+  const el = document.createElement('div');
+  el.id = 'cloudConflictBanner';
+  el.setAttribute('role', 'alert');
+  el.style.cssText = 'position:fixed;left:12px;right:12px;bottom:16px;margin:0 auto;z-index:10000;box-sizing:border-box;'
+    + 'max-width:520px;display:flex;gap:.75rem;align-items:center;'
+    + 'padding:.75rem 1rem;border-radius:12px;background:#7a1f1f;color:#fff;box-shadow:0 6px 24px rgba(0,0,0,.25);font-size:14px;line-height:1.35';
+  const text = document.createElement('span');
+  text.textContent = 'Данные изменены на другом устройстве или вкладке. Последнее изменение здесь не сохранено — обновите страницу и повторите его.';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = 'Обновить';
+  btn.style.cssText = 'flex:none;padding:.45rem .9rem;border-radius:8px;border:0;background:#fff;color:#7a1f1f;font-weight:700;cursor:pointer';
+  btn.addEventListener('click', () => location.reload());
+  el.append(text, btn);
+  document.body.appendChild(el);
+}
+setCloudConflictHandler(showCloudConflictBanner);
+
+// При возврате на вкладку подтягиваем свежие данные, если их изменили в другом месте —
+// так старая копия не успеет ничего затереть.
+let _cloudRefreshBusy = false;
+async function refreshIfCloudNewer() {
+  if (_cloudRefreshBusy || isHydrating() || getStorageMode() !== 'cloud' || hasCloudConflict()) return;
+  _cloudRefreshBusy = true;
+  try {
+    if (!(await isCloudNewer())) return;
+    const res = await fetchCloudState(setStatus);
+    if (res.ok && res.found) {
+      setState(ensureStateShape(res.state));
+      try { dedupeFinanceEntriesByExternalId(); } catch (e) { console.warn('[refresh] dedupe:', e); }
+      ensureFinanceGeneratedForCurrentMonth();
+      render();
+      setStatus('Данные обновлены с другого устройства');
+    }
+  } catch (e) {
+    console.warn('[refresh] error:', e);
+  } finally {
+    _cloudRefreshBusy = false;
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') refreshIfCloudNewer();
+});
+window.addEventListener('focus', () => { refreshIfCloudNewer(); });
 
 // Экспорт очистки в window — events.js вызывает её немедленно после signOut(),
 // не дожидаясь эмиссии SIGNED_OUT через onAuthStateChange (которая может не сработать,

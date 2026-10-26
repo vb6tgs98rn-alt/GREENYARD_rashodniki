@@ -52,6 +52,55 @@ let cachedUser = null;
 // Снимается в app.js после успешной инициализации облачного state.
 let isHydratingFromCloud = false;
 
+// ─── Защита от перезаписи данных с другого устройства/вкладки ────────────────────
+// Состояние хранится целиком, поэтому сохраняем только поверх той версии, которую загрузили
+// (updated_at). Если в облаке уже другая версия — не пишем и просим обновить страницу.
+//   cloudSaveMode: 'unknown' — данные не загружены (сохранять нельзя),
+//                  'new'     — записи в облаке нет (новый аккаунт),
+//                  'versioned' — известна версия cloudVersion.
+let cloudSaveMode = 'unknown';
+let cloudVersion = null;
+let cloudUserId = null;
+let cloudConflict = false;
+let saveChain = Promise.resolve();
+let conflictHandler = null;
+
+/** Обработчик конфликта версий (показ предупреждения) — регистрируется в app.js. */
+export function setCloudConflictHandler(fn) {
+  conflictHandler = typeof fn === 'function' ? fn : null;
+}
+
+export function hasCloudConflict() {
+  return cloudConflict;
+}
+
+function raiseConflict(reason) {
+  if (cloudConflict) return;
+  cloudConflict = true;
+  console.warn('[storage] конфликт версий, сохранение остановлено:', reason);
+  try { conflictHandler?.(reason); } catch (e) { console.warn('[storage] conflictHandler:', e); }
+}
+
+/**
+ * Проверка свежести: изменились ли данные в облаке с момента загрузки.
+ * Возвращает true, если в облаке более новая версия (её нужно перечитать).
+ */
+export async function isCloudNewer() {
+  if (cloudSaveMode !== 'versioned' || !cloudUserId) return false;
+  try {
+    await saveChain; // дожидаемся своих сохранений
+    const { data, error } = await supabase
+      .from(USER_STATES_TABLE)
+      .select('updated_at')
+      .eq('user_id', cloudUserId)
+      .maybeSingle();
+    if (error || !data) return false;
+    return String(data.updated_at) !== String(cloudVersion);
+  } catch {
+    return false;
+  }
+}
+
 // При первой загрузке модуля — чистим старый локальный кэш.
 // Старые записи могли «воскрешать» устаревшие версии state (напр. вернувшийся старый
 // realtyCalendarUnitId), так что вычищаем единовременно при загрузке приложения.
@@ -155,6 +204,8 @@ export function normalizeImportedState(raw) {
 
   return {
     version: STORAGE_VERSION,
+    // Отметки выполненных разовых миграций данных (иначе они запускаются при каждом входе).
+    migrations: (raw.migrations && typeof raw.migrations === 'object' && !Array.isArray(raw.migrations)) ? raw.migrations : {},
     activeApartmentId: apartments.some((a) => a.id === raw.activeApartmentId)
       ? raw.activeApartmentId
       : apartments[0].id,
@@ -244,7 +295,7 @@ export async function fetchCloudState(setStatus) {
   try {
     const { data, error } = await supabase
       .from(USER_STATES_TABLE)
-      .select('state')
+      .select('state, updated_at')
       .eq('user_id', user.id)
       .maybeSingle();
 
@@ -254,8 +305,10 @@ export async function fetchCloudState(setStatus) {
     }
     if (!data || !data.state) {
       // Запись отсутствует — это НЕ ошибка, это новый аккаунт
+      cloudSaveMode = 'new'; cloudVersion = null; cloudUserId = user.id; cloudConflict = false;
       return { ok: true, found: false };
     }
+    cloudSaveMode = 'versioned'; cloudVersion = data.updated_at; cloudUserId = user.id; cloudConflict = false;
     return { ok: true, found: true, state: normalizeImportedState(data.state) };
   } catch (e) {
     console.warn('[storage] fetchCloudState error:', e);
@@ -296,20 +349,60 @@ export async function syncToApi(setStatus, silent = false) {
   }
   if (!user) return false;
 
+  // Сохранения идут строго по очереди: каждое опирается на версию предыдущего.
+  const run = saveChain.then(() => doSyncToApi(user, setStatus, silent));
+  saveChain = run.catch(() => false);
+  return run;
+}
+
+async function doSyncToApi(user, setStatus, silent) {
+  if (cloudConflict) {
+    notify(setStatus, 'Данные изменены на другом устройстве — обновите страницу', false);
+    return false;
+  }
+  // Данные не были загружены (ошибка сети/другой аккаунт) — не пишем, иначе затрём облако.
+  if (cloudSaveMode === 'unknown' || cloudUserId !== user.id) {
+    console.warn('[storage] syncToApi blocked: данные из облака не загружены');
+    notify(setStatus, 'Данные не загружены из облака — обновите страницу', silent);
+    return false;
+  }
+
   try {
-    const payload = {
-      user_id: user.id,
-      state: getState(),
-      updated_at: new Date().toISOString(),
-    };
-    const { error } = await supabase
-      .from(USER_STATES_TABLE)
-      .upsert(payload, { onConflict: 'user_id' });
+    const updatedAt = new Date().toISOString();
+    let data = null;
+    let error = null;
+    if (cloudSaveMode === 'versioned') {
+      // Условная запись: только если в облаке всё ещё та версия, которую мы знаем.
+      ({ data, error } = await supabase
+        .from(USER_STATES_TABLE)
+        .update({ state: getState(), updated_at: updatedAt })
+        .eq('user_id', user.id)
+        .eq('updated_at', cloudVersion)
+        .select('updated_at'));
+      if (!error && (!Array.isArray(data) || data.length === 0)) {
+        raiseConflict('version');
+        notify(setStatus, 'Данные изменены на другом устройстве — обновите страницу', false);
+        return false;
+      }
+    } else {
+      // Новый аккаунт: только вставка (если запись уже появилась — это конфликт).
+      ({ data, error } = await supabase
+        .from(USER_STATES_TABLE)
+        .insert({ user_id: user.id, state: getState(), updated_at: updatedAt })
+        .select('updated_at'));
+      if (error && String(error.code) === '23505') {
+        raiseConflict('exists');
+        notify(setStatus, 'Данные изменены на другом устройстве — обновите страницу', false);
+        return false;
+      }
+    }
 
     if (error) {
       notify(setStatus, `Ошибка сохранения в облако: ${error.message}`, silent);
       return false;
     }
+    cloudSaveMode = 'versioned';
+    cloudVersion = (Array.isArray(data) && data[0]?.updated_at) || updatedAt;
     notify(setStatus, `Сохранено в облако в ${nowLabel()}`, silent);
     return true;
   } catch (e) {
