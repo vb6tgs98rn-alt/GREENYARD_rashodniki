@@ -252,8 +252,14 @@ export class ImapClient {
 
   // UID писем от avito.ru с UID > sinceUid.
   async searchAvito(sinceUid: number): Promise<number[]> {
+    return await this.searchFrom(sinceUid, "avito.ru");
+  }
+
+  // UID писем с указанным отправителем (адрес или домен) и UID > sinceUid.
+  async searchFrom(sinceUid: number, sender: string): Promise<number[]> {
     const from = Math.max(1, sinceUid + 1);
-    const r = await this.command(`UID SEARCH UID ${from}:* FROM "avito.ru"`);
+    const safe = sender.replace(/["\\]/g, "");
+    const r = await this.command(`UID SEARCH UID ${from}:* FROM "${safe}"`);
     if (!r.ok) return [];
     const line = r.text.split(/\n/).find((l) => /\* SEARCH/i.test(l)) || "";
     const nums = (line.replace(/.*SEARCH/i, "").match(/\d+/g) || []).map((x) => parseInt(x, 10));
@@ -434,6 +440,59 @@ export function isFromAvito(from: string): boolean {
   if (at === -1) return false;
   const domain = addr.slice(at + 1);
   return domain === "avito.ru" || domain.endsWith(".avito.ru");
+}
+
+// ─── Яндекс Путешествия (Экстранет) ─────────────────────────────────────────
+// Ловим ТОЛЬКО письма о новом сообщении гостя в чате Экстранета.
+// Остальные письма Яндекса (брони, рассылки, отчёты) пропускаются.
+export const YANDEX_TRAVEL_SENDER = "extranet@travel.yandex.ru";
+
+// Отправитель — именно адрес Экстранета.
+export function isFromYandexTravel(from: string): boolean {
+  const m = (from || "").match(/<([^>]+)>/);
+  const addr = (m ? m[1] : from).toLowerCase().trim();
+  return addr === YANDEX_TRAVEL_SENDER;
+}
+
+export interface YandexChatMessage {
+  booking?: string; // номер брони, например «YA-1765-5417-1273:0»
+  text?: string;    // текст сообщения гостя
+}
+
+// Возвращает данные сообщения, если письмо — уведомление о новом сообщении гостя; иначе null.
+export function parseYandexChat(subject: string, body: string): YandexChatMessage | null {
+  const norm = (s: string) => (s || "").toLowerCase().replace(/ё/g, "е").replace(/[\s\u00a0]+/g, " ");
+  const b = norm(body);
+  // Главный признак — заголовок письма «У вас новое сообщение от гостя в чате Экстранета».
+  if (!b.includes("новое сообщение от гостя в чате экстранета")) return null;
+
+  const res: YandexChatMessage = {};
+  const bm = (subject || "").match(/YA-[\d-]+(?::\d+)?/i) || (body || "").match(/YA-[\d-]+(?::\d+)?/i);
+  if (bm) res.booking = bm[0];
+
+  // Текст сообщения стоит между «(местное время)» и подсказкой «Вы можете ответить гостю».
+  const tm = (body || "").match(/\(местное время\)\s*([\s\S]{1,2000}?)\s*Вы можете ответить гостю/i);
+  if (tm) {
+    // Если в письме две версии (текст + HTML), берём фрагмент после последнего «(местное время)».
+    const parts = tm[1].split(/\(местное время\)/i);
+    const t = parts[parts.length - 1].replace(/\s+/g, " ").trim();
+    if (t) res.text = t.length > 700 ? t.slice(0, 700) + "…" : t;
+  }
+  return res;
+}
+
+// Экранирование для parse_mode HTML в Telegram.
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Текст уведомления о сообщении гостя из Яндекс Путешествий.
+export function yandexNotifyText(m: YandexChatMessage): string {
+  let t = "✉️ <b>Новое сообщение от гостя</b> (Яндекс Путешествия)";
+  if (m.booking) t += `\nБронь: <code>${escHtml(m.booking)}</code>`;
+  if (m.text) t += `\n\n<i>${escHtml(m.text)}</i>`;
+  t += "\n\nОтветить можно в Экстранете или ответом на письмо.";
+  return t;
 }
 
 // Текст уведомления в Telegram (без персональных данных).

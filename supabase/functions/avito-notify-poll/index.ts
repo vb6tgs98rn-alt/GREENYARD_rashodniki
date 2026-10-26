@@ -18,8 +18,12 @@ import {
   classifyAvito,
   ImapClient,
   isFromAvito,
+  isFromYandexTravel,
   notifyText,
+  parseYandexChat,
   refineByBody,
+  YANDEX_TRAVEL_SENDER,
+  yandexNotifyText,
 } from "../_shared/avito_imap.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -113,7 +117,10 @@ serve(async (req) => {
         since = Math.max(since, Math.max(0, sel.uidNext - 1));
       }
 
-      const uids = (await client.searchAvito(since)).sort((a, b) => a - b);
+      // Письма Авито + письма Экстранета Яндекс Путешествий (без повторов).
+      const avitoUids = await client.searchAvito(since);
+      const yandexUids = await client.searchFrom(since, YANDEX_TRAVEL_SENDER);
+      const uids = [...new Set([...avitoUids, ...yandexUids])].sort((a, b) => a - b);
       const headers = uids.length ? await client.fetchHeaders(uids) : [];
       headers.sort((a, b) => a.uid - b.uid);
 
@@ -122,6 +129,8 @@ serve(async (req) => {
       const needBodyUids: number[] = [];
       const preKind = new Map<number, string>();
       for (const h of headers) {
+        // Яндекс: тип письма понятен только по телу — качаем всегда.
+        if (isFromYandexTravel(h.from)) { needBodyUids.push(h.uid); continue; }
         if (!isFromAvito(h.from)) continue;
         const k = classifyAvito(h.subject);
         preKind.set(h.uid, k);
@@ -133,6 +142,34 @@ serve(async (req) => {
       let committed = since;
       let skippedService = 0;
       for (const h of headers) {
+        // ── Яндекс Путешествия: только новые сообщения гостей в чате Экстранета ──
+        if (isFromYandexTravel(h.from)) {
+          const msgId = h.messageId || `uid:${cfg.user_id}:${h.uid}`;
+          const { data: seenY } = await admin
+            .from("avito_notify_log")
+            .select("id")
+            .eq("user_id", cfg.user_id)
+            .eq("msg_id", msgId)
+            .maybeSingle();
+          if (seenY) { committed = h.uid; continue; }
+          // Тема письма о сообщении — «…сообщение по бронированию «YA-…»». Если тело не скачалось,
+          // такое письмо не теряем (ждём следующий цикл), а прочие письма Яндекса пропускаем.
+          if (!bodies.has(h.uid) && /сообщени/i.test(h.subject)) break;
+          const chat = parseYandexChat(h.subject, bodies.get(h.uid) || "");
+          if (!chat) {
+            // Рассылки и прочие письма Яндекса — пропускаем.
+            await admin.from("avito_notify_log").insert({ user_id: cfg.user_id, msg_id: msgId, kind: "yandex_other" });
+            committed = h.uid;
+            skippedService++;
+            continue;
+          }
+          const okY = await sendTelegram(botToken, cfg.telegram_chat_id, yandexNotifyText(chat));
+          if (!okY) break;
+          await admin.from("avito_notify_log").insert({ user_id: cfg.user_id, msg_id: msgId, kind: "yandex_message" });
+          sent++;
+          committed = h.uid;
+          continue;
+        }
         if (!isFromAvito(h.from)) { committed = h.uid; continue; }
         const preK = (preKind.get(h.uid) as any) || classifyAvito(h.subject);
         const body = bodies.get(h.uid) || "";
