@@ -384,6 +384,61 @@ function bindItemCards() {
       openModal('confirmDeleteModal');
       return;
     }
+    // Редактирование заявки: вход в режим
+    const prEdit = e.target.closest('[data-pr-edit]');
+    if (prEdit) {
+      editingRequests.add(prEdit.dataset.prEdit);
+      renderPurchaseModal();
+      return;
+    }
+    // Редактирование: удалить позицию (существующую или новую)
+    const prRemove = e.target.closest('[data-pr-remove-row]');
+    if (prRemove) {
+      const card = prRemove.closest('[data-pr-edit-card]');
+      prRemove.closest('.pr-edit-row, .pr-new-row')?.remove();
+      if (card) updateEditCount(card);
+      return;
+    }
+    // Редактирование: «+ Своя позиция»
+    const prAdd = e.target.closest('[data-pr-add-row]');
+    if (prAdd) {
+      const card = prAdd.closest('[data-pr-edit-card]');
+      const list = card?.querySelector('[data-pr-new-list]');
+      if (!card || !list) return;
+      const done = card.dataset.prDone === '1';
+      const row = document.createElement('div');
+      row.className = 'purchase-custom-row pr-new-row';
+      row.innerHTML = `
+        <label style="flex:1;min-width:160px"><span class="small">Название</span><input type="text" class="purchase-custom-name" placeholder="Например, лампочка E27" /></label>
+        <label style="width:90px"><span class="small">Кол-во</span><input type="number" class="purchase-custom-qty" inputmode="numeric" min="0.1" step="0.1" value="1" /></label>
+        ${done ? '<label style="width:100px"><span class="small">Цена, ₽</span><input type="number" class="pr-new-cost" inputmode="numeric" min="0" step="1" placeholder="0" /></label>' : ''}
+        <button type="button" class="btn btn-secondary purchase-custom-remove" data-pr-remove-row aria-label="Удалить позицию">✕</button>
+      `;
+      list.appendChild(row);
+      updateEditCount(card);
+      row.querySelector('.purchase-custom-name')?.focus();
+      return;
+    }
+    // Редактирование: отмена
+    const prCancel = e.target.closest('[data-pr-edit-cancel]');
+    if (prCancel) {
+      editingRequests.delete(prCancel.dataset.prEditCancel);
+      renderPurchaseModal();
+      return;
+    }
+    // Редактирование: сохранить
+    const prSave = e.target.closest('[data-pr-edit-save]');
+    if (prSave) {
+      const id = prSave.dataset.prEditSave;
+      if (savePurchaseRequestEdit(id)) {
+        editingRequests.delete(id);
+        renderPurchaseModal();
+        render(); // обновляем финучёт
+        persistState(setStatus, true);
+        setStatus('Заявка изменена');
+      }
+      return;
+    }
     // Кнопки «Заказ сделан» в заявках
     const doneBtn = e.target.closest('[data-done-request]');
     if (doneBtn) {
@@ -566,7 +621,134 @@ function renderPurchaseModal() {
     : '<div class="empty">Нет заявок.</div>';
 }
 
+// ID заявок, открытых в режиме редактирования (не сохраняется в состояние).
+const editingRequests = new Set();
+
+// Экранирование текста для атрибутов и HTML.
+function escPr(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Карточка заявки в режиме редактирования: ✕ у позиций, «+ Своя позиция», цены (если заказ сделан).
+function purchaseRequestEditCard(request) {
+  const done = request.done === true;
+  const rows = request.items.map((item, idx) => `
+    <div class="purchase-cost-row pr-edit-row" data-pr-edit-row="${idx}">
+      <div class="purchase-cost-name">
+        <strong>${escPr(item.name)}</strong>
+        <span class="small">${roundSmart(item.qty)} ${escPr(item.unit)}</span>
+      </div>
+      ${done ? `<div class="purchase-cost-input">
+        <input type="number" inputmode="numeric" min="0" step="1" placeholder="0" class="cost-input-field pr-edit-cost"
+          value="${item.cost != null && item.cost !== '' ? escPr(item.cost) : ''}" />
+        <span class="cost-currency">₽</span>
+      </div>` : ''}
+      <button type="button" class="btn btn-secondary purchase-custom-remove" data-pr-remove-row aria-label="Удалить позицию">✕</button>
+    </div>`).join('');
+
+  return `<article class="request-card" data-pr-edit-card="${request.id}" data-pr-done="${done ? '1' : ''}">
+    <div class="request-card-header">
+      <div><div class="request-kind">Редактирование</div><strong style="display:block;margin-top:.45rem">${getDisplayApartmentName(request.apartmentName)}</strong></div>
+      <span class="small">${new Date(request.createdAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+    </div>
+    <div class="small" style="margin-bottom:.25rem;color:var(--color-text-muted)">Позиций: <span data-pr-count>${request.items.length}</span></div>
+    <div>
+      <button type="button" class="btn btn-secondary" data-pr-add-row="${request.id}">+ Своя позиция</button>
+      <div data-pr-new-list style="margin-top:.5rem"></div>
+    </div>
+    <div class="list">${rows}</div>
+    <div style="display:flex;gap:.6rem;margin-top:.75rem">
+      <button class="btn btn-secondary" style="flex:1" data-pr-edit-cancel="${request.id}">Отмена</button>
+      <button class="btn btn-primary" style="flex:1" data-pr-edit-save="${request.id}">Сохранить</button>
+    </div>
+  </article>`;
+}
+
+// Пересчёт «Позиций: N» в карточке редактирования.
+function updateEditCount(card) {
+  const n = card.querySelectorAll('.pr-edit-row').length + card.querySelectorAll('.pr-new-row').length;
+  const el = card.querySelector('[data-pr-count]');
+  if (el) el.textContent = String(n);
+}
+
+// Сохранение изменений заявки. Возвращает true, если сохранено.
+function savePurchaseRequestEdit(reqId) {
+  const state = getState();
+  const req = state.purchaseRequests.find(r => r.id === reqId);
+  const card = document.querySelector(`[data-pr-edit-card="${reqId}"]`);
+  if (!req || !card) return false;
+  const done = req.done === true;
+  let ok = true;
+
+  // Оставшиеся позиции (с возможно изменённой ценой).
+  const items = [];
+  card.querySelectorAll('.pr-edit-row').forEach(row => {
+    const src = req.items[Number(row.dataset.prEditRow)];
+    if (!src) return;
+    const item = { ...src };
+    if (done) {
+      const input = row.querySelector('.pr-edit-cost');
+      const val = parseFloat(input?.value);
+      if (isNaN(val) || val < 0) { ok = false; if (input) input.style.borderColor = 'var(--color-error)'; return; }
+      if (input) input.style.borderColor = '';
+      item.cost = val;
+    }
+    items.push(item);
+  });
+
+  // Новые свои позиции.
+  card.querySelectorAll('.pr-new-row').forEach(row => {
+    const nameEl = row.querySelector('.purchase-custom-name');
+    const qtyEl = row.querySelector('.purchase-custom-qty');
+    const costEl = row.querySelector('.pr-new-cost');
+    const name = (nameEl?.value || '').trim();
+    if (!name) return; // пустая строка игнорируется
+    const qty = Number(qtyEl?.value || 0);
+    if (!(qty > 0)) { ok = false; if (qtyEl) qtyEl.style.borderColor = 'var(--color-error)'; return; }
+    if (qtyEl) qtyEl.style.borderColor = '';
+    const item = { itemId: '', name, unit: 'шт', qty };
+    if (done) {
+      const val = parseFloat(costEl?.value);
+      if (isNaN(val) || val < 0) { ok = false; if (costEl) costEl.style.borderColor = 'var(--color-error)'; return; }
+      if (costEl) costEl.style.borderColor = '';
+      item.cost = val;
+    }
+    items.push(item);
+  });
+
+  if (!ok) { setStatus(done ? 'Укажи количество и цену у всех позиций' : 'У новых позиций количество должно быть больше 0'); return false; }
+  if (!items.length) { setStatus('В заявке должна остаться хотя бы одна позиция'); return false; }
+
+  req.items = items;
+
+  // Заказ уже в финучёте — пересобираем связанные расходы, сохраняя исходную дату.
+  if (done && req.financeLinked) {
+    const linked = (state.finance?.entries || []).filter(e => e.meta && e.meta.requestId === reqId);
+    const date = linked.map(e => e.date).filter(Boolean).sort()[0] || new Date().toISOString().slice(0, 10);
+    linked.forEach(e => deleteFinanceEntry(e.id));
+    req.items.forEach(item => {
+      const cost = Number(item.cost);
+      if (cost > 0) {
+        addFinanceEntry({
+          apartmentId: req.apartmentId,
+          type: 'expense',
+          category: 'Закупка',
+          title: item.name,
+          amount: cost,
+          date,
+          source: 'manual',
+          status: 'confirmed',
+          notes: `Заявка ${req.auto ? '(авто)' : ''}: ${roundSmart(item.qty)} ${item.unit}`,
+          meta: { requestId: req.id, itemId: item.itemId || '' },
+        });
+      }
+    });
+  }
+  return true;
+}
+
 function purchaseRequestCard(request) {
+  if (editingRequests.has(request.id) && request.pendingCost !== true) return purchaseRequestEditCard(request);
   const done = request.done === true;
   const pending = request.pendingCost === true;
   const badgeStyle = done
@@ -600,9 +782,11 @@ function purchaseRequestCard(request) {
     ? (() => { const total = request.items.reduce((s,i) => s + (Number(i.cost) || 0), 0); return `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:.6rem;padding-top:.6rem;border-top:1px solid color-mix(in oklab,var(--color-text) 8%,transparent)"><span class="small">Итого</span><strong style="color:var(--color-success)">${total} ₽</strong></div>`; })()
     : '';
 
+  // Кнопка «Редактировать» — рядом с основной кнопкой внизу карточки.
+  const editBtn = `<button class="btn btn-secondary" style="min-height:40px;font-weight:700" data-pr-edit="${request.id}">Редактировать</button>`;
   let actionBlock;
   if (done) {
-    actionBlock = `<button class="btn" style="width:100%;min-height:40px;background:color-mix(in oklab,var(--color-success) 12%,var(--color-surface));border:1px solid color-mix(in oklab,var(--color-success) 30%,transparent);color:var(--color-success);font-weight:700" data-done-request="${request.id}">✓ Заказ выполнен</button>`;
+    actionBlock = `<div style="display:flex;gap:.6rem">${editBtn}<button class="btn" style="flex:1;min-height:40px;background:color-mix(in oklab,var(--color-success) 12%,var(--color-surface));border:1px solid color-mix(in oklab,var(--color-success) 30%,transparent);color:var(--color-success);font-weight:700" data-done-request="${request.id}">✓ Заказ выполнен</button></div>`;
   } else if (pending) {
     actionBlock = `<div style="display:flex;gap:.6rem;margin-top:.75rem">
       <button class="btn btn-secondary" style="flex:1" data-cancel-cost="${request.id}">Отмена</button>
@@ -612,7 +796,7 @@ function purchaseRequestCard(request) {
       </button>
     </div>`;
   } else {
-    actionBlock = `<button class="btn" style="width:100%;min-height:40px;background:var(--color-surface);border:1px solid color-mix(in oklab,var(--color-text) 10%,transparent);font-weight:700" data-done-request="${request.id}">Заказ сделан</button>`;
+    actionBlock = `<div style="display:flex;gap:.6rem">${editBtn}<button class="btn" style="flex:1;min-height:40px;background:var(--color-surface);border:1px solid color-mix(in oklab,var(--color-text) 10%,transparent);font-weight:700" data-done-request="${request.id}">Заказ сделан</button></div>`;
   }
 
   const badge2 = done ? '✓ Выполнено' : pending ? 'Ввод стоимости' : request.auto ? '⚡ Авто' : 'Заявка';
