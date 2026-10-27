@@ -541,6 +541,16 @@ body:has(.drawer.open){ overflow:hidden; }
 .dp-actions{ display:grid; grid-template-columns:1fr 1fr; gap:.5rem; }
 .dp-actions .btn{ width:100%; justify-content:center; }
 .dp-pending{ color:var(--color-text-muted); }
+.dp-pending.is-error{ color:var(--color-error, #b3261e); }
+/* Штраф: поле суммы и справа кнопка «Подтвердить» */
+.dp-penalty{ display:grid; gap:.35rem; }
+.dp-penalty[hidden]{ display:none; }
+.dp-penalty-label{ color:var(--color-text-muted); }
+.dp-penalty-row{ display:flex; gap:.5rem; align-items:stretch; }
+.dp-penalty-row input{ flex:1 1 auto; min-width:0; }
+.dp-penalty-row .btn{ flex:0 0 auto; white-space:nowrap; }
+.dp-penalty-error{ color:var(--color-error, #b3261e); min-height:1.1em; }
+.dp-penalty-error:empty{ min-height:0; }
 .dp-empty{ padding:2rem 1rem; text-align:center; color:var(--color-text-muted); }
 .dp-confirm-backdrop{ z-index:45; }
 .dp-confirm{ width:min(440px,100%); display:grid; gap:.85rem; }

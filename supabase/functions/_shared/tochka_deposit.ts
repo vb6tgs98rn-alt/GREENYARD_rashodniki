@@ -15,6 +15,9 @@
 //   2. Гость платит — деньги замораживаются, статус операции AUTHORIZED.
 //   3. Штраф: метод Capture Payment списывает всю сумму (частично нельзя),
 //      статус становится APPROVED, деньги приходят на расчётный счёт.
+//      Если штраф меньше залога, после списания остаток сразу возвращаем гостю
+//      методом Refund Payment Operation (частичный возврат допустим для APPROVED).
+//      Если возврат не прошёл, он повторяется при следующей сверке.
 //   4. Возврат: в документации нет метода снятия холда, поэтому залог
 //      отмечается возвращённым, а деньги размораживаются сами, когда
 //      закончится срок холда (6 дней с оплаты). Списать его после этого
@@ -28,6 +31,7 @@
 
 import {
   capturePayment,
+  refundPayment,
   createPaymentLink,
   getPaymentStatus,
   loadConnection,
@@ -219,9 +223,11 @@ export async function syncDeposit(
   sb: any,
   conn: TochkaConnection,
   dep: any,
-  hooks: { onHeld?: (dep: any) => Promise<void>; onCaptured?: (dep: any) => Promise<void> } = {},
+  hooks: DepositHooks = {},
 ): Promise<any> {
   if (!dep?.operation_id) return dep;
+  // Списанный залог с невозвращённым остатком — доводим возврат.
+  if (dep.status === "captured" && refundPending(dep)) return await refundRemainder(sb, conn, dep, hooks);
   // Возвращённый, списанный и заменённый залоги больше не трогаем.
   if (["released", "captured", "canceled"].includes(dep.status)) return dep;
 
@@ -253,27 +259,162 @@ export async function syncDeposit(
   } catch (e) {
     console.error("[deposit] уведомление:", (e as Error).message);
   }
+  if (next === "captured" && refundPending(upd)) return await refundRemainder(sb, conn, upd, hooks);
   return upd;
+}
+
+/** Уведомления о смене статуса залога. */
+export interface DepositHooks {
+  onHeld?: (dep: any) => Promise<void>;
+  onCaptured?: (dep: any) => Promise<void>;
+  /** Остаток после штрафа возвращён (ok) или банк не принял возврат (впервые для этой ошибки). */
+  onRefund?: (dep: any, ok: boolean) => Promise<void>;
+}
+
+/** Нужно ли ещё вернуть гостю остаток после частичного штрафа. */
+export function refundPending(dep: any): boolean {
+  return Number(dep?.refund_amount || 0) > 0 && !dep?.refunded_at;
+}
+
+/** Статусы Точки, при которых возврат уже оформлен. */
+const REFUND_DONE_STATUSES = ["ON-REFUND", "REFUNDED", "REFUNDED_PARTIALLY"];
+
+/**
+ * Возвращает гостю остаток списанного залога (refund_amount).
+ * Защита от двойного возврата:
+ *   — перед запросом смотрим статус в банке: если возврат уже есть, только отмечаем;
+ *   — запрос делает тот, кто первым поставил refund_requested_at (атомарно);
+ *   — захват снимается (и возможен повтор) только при явном отказе банка (ответ 4xx)
+ *     и если в банке платёж всё ещё APPROVED. При тайм-ауте или ошибке 5xx деньги могли
+ *     уже уйти — автоматически не повторяем, сверка только отмечает возврат, когда
+ *     банк его покажет, а арендодатель получает уведомление.
+ */
+export async function refundRemainder(sb: any, conn: TochkaConnection, dep: any, hooks: DepositHooks = {}): Promise<any> {
+  if (!refundPending(dep) || dep.status !== "captured" || !dep.operation_id) return dep;
+  const opId = String(dep.operation_id);
+  const markDone = async () => {
+    const { data: done } = await sb.from("booking_deposits")
+      .update({ refunded_at: new Date().toISOString(), refund_error: null })
+      .eq("id", dep.id).is("refunded_at", null).select("*").maybeSingle();
+    if (done && hooks.onRefund) {
+      try { await hooks.onRefund(done, true); } catch (e) { console.error("[deposit] уведомление:", (e as Error).message); }
+    }
+    return done ?? dep;
+  };
+
+  // 1. Возврат уже есть в банке?
+  let bankStatus = "";
+  try {
+    bankStatus = String(await getPaymentStatus(sb, conn, opId)).toUpperCase();
+  } catch (e) {
+    console.error("[deposit] статус перед возвратом:", (e as Error).message);
+    return dep; // без статуса не рискуем — попробуем при следующей сверке
+  }
+  if (REFUND_DONE_STATUSES.includes(bankStatus)) return await markDone();
+  if (bankStatus !== "APPROVED") return dep; // возврат возможен только из APPROVED
+
+  // 2. Захватываем право на запрос.
+  const { data: claimed } = await sb.from("booking_deposits")
+    .update({ refund_requested_at: new Date().toISOString() })
+    .eq("id", dep.id)
+    .is("refunded_at", null)
+    .is("refund_requested_at", null)
+    .select("*")
+    .maybeSingle();
+  if (!claimed) return dep; // возврат уже делает другой запрос
+
+  // 3. Запрос возврата.
+  try {
+    await refundPayment(sb, conn, opId, Number(claimed.refund_amount));
+    console.log(`[deposit] залог ${dep.id}: возврат остатка ${claimed.refund_amount} ₽ принят банком`);
+    return await markDone();
+  } catch (e) {
+    const msg = String((e as Error).message || e).slice(0, 300);
+    console.error("[deposit] Refund Payment Operation:", msg);
+    const firstError = !dep.refund_error;
+    // Сперва сверяемся с банком: возврат мог пройти, даже если ответ не дошёл.
+    let st = "";
+    try {
+      st = String(await getPaymentStatus(sb, conn, opId)).toUpperCase();
+    } catch (_e) { /* статус недоступен */ }
+    if (REFUND_DONE_STATUSES.includes(st)) return await markDone();
+
+    // Явный отказ банка и платёж всё ещё APPROVED — деньги точно не ушли, повтор безопасен.
+    const code = Number((e as any)?.status || 0);
+    const refused = code >= 400 && code < 500 && st === "APPROVED";
+    const { data: failed } = await sb.from("booking_deposits")
+      .update(refused ? { refund_requested_at: null, refund_error: msg } : { refund_error: msg })
+      .eq("id", dep.id).is("refunded_at", null).select("*").maybeSingle();
+    if (firstError && hooks.onRefund) {
+      try { await hooks.onRefund(failed ?? claimed, false); } catch (e2) { console.error("[deposit] уведомление:", (e2 as Error).message); }
+    }
+    return failed ?? claimed;
+  }
 }
 
 /**
  * Штраф: списывает весь залог на расчётный счёт (Capture Payment).
+ * penalty — сумма штрафа (по умолчанию весь залог). Если она меньше залога,
+ * после списания остаток возвращается гостю (refundRemainder).
  * Сначала переводим залог в capturing — так повторное нажатие и
  * одновременный «Вернуть» не пройдут.
+ * captured=true — именно этот вызов отметил списание (для уведомления без дублей).
  */
-export async function captureDeposit(sb: any, conn: TochkaConnection, dep: any): Promise<{ ok: boolean; error?: string; dep?: any }> {
+export async function captureDeposit(
+  sb: any,
+  conn: TochkaConnection,
+  dep: any,
+  penalty?: number,
+  hooks: DepositHooks = {},
+): Promise<{ ok: boolean; error?: string; dep?: any; captured?: boolean }> {
+  const amount = Number(dep.amount);
+  const pen = penalty == null ? amount : Math.round(Number(penalty) * 100) / 100;
+  if (!(pen > 0) || pen > amount) return { ok: false, error: "bad_penalty" };
+  const rest = Math.round((amount - pen) * 100) / 100;
+
   const { data: locked } = await sb.from("booking_deposits")
-    .update({ status: "capturing" })
+    .update({
+      status: "capturing",
+      penalty_amount: pen,
+      refund_amount: rest > 0 ? rest : null,
+      refund_requested_at: null,
+      refunded_at: null,
+      refund_error: null,
+    })
     .eq("id", dep.id)
     .eq("status", "held")
     .select("*")
     .maybeSingle();
   if (!locked) return { ok: false, error: "not_held" };
 
+  // Откат блокировки: залог снова хранится, сумма штрафа сброшена.
+  const unlock = () =>
+    sb.from("booking_deposits")
+      .update({ status: "held", penalty_amount: null, refund_amount: null })
+      .eq("id", locked.id).eq("status", "capturing");
+
+  // Отмечает списание (если его ещё не отметил вебхук) и возвращает остаток.
+  const finish = async (): Promise<{ ok: boolean; dep: any; captured: boolean }> => {
+    const { data: done } = await sb.from("booking_deposits")
+      .update({ status: "captured", captured_at: new Date().toISOString() })
+      .eq("id", locked.id).eq("status", "capturing").select("*").maybeSingle();
+    let cur = done;
+    // Сначала уведомление о штрафе, потом — о возврате остатка.
+    if (done && hooks.onCaptured) {
+      try { await hooks.onCaptured(done); } catch (e) { console.error("[deposit] уведомление:", (e as Error).message); }
+    }
+    if (!cur) {
+      const { data: again } = await sb.from("booking_deposits").select("*").eq("id", locked.id).maybeSingle();
+      cur = again ?? locked;
+    }
+    if (cur.status === "captured" && refundPending(cur)) cur = await refundRemainder(sb, conn, cur, hooks);
+    return { ok: true, dep: cur, captured: !!done };
+  };
+
   try {
     const ok = await capturePayment(sb, conn, String(locked.operation_id));
     if (!ok) {
-      await sb.from("booking_deposits").update({ status: "held" }).eq("id", locked.id).eq("status", "capturing");
+      await unlock();
       return { ok: false, error: "bank_refused" };
     }
   } catch (e) {
@@ -282,28 +423,19 @@ export async function captureDeposit(sb: any, conn: TochkaConnection, dep: any):
     // Ответ банка неоднозначен — сверяем статус, а не гадаем.
     try {
       const st = mapDepositStatus(await getPaymentStatus(sb, conn, String(locked.operation_id)));
-      if (st === "captured") {
-        const { data: done } = await sb.from("booking_deposits")
-          .update({ status: "captured", captured_at: new Date().toISOString() })
-          .eq("id", locked.id).select("*").maybeSingle();
-        return { ok: true, dep: done ?? locked };
-      }
+      if (st === "captured") return await finish();
     } catch (_e) { /* статус недоступен — откатываем блокировку ниже */ }
-    await sb.from("booking_deposits").update({ status: "held" }).eq("id", locked.id).eq("status", "capturing");
+    await unlock();
     return { ok: false, error: "capture_failed" };
   }
 
-  // Команда принята — уточняем итог у банка (APPROVED может прийти чуть позже, вебхуком).
+  // Команда принята — уточняем итог у банка (APPROVED может прийти чуть позже, вебхуком;
+  // тогда остаток вернёт syncDeposit).
   try {
     const st = mapDepositStatus(await getPaymentStatus(sb, conn, String(locked.operation_id)));
-    if (st === "captured") {
-      const { data: done } = await sb.from("booking_deposits")
-        .update({ status: "captured", captured_at: new Date().toISOString() })
-        .eq("id", locked.id).select("*").maybeSingle();
-      return { ok: true, dep: done ?? locked };
-    }
+    if (st === "captured") return await finish();
   } catch (_e) { /* подтвердится вебхуком */ }
-  return { ok: true, dep: locked };
+  return { ok: true, dep: locked, captured: false };
 }
 
 /**

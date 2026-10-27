@@ -22,6 +22,7 @@
 //   GET  /deposits         — залоги, которые сейчас хранятся
 //   POST /deposit/release  — вернуть залог гостю
 //   POST /deposit/capture  — оштрафовать: списать залог на расчётный счёт
+//                            (penalty — сумма штрафа; остаток сразу возвращается гостю)
 //   ANY  /webhook     — вебхук Точки (тело — JWT, подпись RS256)
 //   GET  /            — пинг
 //
@@ -413,14 +414,34 @@ function depositHooks(sb: any) {
       );
     },
     onCaptured: async (d: any) => {
+      const rest = Number(d.refund_amount || 0);
+      const pen = d.penalty_amount != null ? Number(d.penalty_amount) : Number(d.amount);
+      const text = rest > 0
+        ? `💸 Штраф <b>${htmlEscape(rub(pen))} ₽</b> удержан из залога ${htmlEscape(rub(d.amount))} ₽.\n` +
+          `Остаток ${htmlEscape(rub(rest))} ₽ возвращается гостю.\nБронь: <code>${htmlEscape(String(d.booking_id))}</code>`
+        : `💸 Залог <b>${htmlEscape(rub(d.amount))} ₽</b> списан на расчётный счёт.\nБронь: <code>${htmlEscape(String(d.booking_id))}</code>`;
+      await notifyManager(sb, d.user_id, text);
+    },
+    onRefund: async (d: any, ok: boolean) => {
+      const rest = htmlEscape(rub(Number(d.refund_amount || 0)));
+      const bk = htmlEscape(String(d.booking_id));
       await notifyManager(
         sb,
         d.user_id,
-        `💸 Залог <b>${htmlEscape(rub(d.amount))} ₽</b> списан на расчётный счёт.\nБронь: <code>${htmlEscape(String(d.booking_id))}</code>`,
+        ok
+          ? `↩️ Банк принял возврат остатка залога гостю: <b>${rest} ₽</b>.\n` +
+            `На карту деньги придут обычно за 3–7 дней (до 30).\nБронь: <code>${bk}</code>`
+          : `⚠️ Не удалось вернуть гостю остаток залога <b>${rest} ₽</b>.\n` +
+            `Штраф уже списан. Проверьте операцию в интернет-банке Точки и при необходимости оформите возврат там.\n` +
+            `Бронь: <code>${bk}</code>`,
       );
     },
   };
 }
+
+/** Фильтр PostgREST: залоги, которые нужно сверять с банком (в т.ч. списанные с невозвращённым остатком). */
+const DEPOSITS_TO_SYNC =
+  "status.in.(created,held,capturing),and(status.eq.captured,refunded_at.is.null,refund_amount.gt.0)";
 
 /** Ссылка на залог, созданная арендодателем вручную. */
 async function handleDeposit(req: Request): Promise<Response> {
@@ -457,7 +478,7 @@ async function handleDeposits(req: Request): Promise<Response> {
     const { data: pending } = await sb.from("booking_deposits")
       .select("*")
       .eq("user_id", userId)
-      .in("status", ["created", "held", "capturing"])
+      .or(DEPOSITS_TO_SYNC)
       .limit(30);
     const hooks = depositHooks(sb);
     await Promise.all((pending ?? []).map(async (d: any) => {
@@ -469,11 +490,15 @@ async function handleDeposits(req: Request): Promise<Response> {
     }));
   }
 
+  // Хранящиеся залоги + списанные, у которых остаток ещё не вернулся гостю.
+  const nowIso = new Date().toISOString();
   const { data: list, error } = await sb.from("booking_deposits")
-    .select("id, booking_id, amount, status, held_at, hold_expires_at")
+    .select("id, booking_id, amount, status, held_at, hold_expires_at, penalty_amount, refund_amount, refunded_at, refund_error")
     .eq("user_id", userId)
-    .in("status", ["held", "capturing"])
-    .gt("hold_expires_at", new Date().toISOString())
+    .or(
+      `and(status.in.(held,capturing),hold_expires_at.gt.${nowIso}),` +
+        "and(status.eq.captured,refunded_at.is.null,refund_amount.gt.0)",
+    )
     .order("hold_expires_at", { ascending: true })
     .limit(200);
   if (error) {
@@ -501,6 +526,9 @@ async function handleDeposits(req: Request): Promise<Response> {
       status: d.status,
       held_at: d.held_at,
       hold_expires_at: d.hold_expires_at,
+      penalty_amount: d.penalty_amount != null ? Number(d.penalty_amount) : null,
+      refund_amount: d.refund_amount != null ? Number(d.refund_amount) : null,
+      refund_failed: !!d.refund_error,
       guest_name: b.client_fio ?? null,
       begin_date: b.begin_date ?? null,
       end_date: b.end_date ?? null,
@@ -511,24 +539,24 @@ async function handleDeposits(req: Request): Promise<Response> {
 }
 
 /** Загружает залог арендодателя по id из тела запроса. */
-async function loadOwnDeposit(req: Request): Promise<{ userId: string | null; dep: any; error?: Response }> {
+async function loadOwnDeposit(req: Request): Promise<{ userId: string | null; dep: any; body: any; error?: Response }> {
   const userId = await userIdFromJwt(req);
-  if (!userId) return { userId: null, dep: null, error: json({ ok: false, error: "unauthorized" }, 401) };
+  if (!userId) return { userId: null, dep: null, body: {}, error: json({ ok: false, error: "unauthorized" }, 401) };
   let body: any = {};
   try {
     body = await req.json();
   } catch (_e) { /* пустое тело */ }
   const id = String(body?.deposit_id || "");
   if (!/^[0-9a-f-]{36}$/i.test(id)) {
-    return { userId, dep: null, error: json({ ok: false, error: "deposit_id_required" }, 400) };
+    return { userId, dep: null, body, error: json({ ok: false, error: "deposit_id_required" }, 400) };
   }
   const { data: dep } = await svc().from("booking_deposits")
     .select("*")
     .eq("id", id)
     .eq("user_id", userId)
     .maybeSingle();
-  if (!dep) return { userId, dep: null, error: json({ ok: false, error: "not_found" }, 404) };
-  return { userId, dep };
+  if (!dep) return { userId, dep: null, body, error: json({ ok: false, error: "not_found" }, 404) };
+  return { userId, dep, body };
 }
 
 async function handleDepositRelease(req: Request): Promise<Response> {
@@ -542,20 +570,41 @@ async function handleDepositRelease(req: Request): Promise<Response> {
 }
 
 async function handleDepositCapture(req: Request): Promise<Response> {
-  const { userId, dep, error } = await loadOwnDeposit(req);
+  const { userId, dep, body, error } = await loadOwnDeposit(req);
   if (error) return error;
   const sb = svc();
   if (dep.status !== "held") return json({ ok: false, error: "not_held" }, 409);
+
+  // Сумма штрафа: больше нуля и не больше залога. Не передана — штрафуем на весь залог.
+  let penalty: number | undefined;
+  if (body?.penalty != null && body.penalty !== "") {
+    penalty = Math.round(Number(body.penalty) * 100) / 100;
+    if (!Number.isFinite(penalty) || penalty <= 0 || penalty > Number(dep.amount)) {
+      return json({ ok: false, error: "bad_penalty" }, 400);
+    }
+  }
   if (dep.hold_expires_at && new Date(dep.hold_expires_at).getTime() <= Date.now()) {
     return json({ ok: false, error: "hold_expired" }, 409);
   }
   const conn = await loadConnection(sb, String(userId));
   if (!conn || conn.status !== "connected") return json({ ok: false, error: "not_connected" }, 409);
 
-  const res = await captureDeposit(sb, conn, dep);
-  if (!res.ok) return json({ ok: false, error: res.error }, res.error === "not_held" ? 409 : 502);
-  if (res.dep?.status === "captured") await depositHooks(sb).onCaptured(res.dep);
-  return json({ ok: true, status: res.dep?.status });
+  const hooks = depositHooks(sb);
+  const res = await captureDeposit(sb, conn, dep, penalty, hooks);
+  if (!res.ok) {
+    const code = res.error === "not_held" ? 409 : res.error === "bad_penalty" ? 400 : 502;
+    return json({ ok: false, error: res.error }, code);
+  }
+  // Уведомления о штрафе и возврате остатка отправляет сам captureDeposit (через hooks).
+  console.log(`[deposit] залог ${dep.id}: штраф ${res.dep?.penalty_amount ?? dep.amount} из ${dep.amount}`);
+  return json({
+    ok: true,
+    status: res.dep?.status,
+    penalty_amount: res.dep?.penalty_amount != null ? Number(res.dep.penalty_amount) : Number(dep.amount),
+    refund_amount: res.dep?.refund_amount != null ? Number(res.dep.refund_amount) : 0,
+    refunded: !!res.dep?.refunded_at,
+    refund_failed: !!res.dep?.refund_error,
+  });
 }
 
 /** Отмечает платёж оплаченным и уведомляет арендодателя. */
@@ -687,7 +736,7 @@ async function handlePoll(req: Request): Promise<Response> {
     .from("booking_deposits")
     .select("*")
     .eq("user_id", userId)
-    .in("status", ["created", "held", "capturing"])
+    .or(DEPOSITS_TO_SYNC)
     .limit(100);
   const hooks = depositHooks(sb);
   for (const d of deps ?? []) {

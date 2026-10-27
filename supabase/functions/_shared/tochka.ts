@@ -586,6 +586,25 @@ export async function capturePayment(
 }
 
 /**
+ * Возврат по платёжной ссылке (Refund Payment Operation): полный или частичный.
+ * Возможен только для операции в статусе APPROVED; сумма в рублях,
+ * не больше суммы оплаты.
+ */
+export async function refundPayment(
+  sb: any,
+  conn: TochkaConnection,
+  operationId: string,
+  amount: number,
+): Promise<any> {
+  const sum = Math.round(Number(amount) * 100) / 100;
+  if (!(sum > 0)) throw new Error("Сумма возврата должна быть больше нуля");
+  return await api(sb, conn, `/acquiring/v1.0/payments/${encodeURIComponent(operationId)}/refund`, {
+    method: "POST",
+    body: JSON.stringify({ Data: { amount: sum } }),
+  });
+}
+
+/**
  * Переводит статус операции Точки в статус залога.
  * AUTHORIZED — деньги заморожены; APPROVED — списаны (штраф);
  * EXPIRED — ссылка или холд истекли; REFUNDED — деньги вернулись гостю.

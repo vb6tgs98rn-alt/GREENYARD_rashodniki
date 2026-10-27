@@ -92,9 +92,12 @@ export async function fetchDeposits() {
 export async function releaseDeposit(deposit_id) {
   return callApi('/deposit/release', { body: { deposit_id } });
 }
-// Оштрафовать: списать весь залог на расчётный счёт.
-export async function captureDeposit(deposit_id) {
-  return callApi('/deposit/capture', { body: { deposit_id } });
+// Оштрафовать: penalty — сумма штрафа. Залог списывается целиком,
+// остаток сервер сразу возвращает гостю.
+export async function captureDeposit(deposit_id, penalty) {
+  const body = { deposit_id };
+  if (penalty != null) body.penalty = penalty;
+  return callApi('/deposit/capture', { body });
 }
 
 export async function fetchPayments(booking_id) {
