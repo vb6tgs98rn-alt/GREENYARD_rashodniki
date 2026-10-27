@@ -531,8 +531,12 @@ serve(async (req) => {
   try {
     const statusLower = String(status).toLowerCase();
     const actionLower = String(action).toLowerCase();
-    // Отмена
-    if (statusLower === "canceled" || statusLower === "cancelled" || actionLower === "cancel" || actionLower === "delete") {
+    // Отмена или удаление (RC присылает action=cancel_booking/delete_booking, status=canceled/deleted)
+    if (
+      statusLower === "canceled" || statusLower === "cancelled" || statusLower === "deleted" ||
+      actionLower === "cancel" || actionLower === "delete" ||
+      actionLower === "cancel_booking" || actionLower === "delete_booking"
+    ) {
       await cancelCleaning(userId, booking.booking_id);
     } else if (
       // Новая бронь или обновление активной
