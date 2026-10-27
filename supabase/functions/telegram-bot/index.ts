@@ -45,6 +45,7 @@ import {
   todayMsk,
 } from "../_shared/tochka_deposit.ts";
 import { cleaningAddress, placeLines } from "../_shared/cleaning_address.ts";
+import { bookingIdFromNotice, CANCEL_IGNORE_CMD } from "../_shared/cancel_report.ts";
 
 const TG_SECRET    = Deno.env.get("TELEGRAM_WEBHOOK_SECRET")   ?? "";
 const MAX_SECRET   = Deno.env.get("MAX_WEBHOOK_SECRET")        ?? "";
@@ -1493,6 +1494,63 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
 // ЕДИНЫЙ ОБРАБОТЧИК ВХОДЯЩИХ СОБЫТИЙ (общий для всех каналов)
 // ═══════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════
+// ПРИЧИНА ОТМЕНЫ БРОНИ (ответ менеджера / «Игнорировать»)
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Брони с этим номером, к которым чат имеет доступ как менеджер (есть среди получателей
+ * уведомлений владельца брони). Чужие брони не трогаем.
+ */
+async function managerBookingOwners(to: Recipient, bookingId: number): Promise<string[]> {
+  const sb = svc();
+  const { data: rows } = await sb.from("rc_bookings").select("user_id").eq("booking_id", bookingId).limit(10);
+  const owners: string[] = [];
+  for (const r of rows || []) {
+    const s = await loadManagerSettings(r.user_id);
+    if (managerRecipients(s).some((x) => x.channel === to.channel && String(x.chatId) === String(to.chatId))) {
+      owners.push(r.user_id);
+    }
+  }
+  return owners;
+}
+
+/** Кнопка «Игнорировать»: бронь не попадёт в отчёт по отменам. */
+async function handleCancelIgnore(to: Recipient, bookingId: number): Promise<boolean> {
+  const owners = await managerBookingOwners(to, bookingId);
+  if (owners.length === 0) return false;
+  const { error } = await svc().from("rc_bookings")
+    .update({ cancel_ignored: true })
+    .eq("booking_id", bookingId)
+    .in("user_id", owners);
+  if (error) {
+    console.error("[bot] cancel ignore failed:", error.message);
+    await send(to, "Не удалось сохранить, попробуйте ещё раз.");
+    return true;
+  }
+  await send(to, "Хорошо, запись не попадет в отчет по отменам");
+  return true;
+}
+
+/** Ответ менеджера на запрос причины: записываем в «Причина отмены». */
+async function handleCancelReasonReply(to: Recipient, bookingId: number, text: string): Promise<boolean> {
+  const owners = await managerBookingOwners(to, bookingId);
+  if (owners.length === 0) return false;
+  const reason = text.trim().slice(0, 1000);
+  if (!reason) return true;
+  const { error } = await svc().from("rc_bookings")
+    .update({ cancellation_reason: reason, cancel_ignored: false })
+    .eq("booking_id", bookingId)
+    .in("user_id", owners);
+  if (error) {
+    console.error("[bot] cancel reason save failed:", error.message);
+    await send(to, "Не удалось сохранить причину, попробуйте ещё раз.");
+    return true;
+  }
+  await send(to, `Причина отмены записана (бронь №${bookingId}):\n${htmlEscape(reason)}`);
+  return true;
+}
+
 async function handleEvent(ev: InboundEvent) {
   const to: Recipient = { channel: ev.channel, chatId: ev.chatId };
 
@@ -1512,6 +1570,11 @@ async function handleEvent(ev: InboundEvent) {
 
     // Разбираем новый формат callback с booking_id: "<cmd>:bk<id>".
     const { cmd, bookingId } = parseCallbackData(data);
+    // Менеджер: «Игнорировать» отменённую бронь в отчёте по отменам.
+    if (cmd === CANCEL_IGNORE_CMD) {
+      if (bookingId) await handleCancelIgnore(to, bookingId);
+      return;
+    }
     if (cmd === "i_arrived") await handleArrival(to, ev.from, "arrived", bookingId);
     else if (cmd === "i_leaving") await handleArrival(to, ev.from, "leaving", bookingId);
     else await handleCommand(to, cmd, bookingId);
@@ -1539,6 +1602,12 @@ async function handleEvent(ev: InboundEvent) {
       await handleMaidFreeText(maid, to, text, ev.messageId ?? null, ev.photoUrl ?? undefined);
     }
     return;
+  }
+
+  // Ответ менеджера на запрос причины отмены («Ответить» на сообщение бота).
+  const cancelBk = bookingIdFromNotice(ev.replyToText);
+  if (cancelBk && text.trim() && !text.startsWith("/")) {
+    if (await handleCancelReasonReply(to, cancelBk, text)) return;
   }
 
   // Команда /id (или просто «id»): бот сообщает chat_id — чтобы менеджер

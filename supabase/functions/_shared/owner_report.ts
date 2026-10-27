@@ -321,9 +321,10 @@ const GAP = {
   h2ToTable: 25.7,
 };
 
-type Block =
+export type Block =
   | { kind: "title"; text: string; newPage?: boolean }
-  | { kind: "h2"; text: string }
+  // minSpace — сколько места (pt) нужно под заголовком, чтобы не отрывать его от таблицы (по умолчанию 60).
+  | { kind: "h2"; text: string; minSpace?: number }
   | { kind: "para"; lines: string[] }
   | { kind: "table"; widths: number[]; header: string[]; rows: string[][] };
 
@@ -446,11 +447,19 @@ function wrapText(font: any, text: string, size: number, maxW: number): string[]
  * Возвращает байты PDF.
  */
 export async function renderReportPdf(deps: any, data: ReportData, fontBytes: Uint8Array): Promise<Uint8Array> {
+  return await renderBlocksPdf(deps, buildBlocks(data), `${data.apartmentName} — финансовый отчёт`, fontBytes);
+}
+
+/**
+ * Общий рендер списка блоков в PDF (тот же стиль, что у отчёта по квартире).
+ * Используется и для других отчётов (например, «Отменённые брони»).
+ */
+export async function renderBlocksPdf(deps: any, blocks: Block[], title: string, fontBytes: Uint8Array): Promise<Uint8Array> {
   const { PDFDocument, rgb, fontkit } = deps;
   const doc = await PDFDocument.create();
   doc.registerFontkit(fontkit);
   const font = await doc.embedFont(fontBytes, { subset: true });
-  doc.setTitle(`${data.apartmentName} — финансовый отчёт`);
+  doc.setTitle(title);
   doc.setCreator("Green Yard");
   doc.setProducer("Green Yard");
 
@@ -531,14 +540,14 @@ export async function renderReportPdf(deps: any, data: ReportData, fontBytes: Ui
     return y;
   };
 
-  for (const b of buildBlocks(data)) {
+  for (const b of blocks) {
     if (b.kind === "title") {
       if (b.newPage) newPage();
       cursor += gapFor("title");
       drawText(b.text, TEXT_X, cursor, SIZE_TITLE);
       prev = "title";
     } else if (b.kind === "h2") {
-      if (cursor + 60 > BOTTOM_LIMIT) newPage();
+      if (cursor + (b.minSpace ?? 60) > BOTTOM_LIMIT) newPage();
       cursor += prev === "start" ? GAP.firstTitle : gapFor("h2");
       drawText(b.text, TEXT_X, cursor, SIZE_H2);
       prev = "h2";

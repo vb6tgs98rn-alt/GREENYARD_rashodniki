@@ -34,6 +34,12 @@ import {
   cycleEndingBefore,
   isPaymentDay,
 } from "../_shared/owner_report.ts";
+import {
+  computeCancelReport,
+  renderCancelReportPdf,
+  cancelReportFileName,
+  previousMonth,
+} from "../_shared/cancel_report.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -163,6 +169,34 @@ async function buildReport(userId: string, apartmentId: string, from: string, to
   return { data, bytes, fileName: reportFileName(data) };
 }
 
+/** Журнальный ключ отчёта по отменам (вместо id квартиры в owner_report_log). */
+const CANCEL_LOG_KEY = "__cancellations__";
+
+/**
+ * PDF «Отменённые брони» за прошлый месяц: отменённые и удалённые брони
+ * с заездом в этом месяце, кроме отмеченных «Игнорировать».
+ */
+async function buildCancelReport(userId: string, todayIso: string) {
+  const pm = previousMonth(todayIso);
+  const { data: st, error: e1 } = await admin
+    .from("app_state").select("apartments:state->apartments").eq("user_id", userId).maybeSingle();
+  if (e1) throw new Error(`app_state: ${e1.message}`);
+  const { data: bk, error: e2 } = await admin
+    .from("rc_bookings")
+    .select("booking_id, realty_id, apartment_title, source, begin_date, end_date, amount, platform_tax, raw_payload, cancellation_reason")
+    .eq("user_id", userId)
+    .in("status", ["canceled", "deleted"])
+    .eq("cancel_ignored", false)
+    .gte("begin_date", pm.from)
+    .lte("begin_date", pm.to)
+    .limit(2000);
+  if (e2) throw new Error(`rc_bookings: ${e2.message}`);
+  const apts = Array.isArray(st?.apartments) ? st.apartments : [];
+  const data = computeCancelReport(apts, bk || [], pm.from, pm.to);
+  const bytes = await renderCancelReportPdf({ PDFDocument, rgb, fontkit }, data, await loadFont());
+  return { data, bytes, fileName: cancelReportFileName(data), from: pm.from, to: pm.to };
+}
+
 function captionOf(fileName: string): string {
   return fileName.replace(/\.pdf$/i, "");
 }
@@ -250,6 +284,29 @@ async function handleCron(body: any): Promise<Response> {
           });
         }
         results.push({ apt: apt.name, from, to, sent: !dry, bytes: rep.bytes.length });
+      }
+
+      // Первое число месяца — отчёт по отменам за прошлый месяц (один раз, по журналу).
+      if (today.endsWith("-01")) {
+        try {
+          const pm = previousMonth(today);
+          const { data: doneC } = await admin.from("owner_report_log")
+            .select("sent_at").eq("user_id", cfg.user_id).eq("apartment_id", CANCEL_LOG_KEY).eq("period_from", pm.from).maybeSingle();
+          if (doneC) {
+            results.push({ report: "cancellations", from: pm.from, skipped: "уже отправлен" });
+          } else {
+            const rep = await buildCancelReport(cfg.user_id, today);
+            if (!dry) {
+              await tgSendDocument(Number(cfg.telegram_chat_id), rep.bytes, rep.fileName, captionOf(rep.fileName));
+              await admin.from("owner_report_log").insert({
+                user_id: cfg.user_id, apartment_id: CANCEL_LOG_KEY, period_from: rep.from, period_to: rep.to, file_name: rep.fileName,
+              });
+            }
+            results.push({ report: "cancellations", from: rep.from, to: rep.to, count: rep.data.count, lost: rep.data.lost, sent: !dry, bytes: rep.bytes.length });
+          }
+        } catch (e) {
+          results.push({ report: "cancellations", error: String((e as Error)?.message || e) });
+        }
       }
     } catch (e) {
       results.push({ user: cfg.user_id, error: String((e as Error)?.message || e) });

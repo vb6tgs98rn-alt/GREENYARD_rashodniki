@@ -661,8 +661,15 @@ function renderBookingsList(state) {
       ? `<div class="small" style="opacity:.7;">Комиссия: ${fmtMoney(tax)} · Чистый: <b>${fmtMoney(net)}</b></div>`
       : `<div class="small" style="opacity:.7;">Без комиссии</div>`;
 
+    // «Игнорировать»: дубль/техническая запись — не попадает в ежемесячный PDF по отменам.
+    const ignored = !!b.cancel_ignored;
+    const ignoreRow = `<div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-bottom:.3rem;">
+           <span class="small" style="opacity:.7;">${ignored ? 'Не попадёт в отчёт по отменам' : 'Попадёт в отчёт по отменам'}</span>
+           <button class="btn btn-secondary btn-sm" type="button" data-toggle-cancel-ignore="${esc(b.booking_id)}" data-ignored="${ignored ? '1' : '0'}">${ignored ? 'Вернуть в отчёт' : 'Игнорировать'}</button>
+         </div>`;
     const cancelBlock = isCancelled
       ? `<div class="bk-cancel-reason" style="margin-top:.5rem;padding:.5rem;background:rgba(255,80,80,.08);border-radius:.5rem;">
+           ${ignoreRow}
            <div class="small" style="margin-bottom:.3rem;opacity:.7;">Причина отмены:</div>
            <textarea data-cancel-reason="${esc(b.booking_id)}" rows="2" placeholder="Например: гость отменил, двойное бронирование, техническая ошибка…" style="width:100%;box-sizing:border-box;resize:vertical;min-height:2.5rem;">${esc(b.cancellation_reason || '')}</textarea>
            <div style="display:flex;justify-content:flex-end;margin-top:.3rem;">
@@ -2172,6 +2179,35 @@ export function bindGuestBotEvents(state) {
         setTimeout(() => { if (saveCancelBtn) saveCancelBtn.textContent = 'Сохранить'; }, 1500);
       } catch (err) {
         alert('Не удалось сохранить причину: ' + (err?.message || err));
+      }
+      return;
+    }
+
+    // «Игнорировать» / «Вернуть в отчёт» для отменённой брони.
+    const ignoreBtn = e.target.closest('[data-toggle-cancel-ignore]');
+    if (ignoreBtn) {
+      const bid = ignoreBtn.getAttribute('data-toggle-cancel-ignore');
+      const next = ignoreBtn.getAttribute('data-ignored') !== '1';
+      const supabase = getSupabaseClient();
+      if (!supabase) return;
+      try {
+        await waitForAuthReady();
+        const { data: { session: _sess } } = await supabase.auth.getSession();
+        const user = _sess?.user ?? null;
+        if (!user) throw new Error('Сеанс не найден. Войдите заново.');
+        const { data: updated, error } = await supabase
+          .from('rc_bookings')
+          .update({ cancel_ignored: next })
+          .eq('user_id', user.id)
+          .eq('booking_id', Number(bid))
+          .select('booking_id');
+        if (error) throw error;
+        if (!updated?.length) throw new Error('Запись не найдена или нет прав на изменение.');
+        const b = _bookingsState.all.find(x => String(x.booking_id) === String(bid));
+        if (b) b.cancel_ignored = next;
+        renderBookingsList(state);
+      } catch (err) {
+        alert('Не удалось сохранить: ' + (err?.message || err));
       }
       return;
     }

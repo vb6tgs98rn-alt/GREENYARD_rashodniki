@@ -29,6 +29,7 @@ import {
 } from "../_shared/channels.ts";
 import { ensureBookingPayment, paymentMessage } from "../_shared/tochka_booking.ts";
 import { cleaningAddress, placeLines } from "../_shared/cleaning_address.ts";
+import { cancelNoticeHtml, objectName, CANCEL_IGNORE_CMD } from "../_shared/cancel_report.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -116,6 +117,73 @@ async function logMaidOutbound(userId: string, maidId: string, to: Recipient, r:
 function cleaningMaidIds(c: any): string[] {
   if (c?.maid_id) return [c.maid_id];
   return Array.isArray(c?.offered_to) ? c.offered_to.filter(Boolean) : [];
+}
+
+/**
+ * Все получатели-менеджеры: manager_recipients, иначе старый одиночный адресат.
+ * Та же логика, что в telegram-bot (managerRecipients).
+ */
+function managerRecipientsAll(s: any): Recipient[] {
+  const raw = Array.isArray(s?.manager_recipients) ? s.manager_recipients : [];
+  const list: Recipient[] = [];
+  const seen = new Set<string>();
+  const push = (channel: any, chatId: any) => {
+    const ch = (isChannel(channel) ? channel : "telegram") as ChannelId;
+    const id = chatId == null ? "" : String(chatId).trim();
+    if (!id || seen.has(`${ch}:${id}`)) return;
+    seen.add(`${ch}:${id}`);
+    list.push({ channel: ch, chatId: id });
+  };
+  for (const r of raw) push(r?.channel, r?.chat_id ?? r?.chatId);
+  if (list.length === 0) {
+    const legacy = managerRcpt(s);
+    if (legacy) push(legacy.channel, legacy.chatId);
+  }
+  return list;
+}
+
+/**
+ * Бронь отменена или удалена: просим менеджера написать причину (ответом на сообщение)
+ * или нажать «Игнорировать». Спрашиваем один раз на бронь (cancel_asked_at).
+ */
+async function askCancelReason(userId: string, bookingId: number, deleted: boolean) {
+  // Атомарно «занимаем» запрос: если уже спрашивали или причина есть — ничего не шлём.
+  const { data: claimed, error } = await admin
+    .from("rc_bookings")
+    .update({ cancel_asked_at: new Date().toISOString() })
+    .eq("user_id", userId)
+    .eq("booking_id", bookingId)
+    .is("cancel_asked_at", null)
+    .is("cancellation_reason", null)
+    .select("booking_id, realty_id, apartment_title, source, begin_date, end_date, amount, platform_tax, raw_payload, client_fio");
+  if (error) { console.error("[rc-webhook] cancel ask claim failed:", error.message); return; }
+  const b = claimed?.[0];
+  if (!b) return;
+
+  const { data: ms } = await admin
+    .from("manager_settings")
+    .select("manager_tg_chat_id, manager_channel, manager_channel_chat_id, manager_recipients")
+    .eq("user_id", userId)
+    .maybeSingle();
+  const { data: st } = await admin
+    .from("app_state").select("apartments:state->apartments").eq("user_id", userId).maybeSingle();
+  const apts = Array.isArray(st?.apartments) ? st.apartments : [];
+
+  const html = cancelNoticeHtml(b, objectName(apts, b), deleted);
+  const kb: Btn[][] = [[{ text: "Игнорировать", data: `${CANCEL_IGNORE_CMD}:bk${b.booking_id}` }]];
+  let sent = 0;
+  for (const to of managerRecipientsAll(ms)) {
+    try {
+      const r = await sendManager(to, html, kb);
+      if (r?.ok) sent++;
+    } catch (e) {
+      console.error(`[rc-webhook] cancel ask send failed (${to.channel}:${to.chatId}):`, e);
+    }
+  }
+  // Никому не ушло — снимаем отметку, чтобы спросить при следующем событии.
+  if (sent === 0) {
+    await admin.from("rc_bookings").update({ cancel_asked_at: null }).eq("user_id", userId).eq("booking_id", bookingId);
+  }
 }
 
 async function createOrUpdateCleaning(userId: string, booking: any) {
@@ -586,11 +654,17 @@ serve(async (req) => {
   // Сохраняем старую end_date до upsert-а — сравним после, чтобы понять: продление?
   const { data: prevBk } = await admin
     .from("rc_bookings")
-    .select("end_date")
+    .select("end_date, amount, platform_tax, status, prev_tax:raw_payload->data->booking->>platform_tax")
     .eq("user_id", userId)
     .eq("booking_id", booking.booking_id)
     .maybeSingle();
   const oldEnd = prevBk?.end_date || null;
+
+  const statusLower0 = String(status).toLowerCase();
+  const isCancelLike =
+    statusLower0 === "canceled" || statusLower0 === "cancelled" || statusLower0 === "deleted" ||
+    actionLower0 === "cancel" || actionLower0 === "delete" ||
+    actionLower0 === "cancel_booking" || actionLower0 === "delete_booking";
 
   // Upsert в rc_bookings
   const row = {
@@ -602,6 +676,15 @@ serve(async (req) => {
     booking_url: booking.booking_url, rc_created_at: booking.rc_created_at, rc_updated_at: booking.rc_updated_at,
     raw_payload: payload, received_at: new Date().toISOString(),
   };
+
+  // При отмене RC иногда обнуляет сумму и комиссию (Яндекс Путешествия).
+  // Для отчёта об отменах сохраняем сумму и комиссию, которые были до отмены.
+  // На финансы это не влияет: отменённые/удалённые брони там не учитываются.
+  if (isCancelLike && !(Number(booking.amount) > 0) && Number(prevBk?.amount) > 0) {
+    (row as any).amount = prevBk!.amount;
+    const prevTax = Number(prevBk?.prev_tax) > 0 ? Number(prevBk?.prev_tax) : Number(prevBk?.platform_tax || 0);
+    if (prevTax > 0) (row as any).platform_tax = prevTax;
+  }
 
   const { error: upErr } = await admin
     .from("rc_bookings").upsert(row, { onConflict: "user_id,booking_id" });
@@ -634,6 +717,16 @@ serve(async (req) => {
     }
   } catch (e) {
     console.error("[rc-webhook] cleaning processing failed:", e);
+  }
+
+  // ─── Отмена/удаление: запрос причины у менеджера ───────────────
+  if (isCancelLike) {
+    try {
+      const deleted = statusLower0 === "deleted" || actionLower0 === "delete" || actionLower0 === "delete_booking";
+      await askCancelReason(userId, booking.booking_id, deleted);
+    } catch (e) {
+      console.error("[rc-webhook] cancel reason ask failed:", e);
+    }
   }
 
   // ─── Продление после оплаты ───────────────────────

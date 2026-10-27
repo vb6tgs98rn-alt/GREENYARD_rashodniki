@@ -81,6 +81,8 @@ export type InboundEvent = {
   from: { id: string | null; firstName: string | null; lastName: string | null; username: string | null };
   /** Прямая ссылка на приложенное фото, если канал её отдаёт. */
   photoUrl?: string | null;
+  /** Текст сообщения, на которое ответили (Telegram «Ответить»), если есть. */
+  replyToText?: string | null;
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -529,6 +531,7 @@ export async function parseTelegramUpdate(update: any, profile: BotProfile = "de
     messageId: msg.message_id != null ? String(msg.message_id) : null,
     from,
     photoUrl: await tgPhotoUrl(msg, profile),
+    replyToText: msg?.reply_to_message ? String(msg.reply_to_message.text || msg.reply_to_message.caption || "") : null,
   };
 }
 
