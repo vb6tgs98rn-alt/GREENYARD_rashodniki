@@ -33,6 +33,7 @@ import {
   type Recipient,
   sendMessage,
 } from "../_shared/channels.ts";
+import { cleaningAddress, placeLines } from "../_shared/cleaning_address.ts";
 
 const MAID_PROFILE: BotProfile = "maid";
 
@@ -700,6 +701,13 @@ async function showMyCleanings(maid: Maid, to: Recipient) {
 
   await sendMaid(to, `<b>Ваши предстоящие уборки (${mine.length}):</b>`);
 
+  // Адреса из инструкций для гостей — один раз на квартиру.
+  const addrCache = new Map<string, string | null>();
+  for (const c of mine as any[]) {
+    const k = String(c.realty_id ?? "");
+    if (!addrCache.has(k)) addrCache.set(k, await cleaningAddress(sb, maid.user_id, c.realty_id));
+  }
+
   for (const c of mine as any[]) {
     const time = (c.scheduled_time || "").slice(0, 5);
     const marker = c.status === "accepted" ? "✅"
@@ -708,7 +716,7 @@ async function showMyCleanings(maid: Maid, to: Recipient) {
     const statusText = c.status === "pending_response" ? " — <i>ожидает ответа</i>"
       : c.status === "on_site" ? " — <i>вы на месте</i>"
       : "";
-    const body = `${marker} <b>${fmtDateShort(c.scheduled_date)}${time ? ", " + time : ""}</b>\n     ${htmlEscape(c.apartment_title || "?")}${statusText}`;
+    const body = `${marker} <b>${fmtDateShort(c.scheduled_date)}${time ? ", " + time : ""}</b>${statusText}\n${placeLines(c.apartment_title, addrCache.get(String(c.realty_id ?? "")) ?? null)}`;
 
     let kb: Btn[][] | undefined;
     if (c.status === "pending_response") {

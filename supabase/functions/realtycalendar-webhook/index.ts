@@ -28,6 +28,7 @@ import {
   sendMessage,
 } from "../_shared/channels.ts";
 import { ensureBookingPayment, paymentMessage } from "../_shared/tochka_booking.ts";
+import { cleaningAddress, placeLines } from "../_shared/cleaning_address.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -92,6 +93,31 @@ function fmtDate(iso: string | null): string {
 
 // ─── Уборки ──────────────────────────────────────────────────────────────────
 
+/** Сохраняем исходящее сообщение бота в чат менеджер↔горничная (чистый текст без HTML). */
+async function logMaidOutbound(userId: string, maidId: string, to: Recipient, r: any, html: string) {
+  try {
+    await admin.from("maid_messages").insert({
+      user_id: userId,
+      maid_id: maidId,
+      tg_chat_id: to.channel === "telegram" ? Number(to.chatId) : null,
+      tg_message_id: to.channel === "telegram" && r?.messageId != null ? Number(r.messageId) : null,
+      channel: to.channel,
+      channel_chat_id: to.chatId,
+      direction: "outbound",
+      sender: "bot",
+      text: html.replace(/<[^>]+>/g, ""),
+    });
+  } catch (e) {
+    console.error("[rc-webhook] maid_messages log failed:", e);
+  }
+}
+
+/** Кому из горничных сейчас относится уборка: назначенная или все, кому её предложили. */
+function cleaningMaidIds(c: any): string[] {
+  if (c?.maid_id) return [c.maid_id];
+  return Array.isArray(c?.offered_to) ? c.offered_to.filter(Boolean) : [];
+}
+
 async function createOrUpdateCleaning(userId: string, booking: any) {
   if (!booking.realty_id || !booking.end_date) return;
 
@@ -99,7 +125,7 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
   const bookingIdStr = String(booking.booking_id);
   const { data: existing } = await admin
     .from("cleanings")
-    .select("id, status, scheduled_date, maid_id, tg_message_id")
+    .select("id, status, scheduled_date, maid_id, offered_to, tg_message_id")
     .eq("user_id", userId)
     .eq("booking_id", bookingIdStr)
     .maybeSingle();
@@ -115,28 +141,80 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
   const managerTo = managerRcpt(ms);
 
   if (existing) {
-    // Обновляем дату, если сдвинулась (например перенос выселения)
-    if (existing.scheduled_date !== booking.end_date && existing.status !== "completed") {
-      await admin
-        .from("cleanings")
-        .update({
+    // Перенос даты (например, продление или ранний выезд). Завершённые и отменённые не трогаем.
+    if (
+      existing.scheduled_date !== booking.end_date &&
+      existing.status !== "completed" && existing.status !== "cancelled"
+    ) {
+      const oldDate = existing.scheduled_date as string | null;
+
+      // Кого спрашиваем заново: назначенную горничную, иначе тех, кому уже предлагали,
+      // иначе (все отказались) — всех активных горничных, закреплённых за квартирой.
+      let askIds = cleaningMaidIds(existing);
+      if (askIds.length === 0) {
+        const { data: links } = await admin
+          .from("maid_apartments").select("maid_id")
+          .eq("user_id", userId).eq("realty_id", booking.realty_id);
+        askIds = (links || []).map((l: any) => l.maid_id);
+      }
+      const { data: askMaids } = askIds.length
+        ? await admin.from("maids").select("id, name, tg_chat_id, channel, channel_chat_id").in("id", askIds).eq("active", true)
+        : { data: [] as any[] };
+
+      // Уборка снова ждёт ответа: горничная должна подтвердить новую дату.
+      const resetPatch: Record<string, unknown> = {
+        scheduled_date: booking.end_date,
+        apartment_title: booking.apartment_title,
+        status: "pending_response",
+        maid_id: null,
+        accepted_at: null,
+        declined_at: null,
+        reminded_at: null,
+        offered_to: (askMaids || []).map((m: any) => m.id),
+        updated_at: new Date().toISOString(),
+      };
+      const { error: upErr } = await admin.from("cleanings").update(resetPatch).eq("id", existing.id);
+      if (upErr) {
+        // На случай отсутствия какой-то колонки — хотя бы дату и статус обновим.
+        console.error("[rc-webhook] reschedule update failed:", upErr.message);
+        await admin.from("cleanings").update({
           scheduled_date: booking.end_date,
           apartment_title: booking.apartment_title,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", existing.id);
-      // Уведомляем горничную (если назначена) и менеджера
-      if (existing.maid_id) {
-        const { data: maid } = await admin
-          .from("maids").select("tg_chat_id, channel, channel_chat_id, name").eq("id", existing.maid_id).maybeSingle();
-        await sendMaid(
-          maidRcpt(maid),
-          `⚠️ <b>Дата уборки изменилась</b>\n📍 ${htmlEscape(booking.apartment_title || "")}\n📅 Новая дата: ${fmtDate(booking.end_date)}, ${(cleaningTime as string).slice(0,5)}`
-        );
+          status: "pending_response",
+          maid_id: null,
+          offered_to: resetPatch.offered_to,
+          updated_at: resetPatch.updated_at,
+        }).eq("id", existing.id);
       }
+
+      const address = await cleaningAddress(admin, userId, booking.realty_id);
+      const html =
+        `⚠️ <b>Уборка перенесена</b>\n` +
+        `${placeLines(booking.apartment_title, address)}\n` +
+        `📅 Было: ${fmtDate(oldDate)}\n` +
+        `📅 Стало: <b>${fmtDate(booking.end_date)}</b>, ${(cleaningTime as string).slice(0, 5)}\n\n` +
+        `Сможете убраться в новую дату?`;
+      const kb: Btn[][] = [[
+        { text: "✅ Принять", data: `maid_accept:${existing.id}` },
+        { text: "❌ Отказаться", data: `maid_decline:${existing.id}` },
+      ]];
+      const asked: string[] = [];
+      for (const m of askMaids || []) {
+        const to = maidRcpt(m);
+        if (!to) continue;
+        const r = await sendMaid(to, html, kb);
+        if (r?.ok) {
+          asked.push(m.name);
+          await logMaidOutbound(userId, m.id, to, r, html);
+        }
+      }
+
       await sendManager(
         managerTo,
-        `📅 Дата уборки по брони <code>${bookingIdStr}</code> перенесена на ${fmtDate(booking.end_date)} (${htmlEscape(booking.apartment_title || "")}).`
+        `📅 Уборка по брони <code>${bookingIdStr}</code> перенесена: ${fmtDate(oldDate)} → ${fmtDate(booking.end_date)} (${htmlEscape(booking.apartment_title || "")}).\n` +
+        (asked.length
+          ? `Запрос на подтверждение отправлен: ${htmlEscape(asked.join(", "))}.`
+          : `⚠️ Горничным не отправлено — назначьте вручную.`)
       );
     }
     return;
@@ -189,6 +267,7 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
     .in("id", maidIds)
     .eq("active", true);
 
+  const address = await cleaningAddress(admin, userId, booking.realty_id);
   const offered: string[] = [];
   for (const m of maids || []) {
     const to = maidRcpt(m);
@@ -197,7 +276,7 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
       { text: "✅ Принять", data: `maid_accept:${cleaningId}` },
       { text: "❌ Отказаться", data: `maid_decline:${cleaningId}` },
     ]];
-    const text = `Следующая уборка <b>${fmtDate(booking.end_date)}</b>\nАдрес: ${htmlEscape(booking.apartment_title || "?")}`;
+    const text = `Следующая уборка <b>${fmtDate(booking.end_date)}</b>\n${placeLines(booking.apartment_title, address)}`;
     const r = await sendMaid(to, text, kb);
     if (r?.ok) {
       offered.push(m.id);
@@ -249,26 +328,34 @@ async function cancelCleaning(userId: string, bookingId: number) {
   const bookingIdStr = String(bookingId);
   const { data: cleaning } = await admin
     .from("cleanings")
-    .select("id, status, maid_id, apartment_title, scheduled_date")
+    .select("id, status, maid_id, offered_to, realty_id, apartment_title, scheduled_date")
     .eq("user_id", userId)
     .eq("booking_id", bookingIdStr)
     .maybeSingle();
 
   if (!cleaning || cleaning.status === "completed" || cleaning.status === "cancelled") return;
+  // Если все отказались — горничных уведомлять не нужно.
+  const notifyIds = cleaning.status === "declined" ? [] : cleaningMaidIds(cleaning);
 
   await admin
     .from("cleanings")
     .update({ status: "cancelled", updated_at: new Date().toISOString() })
     .eq("id", cleaning.id);
 
-  // Уведомляем горничную
-  if (cleaning.maid_id) {
-    const { data: maid } = await admin
-      .from("maids").select("tg_chat_id, channel, channel_chat_id, name").eq("id", cleaning.maid_id).maybeSingle();
-    await sendMaid(
-      maidRcpt(maid),
-      `❌ <b>Уборка отменена</b>\n📍 ${htmlEscape(cleaning.apartment_title || "")}\n📅 ${fmtDate(cleaning.scheduled_date)}\nБронь была отменена гостем/системой.`
-    );
+  // Уведомляем назначенную горничную или всех, кому уборка была предложена.
+  if (notifyIds.length) {
+    const { data: maids } = await admin
+      .from("maids").select("id, tg_chat_id, channel, channel_chat_id, name").in("id", notifyIds);
+    const address = await cleaningAddress(admin, userId, cleaning.realty_id);
+    const html =
+      `❌ <b>Уборка отменена</b>\n${placeLines(cleaning.apartment_title, address)}\n` +
+      `📅 ${fmtDate(cleaning.scheduled_date)}\nБронь отменена — приезжать не нужно.`;
+    for (const m of maids || []) {
+      const to = maidRcpt(m);
+      if (!to) continue;
+      const r = await sendMaid(to, html);
+      if (r?.ok) await logMaidOutbound(userId, m.id, to, r, html);
+    }
   }
 
   // Менеджеру

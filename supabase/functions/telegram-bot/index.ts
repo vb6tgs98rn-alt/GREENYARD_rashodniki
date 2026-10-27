@@ -44,6 +44,7 @@ import {
   HOLD_DAYS,
   todayMsk,
 } from "../_shared/tochka_deposit.ts";
+import { cleaningAddress, placeLines } from "../_shared/cleaning_address.ts";
 
 const TG_SECRET    = Deno.env.get("TELEGRAM_WEBHOOK_SECRET")   ?? "";
 const MAX_SECRET   = Deno.env.get("MAX_WEBHOOK_SECRET")        ?? "";
@@ -1845,7 +1846,7 @@ async function endpointCleaningReminders(req: Request): Promise<Response> {
 
   const { data: cleanings } = await sb
     .from("cleanings")
-    .select("id, user_id, maid_id, apartment_title, scheduled_date, scheduled_time, status, reminded_at")
+    .select("id, user_id, maid_id, realty_id, apartment_title, scheduled_date, scheduled_time, status, reminded_at")
     .eq("scheduled_date", today)
     .in("status", ["accepted", "pending_response"])
     .is("reminded_at", null);
@@ -1856,7 +1857,8 @@ async function endpointCleaningReminders(req: Request): Promise<Response> {
     const { data: maid } = await sb.from("maids").select("channel, channel_chat_id, tg_chat_id, name").eq("id", c.maid_id).maybeSingle();
     const to = maid ? maidRcpt(maid) : null;
     if (!to) continue;
-    const text = `⏰ Напоминание: сегодня уборка.\nАдрес: ${htmlEscape(c.apartment_title || "")}`;
+    const address = await cleaningAddress(sb, c.user_id, c.realty_id);
+    const text = `⏰ Напоминание: сегодня уборка.\n${placeLines(c.apartment_title, address)}`;
     const r = await send(to, text);
     if (r.ok) {
       await sb.from("cleanings").update({ reminded_at: new Date().toISOString() }).eq("id", c.id);
