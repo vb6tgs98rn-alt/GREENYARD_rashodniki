@@ -254,6 +254,10 @@ async function handleCron(body: any): Promise<Response> {
   const today = isIso(body?.date) ? body.date : moscowToday();
   const dry = body?.dry === true;
   const onlyUser = typeof body?.userId === "string" ? body.userId : "";
+  // Ручной предпросмотр: только PDF по отменам, без записи в журнал
+  // (плановая отправка 1-го числа после этого не пропускается).
+  const onlyCancel = body?.only === "cancellations";
+  const preview = body?.preview === true;
 
   let q = admin.from("owner_report_config").select("user_id, telegram_chat_id").eq("enabled", true).not("telegram_chat_id", "is", null);
   if (onlyUser) q = q.eq("user_id", onlyUser);
@@ -267,6 +271,7 @@ async function handleCron(body: any): Promise<Response> {
       const since = new Date(Date.parse(today + "T00:00:00Z") - 40 * 86400000).toISOString().slice(0, 10);
       const pre = await loadUserData(cfg.user_id, since);
       const apts = (pre.state.apartments || []).filter((a: any) => {
+        if (onlyCancel) return false;
         if (a.archived) return false;
         const pd = Math.trunc(Number(a.paymentDay || 0));
         return pd >= 1 && pd <= 31 && isPaymentDay(today, pd);
@@ -287,10 +292,10 @@ async function handleCron(body: any): Promise<Response> {
       }
 
       // Первое число месяца — отчёт по отменам за прошлый месяц (один раз, по журналу).
-      if (today.endsWith("-01")) {
+      if (today.endsWith("-01") || onlyCancel) {
         try {
           const pm = previousMonth(today);
-          const { data: doneC } = await admin.from("owner_report_log")
+          const { data: doneC } = preview ? { data: null } : await admin.from("owner_report_log")
             .select("sent_at").eq("user_id", cfg.user_id).eq("apartment_id", CANCEL_LOG_KEY).eq("period_from", pm.from).maybeSingle();
           if (doneC) {
             results.push({ report: "cancellations", from: pm.from, skipped: "уже отправлен" });
@@ -298,7 +303,7 @@ async function handleCron(body: any): Promise<Response> {
             const rep = await buildCancelReport(cfg.user_id, today);
             if (!dry) {
               await tgSendDocument(Number(cfg.telegram_chat_id), rep.bytes, rep.fileName, captionOf(rep.fileName));
-              await admin.from("owner_report_log").insert({
+              if (!preview) await admin.from("owner_report_log").insert({
                 user_id: cfg.user_id, apartment_id: CANCEL_LOG_KEY, period_from: rep.from, period_to: rep.to, file_name: rep.fileName,
               });
             }
