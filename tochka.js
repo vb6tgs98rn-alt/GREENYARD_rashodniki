@@ -64,7 +64,11 @@ async function callApi(route, { method = 'POST', body = null } = {}) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data?.message || data?.error || `HTTP ${res.status}`);
+    err.data = data; // подробности ответа сервера (например, статус платежа в банке)
+    throw err;
+  }
   return data;
 }
 
@@ -92,12 +96,9 @@ export async function fetchDeposits() {
 export async function releaseDeposit(deposit_id) {
   return callApi('/deposit/release', { body: { deposit_id } });
 }
-// Оштрафовать: penalty — сумма штрафа. Залог списывается целиком,
-// остаток сервер сразу возвращает гостю.
-export async function captureDeposit(deposit_id, penalty) {
-  const body = { deposit_id };
-  if (penalty != null) body.penalty = penalty;
-  return callApi('/deposit/capture', { body });
+// Оштрафовать: весь залог списывается на расчётный счёт.
+export async function captureDeposit(deposit_id) {
+  return callApi('/deposit/capture', { body: { deposit_id } });
 }
 
 export async function fetchPayments(booking_id) {

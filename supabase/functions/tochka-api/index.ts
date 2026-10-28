@@ -20,9 +20,8 @@
 //   POST /poll        — сверить статусы неоплаченных ссылок и залогов
 //   POST /deposit          — создать/получить ссылку на залог по брони
 //   GET  /deposits         — залоги, которые сейчас хранятся
-//   POST /deposit/release  — вернуть залог гостю
-//   POST /deposit/capture  — оштрафовать: списать залог на расчётный счёт
-//                            (penalty — сумма штрафа; остаток сразу возвращается гостю)
+//   POST /deposit/release  — вернуть залог гостю: досрочно снять холд целиком
+//   POST /deposit/capture  — оштрафовать: списать весь залог на расчётный счёт
 //   ANY  /webhook     — вебхук Точки (тело — JWT, подпись RS256)
 //   GET  /            — пинг
 //
@@ -493,7 +492,7 @@ async function handleDeposits(req: Request): Promise<Response> {
   // Хранящиеся залоги + списанные, у которых остаток ещё не вернулся гостю.
   const nowIso = new Date().toISOString();
   const { data: list, error } = await sb.from("booking_deposits")
-    .select("id, booking_id, amount, status, held_at, hold_expires_at, penalty_amount, refund_amount, refunded_at, refund_error")
+    .select("id, booking_id, amount, status, held_at, hold_expires_at, penalty_amount, refund_amount, refunded_at, refund_error, refund_requested_at")
     .eq("user_id", userId)
     .or(
       `and(status.in.(held,capturing),hold_expires_at.gt.${nowIso}),` +
@@ -529,6 +528,8 @@ async function handleDeposits(req: Request): Promise<Response> {
       penalty_amount: d.penalty_amount != null ? Number(d.penalty_amount) : null,
       refund_amount: d.refund_amount != null ? Number(d.refund_amount) : null,
       refund_failed: !!d.refund_error,
+      // Расхолд запрошен, но банк ещё не подтвердил.
+      release_pending: d.status === "held" && !!d.refund_requested_at,
       guest_name: b.client_fio ?? null,
       begin_date: b.begin_date ?? null,
       end_date: b.end_date ?? null,
@@ -563,8 +564,14 @@ async function handleDepositRelease(req: Request): Promise<Response> {
   const { dep, error } = await loadOwnDeposit(req);
   if (error) return error;
   const sb = svc();
-  const res = await releaseDeposit(sb, dep);
-  if (!res.ok) return json({ ok: false, error: res.error }, 409);
+  if (dep.status !== "held") return json({ ok: false, error: "not_held" }, 409);
+  const conn = await loadConnection(sb, String(dep.user_id));
+  if (!conn || conn.status !== "connected") return json({ ok: false, error: "not_connected" }, 409);
+  const res = await releaseDeposit(sb, conn, dep);
+  if (!res.ok) {
+    const code = ["not_held", "hold_expired", "in_progress"].includes(String(res.error)) ? 409 : 502;
+    return json({ ok: false, error: res.error, bank_status: res.dep?.bank_status ?? null, pending: !!res.pending }, code);
+  }
   console.log(`[deposit] залог ${dep.id} возвращён арендодателем`);
   return json({ ok: true, status: res.dep?.status, hold_expires_at: res.dep?.hold_expires_at });
 }
@@ -575,14 +582,11 @@ async function handleDepositCapture(req: Request): Promise<Response> {
   const sb = svc();
   if (dep.status !== "held") return json({ ok: false, error: "not_held" }, 409);
 
-  // Сумма штрафа: больше нуля и не больше залога. Не передана — штрафуем на весь залог.
-  let penalty: number | undefined;
-  if (body?.penalty != null && body.penalty !== "") {
-    penalty = Math.round(Number(body.penalty) * 100) / 100;
-    if (!Number.isFinite(penalty) || penalty <= 0 || penalty > Number(dep.amount)) {
-      return json({ ok: false, error: "bad_penalty" }, 400);
-    }
+  // Штраф — только на весь залог (частичный штраф отключён по решению владельца).
+  if (body?.penalty != null && body.penalty !== "" && Number(body.penalty) !== Number(dep.amount)) {
+    return json({ ok: false, error: "bad_penalty" }, 400);
   }
+  const penalty: number | undefined = undefined;
   if (dep.hold_expires_at && new Date(dep.hold_expires_at).getTime() <= Date.now()) {
     return json({ ok: false, error: "hold_expired" }, 409);
   }

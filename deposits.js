@@ -11,10 +11,8 @@
 // (деньги заморожены на карте гостя через Точку Банк).
 //
 // По каждому залогу две кнопки:
-//   «Вернуть»      — залог возвращается гостю, комиссии нет;
-//   «Оштрафовать»  — появляется поле суммы штрафа (не больше залога) и кнопка
-//                    «Подтвердить». Залог списывается целиком (частично Точка не умеет),
-//                    а остаток сразу возвращается гостю; банк берёт комиссию 3,2 %.
+//   «Вернуть»      — банк досрочно снимает холд целиком, деньги не списываются;
+//   «Оштрафовать»  — весь залог списывается на расчётный счёт, комиссия банка 3,2 %.
 // Оба действия — только после подтверждения в отдельном окне.
 // Все операции с деньгами выполняет сервер (tochka-api), браузер только просит.
 
@@ -54,9 +52,17 @@ function humanError(err) {
     not_connected: 'Точка Банк не подключена.',
     bank_refused: 'Банк не принял списание. Попробуйте позже.',
     capture_failed: 'Не удалось списать залог. Попробуйте позже.',
-    bad_penalty: 'Сумма штрафа должна быть больше нуля и не больше суммы залога.',
+    bad_penalty: 'Штраф возможен только на всю сумму залога.',
     not_found: 'Залог не найден.',
+    bank_unavailable: 'Не удалось узнать статус платежа в банке. Попробуйте позже.',
+    in_progress: 'Возврат этого залога уже обрабатывается банком.',
+    release_pending: 'Банк не ответил вовремя. Возврат мог пройти — нажмите «Обновить» через пару минут.',
+    release_refused: 'Банк не принял возврат. Попробуйте позже или снимите удержание в интернет-банке Точки.',
   };
+  if (code === 'bank_status') {
+    const st = err?.data?.bank_status;
+    return `Банк показывает необычный статус платежа${st ? ` (${st})` : ''}. Проверьте операцию в интернет-банке Точки.`;
+  }
   return map[code] || ('Ошибка: ' + code);
 }
 
@@ -126,19 +132,12 @@ function renderCard(d) {
       </div>`;
   } else if (d.status === 'capturing') {
     actions = '<div class="small dp-pending">Списание в обработке у банка…</div>';
+  } else if (d.release_pending) {
+    actions = '<div class="small dp-pending">Возврат в обработке у банка…</div>';
   } else {
     actions = `<div class="dp-actions">
          <button class="btn btn-secondary" type="button" data-dp-release="${esc(d.id)}">Вернуть</button>
-         <button class="btn btn-primary" type="button" data-dp-capture="${esc(d.id)}" aria-expanded="false">Оштрафовать</button>
-       </div>
-       <div class="dp-penalty" data-dp-penalty-box="${esc(d.id)}" hidden>
-         <label class="small dp-penalty-label" for="dpPenalty-${esc(d.id)}">Сумма штрафа, ₽ (не больше ${esc(fmtRub(d.amount))})</label>
-         <div class="dp-penalty-row">
-           <input class="input" id="dpPenalty-${esc(d.id)}" type="text" inputmode="decimal" autocomplete="off"
-                  placeholder="Например, 2000" data-dp-penalty-input="${esc(d.id)}">
-           <button class="btn btn-primary" type="button" data-dp-penalty-ok="${esc(d.id)}">Подтвердить</button>
-         </div>
-         <div class="small dp-penalty-error" data-dp-penalty-error="${esc(d.id)}" role="alert"></div>
+         <button class="btn btn-primary" type="button" data-dp-capture="${esc(d.id)}">Оштрафовать</button>
        </div>`;
   }
   return `
@@ -203,74 +202,47 @@ function confirmRelease(d) {
     title: 'Вернуть залог?',
     text: [
       `${d.guest_name || 'Гость'} · ${fmtRub(d.amount)}`,
-      `Залог будет возвращён гостю, комиссии нет. Деньги разморозятся на карте гостя${until ? ` не позже ${until}` : ''}.`,
+      'Банк снимет удержание сразу и целиком, деньги не списываются. ' +
+        `Когда они разморозятся на карте, зависит от банка гостя — обычно сразу или за несколько дней${until ? `, не позже ${until}` : ''}.`,
       'Оштрафовать гостя после этого будет нельзя.',
     ],
     okLabel: 'Вернуть',
     onConfirm: async () => {
-      await releaseDeposit(d.id);
-      setStatus('Залог возвращён гостю');
+      try {
+        await releaseDeposit(d.id);
+      } catch (err) {
+        if (String(err?.message) === 'bank_refused') {
+          const e2 = new Error('release_refused');
+          e2.data = err.data;
+          throw e2;
+        }
+        throw err;
+      }
+      setStatus('Залог возвращён гостю: удержание снято');
       await reloadDeposits();
     },
   });
 }
 
-// Разбор суммы штрафа: «2 000,50» → 2000.5. Возвращает число или текст ошибки.
-function parsePenalty(raw, max) {
-  const s = String(raw || '').replace(/[\s\u00a0₽]/g, '').replace(',', '.');
-  if (!s) return { error: 'Введите сумму штрафа.' };
-  if (!/^\d+(\.\d{1,2})?$/.test(s)) return { error: 'Введите сумму цифрами, например 2000 или 2000,50.' };
-  const n = Math.round(Number(s) * 100) / 100;
-  if (!(n > 0)) return { error: 'Сумма штрафа должна быть больше нуля.' };
-  if (n > Number(max)) return { error: `Штраф не может быть больше залога (${fmtRub(max)}).` };
-  return { value: n };
-}
-
-function confirmCapture(d, penalty) {
+// Штраф — всегда на всю сумму залога.
+function confirmCapture(d) {
   const amount = Number(d.amount || 0);
-  const rest = Math.round((amount - penalty) * 100) / 100;
   const fee = Math.round(amount * _feePercent) / 100;
   const feeText = String(_feePercent).replace('.', ',');
-  const text = [
-    `${d.guest_name || 'Гость'} · залог ${fmtRub(amount)}`,
-    `Штраф: ${fmtRub(penalty)}.`,
-  ];
-  if (rest > 0) {
-    text.push(
-      `Залог будет списан целиком, и гостю сразу вернётся ${fmtRub(rest)}. ` +
-        'На карту гостя деньги придут обычно за 3–7 дней (до 30).',
-    );
-  } else {
-    text.push('Вся сумма залога будет списана на ваш расчётный счёт.');
-  }
-  text.push(`Комиссия банка — ${feeText} % от суммы списания (около ${fmtRub(fee)}). Отменить штраф будет нельзя.`);
   openConfirm({
     title: 'Оштрафовать гостя?',
-    text,
+    text: [
+      `${d.guest_name || 'Гость'} · ${fmtRub(amount)}`,
+      'Вся сумма залога будет списана на ваш расчётный счёт.',
+      `Комиссия банка — ${feeText} % (около ${fmtRub(fee)}). Отменить штраф будет нельзя.`,
+    ],
     okLabel: 'Оштрафовать',
     onConfirm: async () => {
-      const res = await captureDeposit(d.id, penalty);
-      let msg;
-      if (res?.status !== 'captured') msg = 'Списание отправлено в банк';
-      else if (!(res?.refund_amount > 0)) msg = 'Залог списан на расчётный счёт';
-      else if (res?.refunded) msg = `Штраф удержан, гостю возвращается ${fmtRub(res.refund_amount)}`;
-      else msg = `Штраф удержан, возврат ${fmtRub(res.refund_amount)} в обработке`;
-      setStatus(msg);
+      const res = await captureDeposit(d.id);
+      setStatus(res?.status === 'captured' ? 'Залог списан на расчётный счёт' : 'Списание отправлено в банк');
       await reloadDeposits();
     },
   });
-}
-
-// «Подтвердить» рядом с полем суммы: проверяем сумму и открываем окно подтверждения.
-function submitPenalty(id) {
-  const d = _items.find((x) => String(x.id) === String(id));
-  if (!d) return;
-  const input = document.querySelector(`[data-dp-penalty-input="${CSS.escape(String(id))}"]`);
-  const errBox = document.querySelector(`[data-dp-penalty-error="${CSS.escape(String(id))}"]`);
-  const res = parsePenalty(input?.value, d.amount);
-  if (errBox) errBox.textContent = res.error || '';
-  if (res.error) { input?.focus(); return; }
-  confirmCapture(d, res.value);
 }
 
 let _bound = false;
@@ -295,30 +267,10 @@ export function bindDepositsEvents() {
       if (d) confirmRelease(d);
       return;
     }
-    // «Оштрафовать» — показать/скрыть поле суммы штрафа.
     const cap = e.target.closest('[data-dp-capture]');
     if (cap) {
-      const id = cap.getAttribute('data-dp-capture');
-      const box = document.querySelector(`[data-dp-penalty-box="${CSS.escape(id)}"]`);
-      if (!box) return;
-      box.hidden = !box.hidden;
-      cap.setAttribute('aria-expanded', box.hidden ? 'false' : 'true');
-      if (!box.hidden) box.querySelector('input')?.focus();
-      return;
+      const d = _items.find((x) => String(x.id) === cap.getAttribute('data-dp-capture'));
+      if (d) confirmCapture(d);
     }
-    const ok = e.target.closest('[data-dp-penalty-ok]');
-    if (ok) submitPenalty(ok.getAttribute('data-dp-penalty-ok'));
-  });
-
-  // Enter в поле суммы — как «Подтвердить»; при вводе стираем старую ошибку.
-  document.body.addEventListener('keydown', (e) => {
-    const input = e.target.closest?.('[data-dp-penalty-input]');
-    if (input && e.key === 'Enter') { e.preventDefault(); submitPenalty(input.getAttribute('data-dp-penalty-input')); }
-  });
-  document.body.addEventListener('input', (e) => {
-    const input = e.target.closest?.('[data-dp-penalty-input]');
-    if (!input) return;
-    const errBox = document.querySelector(`[data-dp-penalty-error="${CSS.escape(input.getAttribute('data-dp-penalty-input'))}"]`);
-    if (errBox) errBox.textContent = '';
   });
 }

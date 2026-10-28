@@ -15,13 +15,12 @@
 //   2. Гость платит — деньги замораживаются, статус операции AUTHORIZED.
 //   3. Штраф: метод Capture Payment списывает всю сумму (частично нельзя),
 //      статус становится APPROVED, деньги приходят на расчётный счёт.
-//      Если штраф меньше залога, после списания остаток сразу возвращаем гостю
-//      методом Refund Payment Operation (частичный возврат допустим для APPROVED).
-//      Если возврат не прошёл, он повторяется при следующей сверке.
-//   4. Возврат: в документации нет метода снятия холда, поэтому залог
-//      отмечается возвращённым, а деньги размораживаются сами, когда
-//      закончится срок холда (6 дней с оплаты). Списать его после этого
-//      из приложения уже нельзя.
+//      Приложение штрафует только на весь залог. Механизм частичного штрафа
+//      (списание + возврат остатка, refundRemainder) оставлен для уже начатых
+//      операций, новых таких операций приложение не создаёт.
+//   4. Возврат: Refund Payment Operation на замороженном платеже (AUTHORIZED)
+//      снимает холд досрочно и целиком (ответ поддержки Точки), без списания.
+//      Если холд снят вручную в интернет-банке, сверка это увидит.
 //
 // Чек по 54-ФЗ на залог не формируем: обеспечительный платёж — не расчёт
 // за услугу, ссылка создаётся без фискализации.
@@ -383,6 +382,7 @@ export async function captureDeposit(
     })
     .eq("id", dep.id)
     .eq("status", "held")
+    .is("refund_requested_at", null) // уже идёт возврат (расхолд) — штрафовать нельзя
     .select("*")
     .maybeSingle();
   if (!locked) return { ok: false, error: "not_held" };
@@ -439,17 +439,88 @@ export async function captureDeposit(
 }
 
 /**
- * Возврат залога. Метода снятия холда в документации Точки нет, поэтому
- * отмечаем залог возвращённым: списать его больше нельзя, а деньги
- * размораживаются сами по окончании холда.
+ * Возврат залога — досрочное снятие холда (расхолд).
+ * По ответу поддержки Точки: Refund Payment Operation на замороженном платеже
+ * (AUTHORIZED) снимает холд целиком, без списания. Частично расхолдить нельзя,
+ * поэтому всегда передаём всю сумму залога.
+ *
+ * Защита от двойного запроса и от одновременного штрафа:
+ *   — перед запросом смотрим статус в банке: если холд уже снят (вручную в
+ *     интернет-банке или истёк) — только отмечаем;
+ *   — запрос делает тот, кто первым поставил refund_requested_at (атомарно),
+ *     штраф с этой отметкой не начнётся (см. captureDeposit);
+ *   — отметка снимается (и возможен повтор) только при явном отказе банка (4xx)
+ *     и если платёж всё ещё AUTHORIZED. При тайм-ауте или 5xx ждём сверки.
+ * pending=true — банк ответил неоднозначно, итог покажет сверка.
  */
-export async function releaseDeposit(sb: any, dep: any): Promise<{ ok: boolean; error?: string; dep?: any }> {
-  const { data: upd } = await sb.from("booking_deposits")
-    .update({ status: "released", released_at: new Date().toISOString() })
-    .eq("id", dep.id)
-    .eq("status", "held")
-    .select("*")
-    .maybeSingle();
-  if (!upd) return { ok: false, error: "not_held" };
-  return { ok: true, dep: upd };
+export async function releaseDeposit(
+  sb: any,
+  conn: TochkaConnection,
+  dep: any,
+): Promise<{ ok: boolean; error?: string; dep?: any; pending?: boolean }> {
+  if (dep.status !== "held" || !dep.operation_id) return { ok: false, error: "not_held" };
+  const opId = String(dep.operation_id);
+  const amount = Number(dep.amount);
+
+  const markReleased = async (extra: Record<string, any> = {}) => {
+    const { data: upd } = await sb.from("booking_deposits")
+      .update({ status: "released", released_at: new Date().toISOString(), refund_error: null, ...extra })
+      .eq("id", dep.id).eq("status", "held").select("*").maybeSingle();
+    return upd;
+  };
+
+  // 1. Что сейчас в банке.
+  let st = "";
+  try {
+    st = String(await getPaymentStatus(sb, conn, opId)).toUpperCase();
+  } catch (e) {
+    console.error("[deposit] статус перед расхолдом:", (e as Error).message);
+    return { ok: false, error: "bank_unavailable" };
+  }
+  console.log(`[deposit] залог ${dep.id}: статус в банке перед расхолдом — ${st || "пусто"}`);
+  if (REFUND_DONE_STATUSES.includes(st)) {
+    const upd = await markReleased();
+    return upd ? { ok: true, dep: upd } : { ok: false, error: "not_held" };
+  }
+  if (st === "EXPIRED") {
+    await sb.from("booking_deposits").update({ status: "expired" }).eq("id", dep.id).eq("status", "held");
+    return { ok: false, error: "hold_expired" };
+  }
+  if (st === "APPROVED") return { ok: false, error: "not_held" }; // уже списан
+  if (st !== "AUTHORIZED") return { ok: false, error: "bank_status", dep: { ...dep, bank_status: st } };
+
+  // 2. Захватываем право на запрос.
+  const { data: claimed } = await sb.from("booking_deposits")
+    .update({ refund_requested_at: new Date().toISOString(), refund_amount: amount, refund_error: null })
+    .eq("id", dep.id).eq("status", "held").is("refund_requested_at", null)
+    .select("*").maybeSingle();
+  if (!claimed) return { ok: false, error: "in_progress" };
+
+  // 3. Расхолд — всегда на всю сумму.
+  try {
+    await refundPayment(sb, conn, opId, amount);
+    console.log(`[deposit] залог ${dep.id}: расхолд ${amount} ₽ принят банком`);
+    const upd = await markReleased({ refunded_at: new Date().toISOString() });
+    return { ok: true, dep: upd ?? claimed };
+  } catch (e) {
+    const msg = String((e as Error).message || e).slice(0, 300);
+    console.error("[deposit] расхолд (Refund Payment Operation):", msg);
+    let st2 = "";
+    try {
+      st2 = String(await getPaymentStatus(sb, conn, opId)).toUpperCase();
+    } catch (_e) { /* статус недоступен */ }
+    console.log(`[deposit] залог ${dep.id}: статус в банке после ошибки расхолда — ${st2 || "пусто"}`);
+    if (REFUND_DONE_STATUSES.includes(st2)) {
+      const upd = await markReleased({ refunded_at: new Date().toISOString() });
+      return { ok: true, dep: upd ?? claimed };
+    }
+    const code = Number((e as any)?.status || 0);
+    const refused = code >= 400 && code < 500 && st2 === "AUTHORIZED";
+    await sb.from("booking_deposits")
+      .update(refused
+        ? { refund_requested_at: null, refund_amount: null, refund_error: msg }
+        : { refund_error: msg })
+      .eq("id", dep.id).eq("status", "held");
+    return refused ? { ok: false, error: "bank_refused" } : { ok: false, error: "release_pending", pending: true };
+  }
 }
