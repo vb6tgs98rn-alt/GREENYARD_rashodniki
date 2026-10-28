@@ -232,6 +232,12 @@ export async function loadConnection(sb: any, userId: string): Promise<TochkaCon
  * Если срок истекает в ближайшие 5 минут — обновляет пару токенов
  * и сохраняет её. Если refresh_token просрочен, подключение помечается
  * как требующее повторного подтверждения.
+ *
+ * Гонка: два параллельных запроса могут одновременно пытаться обновить
+ * токены одним и тем же refresh_token. Первый получает новую пару, второму
+ * банк отвечает invalid_grant. Поэтому при ошибке перечитываем подключение:
+ * если refresh_token в базе уже другой — значит, его обновил соседний запрос,
+ * берём свежий access_token и ошибку не ставим.
  */
 export async function ensureAccessToken(sb: any, conn: TochkaConnection): Promise<string> {
   if (!conn.access_token) throw new Error("Точка не подключена: нет токена доступа");
@@ -241,17 +247,38 @@ export async function ensureAccessToken(sb: any, conn: TochkaConnection): Promis
 
   if (!conn.refresh_token) throw new Error("Токен Точки истёк, требуется повторное подключение");
 
+  const usedRefresh = conn.refresh_token;
   try {
-    const data = await refreshTokens(conn.refresh_token);
+    const data = await refreshTokens(usedRefresh);
     const patch = tokenPatch(data);
     await sb.from("tochka_connections").update(patch).eq("user_id", conn.user_id);
-    Object.assign(conn, patch);
+    // Банк выдал новую пару — значит, подключение рабочее. Если соседний запрос
+    // успел ошибочно пометить его «ошибка», снимаем эту отметку.
+    await sb.from("tochka_connections")
+      .update({ status: "connected", last_error: null })
+      .eq("user_id", conn.user_id).eq("status", "error");
+    Object.assign(conn, patch, conn.status === "error" ? { status: "connected", last_error: null } : {});
     return String(patch.access_token);
   } catch (e) {
+    // Токены мог уже обновить параллельный запрос — проверяем базу.
+    // Вторая проверка через 1,5 с: сосед мог ещё не успеть записать новую пару.
+    for (const delayMs of [0, 1500]) {
+      if (delayMs) await new Promise((res) => setTimeout(res, delayMs));
+      const fresh = await loadConnection(sb, conn.user_id).catch(() => null);
+      if (fresh && fresh.refresh_token && fresh.refresh_token !== usedRefresh && fresh.access_token) {
+        const freshExp = fresh.access_expires_at ? new Date(fresh.access_expires_at).getTime() : 0;
+        if (freshExp - Date.now() > 60 * 1000) {
+          Object.assign(conn, fresh);
+          return String(fresh.access_token);
+        }
+      }
+    }
+    // Ошибку ставим, только если в базе всё ещё тот refresh_token, которым
+    // мы пытались обновиться (иначе затёрли бы удачное обновление соседа).
     await sb.from("tochka_connections").update({
       status: "error",
       last_error: `Не удалось обновить токен: ${String((e as Error).message).slice(0, 300)}`,
-    }).eq("user_id", conn.user_id);
+    }).eq("user_id", conn.user_id).eq("refresh_token", usedRefresh);
     throw e;
   }
 }
