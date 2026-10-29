@@ -31,6 +31,8 @@ export interface BookingPayment {
   payUrl?: string;
   requisites?: string;
   method?: PaymentMethod;
+  /** На странице оплаты доступна и карта (иначе только СБП). */
+  cardEnabled?: boolean;
   paymentId?: string;
   /** Причина для менеджера, гостю её не показываем. */
   reason?: string;
@@ -91,7 +93,7 @@ export async function ensureBookingPayment(
     .select(
       "tochka_enabled, tochka_payment_method, tochka_auto_send, tochka_with_receipt, " +
         "tochka_tax_system, tochka_vat_type, tochka_ttl_minutes, tochka_purpose_template, " +
-        "tochka_requisites, tochka_success_url",
+        "tochka_requisites, tochka_success_url, tochka_card_enabled",
     )
     .eq("user_id", userId)
     .maybeSingle();
@@ -101,13 +103,15 @@ export async function ensureBookingPayment(
 
   const purposeTpl = String(ms.tochka_purpose_template || DEFAULT_PURPOSE);
   const purpose = buildPurpose(purposeTpl, bk);
-  // Способ оплаты: по умолчанию — платёжная ссылка Точки. Она сама предлагает
-  // гостю и СБП, и карту (paymentMode=["sbp","card"]) через интернет-эквайринг —
-  // отдельная регистрация ТСП в СБП не нужна.
+  // Способ оплаты: по умолчанию — платёжная ссылка Точки через интернет-эквайринг
+  // (отдельная регистрация ТСП в СБП не нужна). На странице оплаты — только СБП;
+  // карта добавляется, лишь если менеджер включил «Оплата картой» в настройках.
   // Отдельный СБП QR используем только если менеджер явно выбрал sbp_qr
   // И у подключения Точки есть sbp_merchant_id (иначе Точка вернёт ошибку).
   const savedMethod = String(ms.tochka_payment_method || "payment_link") as PaymentMethod;
   const method: PaymentMethod = savedMethod === "sbp_qr" ? "sbp_qr" : "payment_link";
+  const cardEnabled = ms.tochka_card_enabled === true;
+  const paymentMode: ("sbp" | "card")[] = cardEnabled ? ["sbp", "card"] : ["sbp"];
 
   // Переиспользуем действующую ссылку, если сумма и способ не поменялись.
   if (!opts.force) {
@@ -122,12 +126,18 @@ export async function ensureBookingPayment(
       const notExpired = !existing.expires_at ||
         new Date(existing.expires_at).getTime() > Date.now();
       const sameAmount = Math.abs(Number(existing.amount) - debt) < 0.01;
-      if (notExpired && sameAmount && existing.method === method && existing.pay_url) {
+      // Способы оплаты старой ссылки (Точка возвращает их в ответе). Ссылку с картой
+      // при выключенной карте не переиспользуем — создаём новую, только с СБП.
+      const pm = existing.raw?.Data?.paymentMode;
+      const existingMode = Array.isArray(pm) ? [...pm].map(String).sort().join(",") : "";
+      const sameMode = method === "sbp_qr" || existingMode === [...paymentMode].sort().join(",");
+      if (notExpired && sameAmount && sameMode && existing.method === method && existing.pay_url) {
         return {
           kind: "ok",
           amount: debt,
           payUrl: String(existing.pay_url),
           method,
+          cardEnabled,
           paymentId: String(existing.id),
         };
       }
@@ -162,6 +172,7 @@ export async function ensureBookingPayment(
     clientPhone: bk.client_phone ?? null,
     clientEmail: clientEmail || null,
     successUrl: ms.tochka_success_url ? String(ms.tochka_success_url) : null,
+    paymentMode,
   };
 
   let res: PaymentResult;
@@ -195,6 +206,7 @@ export async function ensureBookingPayment(
     amount: debt,
     payUrl: res.payUrl,
     method: res.method,
+    cardEnabled,
     paymentId: saved?.id ? String(saved.id) : undefined,
   };
 }
@@ -203,8 +215,8 @@ export async function ensureBookingPayment(
 export function paymentMessage(p: BookingPayment, escape: (s: string) => string): string | null {
   const sum = p.amount.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   if (p.kind === "ok" && p.payUrl) {
-    const hint = p.method === "sbp_qr"
-      ? "Оплата через СБП — ссылка откроет приложение вашего банка."
+    const hint = p.method === "sbp_qr" || !p.cardEnabled
+      ? "Оплата через СБП — в приложении вашего банка."
       : "На странице оплаты можно выбрать СБП или банковскую карту.";
     return `💳 <b>Оплата проживания</b>\n\nК оплате: <b>${escape(sum)} ₽</b>\n${hint}\n\n${escape(p.payUrl)}\n\nПосле оплаты мы автоматически увидим платёж — подтверждать ничего не нужно.`;
   }

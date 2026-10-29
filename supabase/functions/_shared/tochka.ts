@@ -432,6 +432,11 @@ export interface PaymentRequest {
   supplierName?: string | null;
   supplierInn?: string | null;
   /**
+   * Способы оплаты на странице Точки: ["sbp"] — только СБП, ["sbp","card"] — ещё и карта.
+   * Не указано — только СБП (карта включается в настройках явно). Для холда игнорируется.
+   */
+  paymentMode?: ("sbp" | "card")[];
+  /**
    * Двухэтапная оплата (холд): деньги замораживаются, списываются методом
    * Capture Payment. Используется для залогов. СБП холд не поддерживает,
    * поэтому такая ссылка принимает только карту.
@@ -458,7 +463,7 @@ export function normalizePhone(raw: string | null | undefined): string | null {
   return `+${d}`;
 }
 
-/** Платёжная ссылка Точки: карта + СБП, при необходимости с чеком. */
+/** Платёжная ссылка Точки: СБП (и карта, если включена), при необходимости с чеком. */
 export async function createPaymentLink(
   sb: any,
   conn: TochkaConnection,
@@ -478,7 +483,10 @@ export async function createPaymentLink(
     amount,
     purpose: req.purpose,
     // Для холда — только карта: «Для оплат по СБП двухэтапная оплата не предусмотрена».
-    paymentMode: req.preAuthorization ? ["card"] : ["sbp", "card"],
+    // Для обычной оплаты — как в настройках, по умолчанию только СБП.
+    paymentMode: req.preAuthorization
+      ? ["card"]
+      : (req.paymentMode && req.paymentMode.length ? req.paymentMode : ["sbp"]),
     merchantId: conn.acquiring_merchant_id,
     preAuthorization: Boolean(req.preAuthorization),
     ttl: req.ttlMinutes,
