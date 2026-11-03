@@ -156,6 +156,42 @@ function bookingCommission(b) {
   return Number.isFinite(col) ? col : 0;
 }
 
+// Кэш снимков rc_payout_snapshots. Снимок создаётся сервером при поступлении брони,
+// поэтому перечитываем его только когда обновился кэш броней (новый массив из api.js)
+// или прошло 2 минуты. Параллельные перерисовки ждут один общий запрос.
+const SNAP_CACHE_TTL_MS = 120000;
+let _snapCache = { at: 0, userId: null, bookingsRef: null, map: null };
+let _snapInFlight = null;
+
+async function getPayoutSnapshotsCached(supabase, userId, platforms, bookingsRef) {
+  const c = _snapCache;
+  const fresh = c.map && c.userId === userId && c.bookingsRef === bookingsRef
+    && (Date.now() - c.at) < SNAP_CACHE_TTL_MS;
+  if (fresh) return c.map;
+  if (_snapInFlight && _snapInFlight.userId === userId && _snapInFlight.bookingsRef === bookingsRef) {
+    return _snapInFlight.promise;
+  }
+  const promise = (async () => {
+    const map = new Map();
+    const { data: sData, error: sErr } = await supabase
+      .from('rc_payout_snapshots')
+      .select('booking_id, end_date, amount, prepayment, platform_tax')
+      .eq('user_id', userId)
+      .in('source', platforms)
+      .limit(3000);
+    if (sErr) {
+      console.warn('[payouts] snapshots fetch error:', sErr.message);
+      // При ошибке не кэшируем: отдаём прошлые снимки этого пользователя, если они есть.
+      return c.userId === userId && c.map ? c.map : map;
+    }
+    (sData || []).forEach((s) => map.set(String(s.booking_id), s));
+    _snapCache = { at: Date.now(), userId, bookingsRef, map };
+    return map;
+  })();
+  _snapInFlight = { userId, bookingsRef, promise };
+  try { return await promise; } finally { if (_snapInFlight?.promise === promise) _snapInFlight = null; }
+}
+
 /**
  * Все ожидаемые/полученные выплаты площадок.
  * Строка: { key, platform, label, mode, refLabel, bookings, gross, commission, net,
@@ -174,8 +210,9 @@ export async function getPlatformPayoutsAsync() {
   // Брони — из общего облегчённого кэша (api.js), без отдельного запроса на каждую перерисовку.
   // Фильтр тот же, что был в запросе: нужная площадка, статус есть и не отмена/удаление.
   let data = [];
+  let all = null;
   try {
-    const all = await getRcBookingsCached();
+    all = await getRcBookingsCached();
     data = all
       .filter((b) => platforms.includes(b.source) && b.status != null && b.status !== 'canceled' && b.status !== 'deleted')
       .map((b) => ({ ...b }));
@@ -183,17 +220,7 @@ export async function getPlatformPayoutsAsync() {
 
   // Снимки на момент поступления брони: дата выезда и суммы не меняются
   // при ручных продлениях. Если снимка нет — берём текущие данные брони.
-  const snaps = new Map();
-  {
-    const { data: sData, error: sErr } = await supabase
-      .from('rc_payout_snapshots')
-      .select('booking_id, end_date, amount, prepayment, platform_tax')
-      .eq('user_id', user.id)
-      .in('source', platforms)
-      .limit(3000);
-    if (sErr) console.warn('[payouts] snapshots fetch error:', sErr.message);
-    (sData || []).forEach((s) => snaps.set(String(s.booking_id), s));
-  }
+  const snaps = await getPayoutSnapshotsCached(supabase, user.id, platforms, all);
 
   const marks = getState().finance?.platformPayouts || {};
   const today = todayIso();
