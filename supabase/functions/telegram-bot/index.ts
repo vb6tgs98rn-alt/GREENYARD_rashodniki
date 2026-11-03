@@ -1032,6 +1032,9 @@ async function maybeCreateContract(session: Session): Promise<string | null> {
     .maybeSingle();
   if (!bk) return null;
 
+  // Договор уже подписан (в ОкиДоки или отмечен менеджером вручную) — ссылка не нужна.
+  if (bk.manual_signed_at || bk.contract_signed_at || Number(bk.contract_status_internal) === 2) return null;
+
   // Если ссылка уже есть — просто вернём её
   if (bk.okidoki_link) return String(bk.okidoki_link);
 
@@ -1402,7 +1405,7 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
 async function handleRepeatStart(to: Recipient, session: Session, fromName: string, settings: ManagerSettings | null, instr: any = null) {
   const sb = svc();
   const { data: bk } = await sb.from("rc_bookings")
-    .select("amount, prepayment, okidoki_link, contract_signed_at, contract_status_internal, begin_date, end_date, checkin_time, checkout_time")
+    .select("amount, prepayment, okidoki_link, contract_signed_at, contract_status_internal, begin_date, end_date, checkin_time, checkout_time, manual_paid_at, manual_signed_at")
     .eq("user_id", session.user_id)
     .eq("booking_id", session.booking_id)
     .maybeSingle();
@@ -1412,11 +1415,12 @@ async function handleRepeatStart(to: Recipient, session: Session, fromName: stri
     .maybeSingle();
 
   const tochkaOn = !!ms?.tochka_enabled;
-  const signed = !!bk?.contract_signed_at || Number(bk?.contract_status_internal) === 2;
+  const signed = !!bk?.manual_signed_at || !!bk?.contract_signed_at || Number(bk?.contract_status_internal) === 2;
   const contractTodo = !!bk && !signed && (!!bk.okidoki_link || !!ms?.okidoki_auto_send);
   const paid = bk ? await paidTochkaSum(sb, session.user_id, session.booking_id) : 0;
   const debt = bk ? Math.round((Number(bk.amount || 0) - Number(bk.prepayment || 0) - paid) * 100) / 100 : 0;
-  const payTodo = tochkaOn && debt > 0;
+  // Ручная отметка «Оплачено» в приложении — долга нет.
+  const payTodo = tochkaOn && debt > 0 && !bk?.manual_paid_at;
 
   instr = withBookingTimes(instr, bk as any);
   const rawStage = guestStageOf(bk?.begin_date, bk?.end_date);

@@ -113,13 +113,15 @@ export async function ensureBookingDeposit(
 ): Promise<BookingDeposit> {
   const { data: bk } = await sb
     .from("rc_bookings")
-    .select("booking_id, realty_id, apartment_title, begin_date, end_date, client_fio")
+    .select("booking_id, realty_id, apartment_title, begin_date, end_date, client_fio, manual_deposit_at")
     .eq("user_id", userId)
     .eq("booking_id", bookingId)
     .maybeSingle();
   if (!bk) return { kind: "error", amount: 0, reason: "Бронь не найдена" };
 
   const daysToCheckout = daysFromToday(bk.end_date);
+  // Менеджер вручную отметил «Залог внесён» (залог получен вне Точки) — ссылку не создаём.
+  if (bk.manual_deposit_at) return { kind: "already_held", amount: 0, daysToCheckout };
   const amount = await depositAmountFor(sb, userId, bk.realty_id ?? null);
   if (!amount) return { kind: "no_amount", amount: 0, daysToCheckout };
 

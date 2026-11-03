@@ -61,6 +61,7 @@ const RC_LIGHT_COLUMNS = [
   'contract_status_internal', 'contract_signed_at', 'contract_updated_at',
   'cancellation_reason', 'tochka_card_enabled', 'cancel_ignored', 'cancel_asked_at',
   'cancel_wait_rcpt', 'cancel_wait_until', 'checkin_time', 'checkout_time',
+  'manual_paid_at', 'manual_signed_at', 'manual_deposit_at',
   'raw_tax:raw_payload->data->booking->platform_tax',
   'raw_secure_id:raw_payload->data->booking->>secure_id',
   'raw_secure_id_old:raw_payload->booking->>secure_id',

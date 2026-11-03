@@ -525,7 +525,41 @@ export async function fillChannelOptions(selectEl, selectedId) {
 // 6) Рендер раздела «Брони»
 // ─────────────────────────────────────────────────────────────────────────────
 
-let _bookingsState = { all: [], filter: { apt: '', status: '', source: '' }, payments: new Map() };
+let _bookingsState = { all: [], filter: { apt: '', status: '', source: '' }, payments: new Map(), deposits: new Map() };
+
+// Статусы залога в Точке, при которых гость его уже внёс (деньги замораживались).
+const DEPOSIT_PAID_STATUSES = new Set(['held', 'capturing', 'captured', 'released', 'expired']);
+
+// Договор подписан: в ОкиДоки или отмечен менеджером вручную.
+function isContractSigned(b) {
+  return !!b?.manual_signed_at || !!b?.contract_signed_at
+    || (!!b?.okidoki_contract_id && Number(b?.contract_status_internal) === 2);
+}
+
+// Ручные отметки в карточке брони: поле в rc_bookings и тексты подтверждения.
+const MANUAL_MARKS = {
+  paid: {
+    field: 'manual_paid_at',
+    on: 'Отметить проживание оплаченным?\nБот перестанет отправлять гостю ссылку на оплату.',
+    off: 'Снять отметку «Оплачено»?\nБот снова сможет отправлять гостю ссылку на оплату.',
+  },
+  signed: {
+    field: 'manual_signed_at',
+    on: 'Отметить договор подписанным?\nБот перестанет отправлять гостю ссылку на договор.',
+    off: 'Снять отметку «Подписан»?\nБот снова сможет отправлять гостю ссылку на договор.',
+  },
+  deposit: {
+    field: 'manual_deposit_at',
+    on: 'Отметить залог внесённым?\nБот перестанет отправлять гостю ссылку на залог.',
+    off: 'Снять отметку «Залог внесён»?\nБот снова сможет отправлять гостю ссылку на залог.',
+  },
+};
+
+// Бейдж-кнопка: нажатие меняет ручную отметку (с подтверждением).
+function markBadge(kind, bookingId, isOn, cls, label) {
+  const hint = isOn ? 'Нажмите, чтобы снять ручную отметку' : 'Нажмите, чтобы отметить вручную';
+  return `<button type="button" class="bk-badge bk-badge-btn ${cls}" data-mark="${kind}" data-mark-bid="${esc(bookingId)}" data-mark-on="${isOn ? '1' : '0'}" title="${hint}">${label}</button>`;
+}
 // Мессенджеры, реально настроенные на сервере — для кнопок копирования ссылки гостю.
 let _bookingsChannels = [{ id: 'telegram', title: 'Telegram' }];
 
@@ -543,18 +577,34 @@ async function reloadBookings(state) {
   // Подгружаем список мессенджеров один раз — чтобы кнопки рендерились синхронно (важно для iOS-копирования).
   try { _bookingsChannels = await fetchChannels(); } catch { _bookingsChannels = [{ id: 'telegram', title: 'Telegram' }]; }
   // Платежи по броням: берём только те, что в текущем списке; берём самый актуальный по updated_at.
+  // Залоги — так же, самый свежий по брони. Оба запроса идут параллельно.
   _bookingsState.payments = new Map();
+  _bookingsState.deposits = new Map();
   try {
     const supabase = getSupabaseClient();
     const ids = (_bookingsState.all || []).map(b => b.booking_id).filter(x => x != null);
     if (supabase && ids.length) {
-      const { data: pays } = await supabase
-        .from('tochka_payments')
-        .select('booking_id, status, method, amount, paid_at, updated_at')
-        .in('booking_id', ids)
-        .order('updated_at', { ascending: false });
+      const [{ data: pays }, { data: deps }] = await Promise.all([
+        supabase
+          .from('tochka_payments')
+          .select('booking_id, status, method, amount, paid_at, updated_at')
+          .in('booking_id', ids)
+          .order('updated_at', { ascending: false }),
+        supabase
+          .from('booking_deposits')
+          .select('booking_id, status, updated_at')
+          .in('booking_id', ids)
+          .order('updated_at', { ascending: false }),
+      ]);
       for (const p of (pays || [])) {
         if (!_bookingsState.payments.has(p.booking_id)) _bookingsState.payments.set(p.booking_id, p);
+      }
+      // Внесённый залог важнее более свежей неоплаченной ссылки.
+      for (const d of (deps || [])) {
+        const prev = _bookingsState.deposits.get(d.booking_id);
+        if (!prev || (!DEPOSIT_PAID_STATUSES.has(prev.status) && DEPOSIT_PAID_STATUSES.has(d.status))) {
+          _bookingsState.deposits.set(d.booking_id, d);
+        }
       }
     }
   } catch (e) { console.warn('[bookings] fetch payments failed:', e?.message); }
@@ -633,27 +683,34 @@ function renderBookingsList(state) {
     const dates = `${fmtBookingDate(b.begin_date)} → ${fmtBookingDate(b.end_date)}`;
 
     // Статус оплаты (Точка) — по брони.
-    const pay = _bookingsState.payments.get(b.booking_id) || null;
-    const payBadge = pay
-      ? (pay.status === 'paid'
-          ? '<span class="bk-badge bk-badge-ok">💳 Оплачено</span>'
-          : (pay.status === 'created'
-              ? '<span class="bk-badge bk-badge-warn">💳 Ожидает оплаты</span>'
-              : `<span class="bk-badge">💳 ${esc(pay.status)}</span>`))
-      : '<span class="bk-badge bk-badge-mute">💳 Ссылка не выслана</span>';
+    // Подтверждённую Точкой оплату вручную не меняем; иначе бейдж — кнопка ручной отметки.
+    const bid = b.booking_id;
+    const pay = _bookingsState.payments.get(bid) || null;
+    let payBadge;
+    if (pay?.status === 'paid') payBadge = '<span class="bk-badge bk-badge-ok">💳 Оплачено</span>';
+    else if (b.manual_paid_at) payBadge = markBadge('paid', bid, true, 'bk-badge-ok', '💳 Оплачено (вручную)');
+    else if (pay?.status === 'created') payBadge = markBadge('paid', bid, false, 'bk-badge-warn', '💳 Ожидает оплаты');
+    else if (pay) payBadge = markBadge('paid', bid, false, '', `💳 ${esc(pay.status)}`);
+    else payBadge = markBadge('paid', bid, false, 'bk-badge-mute', '💳 Ссылка не выслана');
 
     // Статус договора (ОкиДоки). 0 черновик, 1 выставлен, 2 подписан, 4 ожидает проверки.
+    // Подписанный в ОкиДоки вручную не меняем.
     const cs = b.contract_status_internal;
-    const contractBadge = b.okidoki_contract_id
-      ? (cs === 2
-          ? '<span class="bk-badge bk-badge-ok">📄 Подписан</span>'
-          : (cs === 1
-              ? '<span class="bk-badge bk-badge-warn">📄 Ждём подписания</span>'
-              : (cs === 4
-                  ? '<span class="bk-badge bk-badge-warn">📄 Проверка</span>'
-                  : `<span class="bk-badge">📄 ${esc(b.contract_status || 'Черновик')}</span>`)))
-      : '<span class="bk-badge bk-badge-mute">📄 Договор не создан</span>';
-    const statusRow = `<div class="bk-status" style="display:flex;gap:.35rem;flex-wrap:wrap;margin-top:.25rem;">${payBadge}${contractBadge}</div>`;
+    let contractBadge;
+    if (b.contract_signed_at || (b.okidoki_contract_id && cs === 2)) contractBadge = '<span class="bk-badge bk-badge-ok">📄 Подписан</span>';
+    else if (b.manual_signed_at) contractBadge = markBadge('signed', bid, true, 'bk-badge-ok', '📄 Подписан (вручную)');
+    else if (!b.okidoki_contract_id) contractBadge = markBadge('signed', bid, false, 'bk-badge-mute', '📄 Договор не создан');
+    else if (cs === 1) contractBadge = markBadge('signed', bid, false, 'bk-badge-warn', '📄 Ждём подписания');
+    else if (cs === 4) contractBadge = markBadge('signed', bid, false, 'bk-badge-warn', '📄 Проверка');
+    else contractBadge = markBadge('signed', bid, false, '', `📄 ${esc(b.contract_status || 'Черновик')}`);
+
+    // Статус залога. Внесённый через Точку вручную не меняем.
+    const dep = _bookingsState.deposits.get(bid) || null;
+    let depositBadge;
+    if (dep && DEPOSIT_PAID_STATUSES.has(dep.status)) depositBadge = '<span class="bk-badge bk-badge-ok">🔒 Залог внесён</span>';
+    else if (b.manual_deposit_at) depositBadge = markBadge('deposit', bid, true, 'bk-badge-ok', '🔒 Залог внесён (вручную)');
+    else depositBadge = markBadge('deposit', bid, false, dep ? 'bk-badge-warn' : 'bk-badge-mute', '🔒 Залог не внесён');
+    const statusRow = `<div class="bk-status" style="display:flex;gap:.35rem;flex-wrap:wrap;margin-top:.25rem;">${payBadge}${contractBadge}${depositBadge}</div>`;
     const sourceMap = { manual: 'Вручную', 'sutochno.ru': 'Суточно', 'ostrovok.ru': 'Ostrovok', 'YandexTravel': 'Яндекс Путешествия', widget: 'Виджет' };
     const sourceTag = b.source ? `<span class="bk-tag">${esc(sourceMap[b.source] || b.source)}</span>` : '';
     const isCancelled = detectBookingStatus(b) === 'cancelled';
@@ -1845,7 +1902,7 @@ async function getDepositPart(booking) {
 // Ссылка на подписание договора в ОкиДоки. Уже созданный договор не дублируем.
 // Возвращает { url } | { signed: true }.
 async function getContractPart(booking) {
-  if (booking.okidoki_contract_id && Number(booking.contract_status_internal) === 2) return { signed: true };
+  if (isContractSigned(booking)) return { signed: true };
   if (booking.okidoki_link) return { url: booking.okidoki_link };
   let res;
   try {
@@ -2281,6 +2338,41 @@ export function bindGuestBotEvents(state) {
         setTimeout(() => { if (saveCancelBtn) saveCancelBtn.textContent = 'Сохранить'; }, 1500);
       } catch (err) {
         alert('Не удалось сохранить причину: ' + (err?.message || err));
+      }
+      return;
+    }
+
+    // Ручные отметки «Оплачено» / «Подписан» / «Залог внесён» — с подтверждением.
+    const markBtn = e.target.closest('[data-mark]');
+    if (markBtn) {
+      const mark = MANUAL_MARKS[markBtn.getAttribute('data-mark')];
+      const bid = markBtn.getAttribute('data-mark-bid');
+      const isOn = markBtn.getAttribute('data-mark-on') === '1';
+      if (!mark || !bid || markBtn.disabled) return;
+      if (!confirm(isOn ? mark.off : mark.on)) return;
+      const supabase = getSupabaseClient();
+      if (!supabase) return;
+      markBtn.disabled = true;
+      try {
+        await waitForAuthReady();
+        const { data: { session: _sess } } = await supabase.auth.getSession();
+        const user = _sess?.user ?? null;
+        if (!user) throw new Error('Сеанс не найден. Войдите заново.');
+        const value = isOn ? null : new Date().toISOString();
+        const { data: updated, error } = await supabase
+          .from('rc_bookings')
+          .update({ [mark.field]: value })
+          .eq('user_id', user.id)
+          .eq('booking_id', Number(bid))
+          .select('booking_id');
+        if (error) throw error;
+        if (!updated?.length) throw new Error('Запись не найдена или нет прав на изменение.');
+        const b = _bookingsState.all.find(x => String(x.booking_id) === String(bid));
+        if (b) b[mark.field] = value;
+        renderBookingsList(state);
+      } catch (err) {
+        markBtn.disabled = false;
+        alert('Не удалось сохранить: ' + (err?.message || err));
       }
       return;
     }

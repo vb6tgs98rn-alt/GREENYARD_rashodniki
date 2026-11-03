@@ -114,7 +114,8 @@ export async function ensureBookingPayment(
     .maybeSingle();
 
   if (!ms?.tochka_enabled) return { kind: "disabled", amount: debt };
-  if (debt <= 0) return { kind: "nothing_to_pay", amount: 0 };
+  // Менеджер вручную отметил «Оплачено» (оплата вне Точки) — ссылку не создаём.
+  if (debt <= 0 || bk.manual_paid_at) return { kind: "nothing_to_pay", amount: 0 };
 
   const purposeTpl = String(ms.tochka_purpose_template || DEFAULT_PURPOSE);
   const purpose = buildPurpose(purposeTpl, bk);

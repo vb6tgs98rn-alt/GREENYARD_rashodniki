@@ -589,6 +589,16 @@ body:has(.drawer.open){ overflow:hidden; }
   color:#d97706;
 }
 .bk-badge-mute{ opacity:.6; }
+/* Бейдж-кнопка ручной отметки (оплата, договор, залог). */
+.bk-badge-btn{
+  border:0;
+  font-family:inherit;
+  line-height:inherit;
+  cursor:pointer;
+  text-decoration:underline dotted;
+  text-underline-offset:2px;
+}
+.bk-badge-btn:disabled{ cursor:wait; opacity:.5; }
 
 /* Копируемый телефон в карточке брони. */
 .bk-phone{
