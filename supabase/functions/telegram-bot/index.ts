@@ -1594,7 +1594,11 @@ async function handleArrival(to: Recipient, from: InboundEvent["from"], kind: "a
     }
     await notifyManager(session.user_id, `✅ Гость <b>${htmlEscape(fromName || "—")}</b> сообщил о заселении.\nБронь: <code>${session.booking_id}</code>`, "notify_on_checkin");
   } else {
-    const reply = "Спасибо, что были у нас! 👋 Я передал менеджеру, что вы уезжаете.";
+    // Горничную предупреждаем один раз — при первом нажатии «Я уезжаю».
+    const maidTold = !session.left_at ? await notifyMaidGuestLeft(session) : false;
+    const reply = maidTold
+      ? "Спасибо, что были у нас! 👋 Мы сообщили горничной, что вы выезжаете."
+      : "Спасибо, что были у нас! 👋 Я передал менеджеру, что вы уезжаете.";
     await send(to, reply, kb);
     await logMessage(session, "bot", reply, { kind: "departure" });
     await logEvent(session, "checkout", { from: fromName });
@@ -1602,6 +1606,52 @@ async function handleArrival(to: Recipient, from: InboundEvent["from"], kind: "a
       await svc().from("guest_sessions").update({ left_at: new Date().toISOString() }).eq("id", session.id);
     }
     await notifyManager(session.user_id, `👋 Гость <b>${htmlEscape(fromName || "—")}</b> сообщил, что уезжает.\nБронь: <code>${session.booking_id}</code>`, "notify_on_checkout");
+  }
+}
+
+/**
+ * Гость нажал «Я уезжаю»: горничной, принявшей сегодняшнюю уборку этой брони,
+ * сообщаем через бот горничных, что квартира уже свободна.
+ * Возвращает true, если сообщение горничной доставлено.
+ */
+async function notifyMaidGuestLeft(session: Session): Promise<boolean> {
+  try {
+    const sb = svc();
+    const { data: c } = await sb.from("cleanings")
+      .select("id, user_id, maid_id, realty_id, apartment_title, scheduled_date, scheduled_time, status")
+      .eq("user_id", session.user_id)
+      .eq("booking_id", String(session.booking_id))
+      .eq("scheduled_date", todayMsk())
+      .in("status", ["accepted", "on_site"])
+      .not("maid_id", "is", null)
+      .limit(1)
+      .maybeSingle();
+    if (!c) return false;
+    const { data: maid } = await sb.from("maids").select("channel, channel_chat_id, tg_chat_id").eq("id", c.maid_id).maybeSingle();
+    const to = maid ? maidRcpt(maid) : null;
+    if (!to) return false;
+    const address = await cleaningAddress(sb, c.user_id, c.realty_id);
+    const now = new Date(Date.now() + 3 * 3600000).toISOString().slice(11, 16);
+    const time = String(c.scheduled_time || "").slice(0, 5);
+    const text = `🔓 Квартира уже свободна — гость выехал в ${now}.\nУборка сегодня${time ? ", " + time : ""}.\n${placeLines(c.apartment_title, address)}`;
+    const kb: Btn[][] = c.status === "on_site" ? [] : [[{ text: "🧹 Приступила к уборке", data: `maid_on_site:${c.id}` }]];
+    const r = await sendMessage(to, text, { buttons: kb.length ? kb : undefined, botProfile: "maid" });
+    if (!r.ok) return false;
+    await sb.from("maid_messages").insert({
+      user_id: c.user_id,
+      maid_id: c.maid_id,
+      tg_chat_id: to.channel === "telegram" ? Number(to.chatId) : null,
+      tg_message_id: to.channel === "telegram" && r.messageId != null ? Number(r.messageId) : null,
+      channel: to.channel,
+      channel_chat_id: to.chatId,
+      direction: "outbound",
+      sender: "bot",
+      text: text.replace(/<[^>]+>/g, ""),
+    });
+    return true;
+  } catch (e) {
+    console.error("[bot] notifyMaidGuestLeft:", (e as Error).message);
+    return false;
   }
 }
 
@@ -1793,8 +1843,9 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
   const instr = await loadInstructions(session.user_id, apartmentId);
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
   const st = await loadStage(session);
-  const kbStage: GuestStage | null = st.stage === "arrival" && session.arrived_at ? "stay" : st.stage;
-  const kb = guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id, kbStage);
+  // Под ответами на свободный текст — одна кнопка «Меню» вместо 9–10 кнопок.
+  const kbMini: Btn[][] = [[{ text: "☰ Меню", data: cmdWithBooking("menu", session.booking_id) }]];
+  void settings;
 
   const aiInstrLen = (instr?.ai_instructions ?? "").toString().trim().length;
   const sessionAiEnabled = session.ai_enabled !== false;
@@ -1901,7 +1952,7 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
       const outText = partial
         ? `${partial.length > 3500 ? partial.slice(0, 3500) + "…" : partial}\n\n${callMsg}`
         : `Точного ответа у меня нет. ${callMsg}`;
-      await sendMessage(to, outText, { buttons: kb, plain: true });
+      await sendMessage(to, outText, { buttons: kbMini, plain: true });
       await logMessage(session, "bot", outText, { kind: "ai_need_manager", model: usedModel });
       await callManagerForGuest(session, fromName, text, partial);
       return;
@@ -1910,7 +1961,7 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
     if (aiText) {
       const outText = aiText.length > 3800 ? aiText.slice(0, 3800) + "…" : aiText;
       // Ответ модели — обычный текст: разметку не интерпретируем.
-      await sendMessage(to, outText, { buttons: kb, plain: true });
+      await sendMessage(to, outText, { buttons: kbMini, plain: true });
       await logMessage(session, "bot", outText, { kind: "ai_reply", model: usedModel });
       await notifyManager(session.user_id, `🤖 <b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>) — вопрос:\n${htmlEscape(text)}\n\n<i>AI-ответ гостю:</i>\n${htmlEscape(outText)}`, "notify_on_inbound");
       return;
@@ -1921,8 +1972,17 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
   const reply = sessionAiEnabled
     ? "Спасибо за сообщение! ✉️ Я передал его менеджеру — он скоро ответит."
     : "Спасибо за сообщение! ✉️ Менеджер увидит его и ответит лично.";
-  await send(to, reply, kb);
-  await logMessage(session, "bot", reply, { kind: "ack" });
+  // Несколько сообщений подряд — одно «передал менеджеру» за 10 минут; уведомление менеджеру — на каждое.
+  const { data: lastAck } = await svc().from("guest_messages")
+    .select("id")
+    .eq("session_id", session.id)
+    .eq("payload->>kind", "ack")
+    .gte("created_at", new Date(Date.now() - 10 * 60000).toISOString())
+    .limit(1);
+  if (!(Array.isArray(lastAck) && lastAck.length)) {
+    await send(to, reply, kbMini);
+    await logMessage(session, "bot", reply, { kind: "ack" });
+  }
   await notifyManager(session.user_id, `💬 <b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>):\n\n${htmlEscape(text)}`, "notify_on_inbound");
 }
 
@@ -2528,6 +2588,17 @@ async function handleEvent(ev: InboundEvent) {
   // Правку уже отправленного медиа повторно не пересылаем.
   if (ev.media) {
     if (!ev.edited) await handleGuestMedia(ev, to);
+    return;
+  }
+
+  // Гость исправил уже отправленный текст: второй ответ ИИ и второе уведомление
+  // не шлём — только сохраняем исправленный вариант в переписке для менеджера.
+  if (ev.edited) {
+    if (text.trim() && !text.startsWith("/")) {
+      const active = await findActiveSessions(to);
+      const s = active.length ? active[0] : await findSessionByRcpt(to);
+      if (s) await logMessage(s, "inbound", `✏️ Исправлено: ${text}`, { kind: "edited", message_id: ev.messageId ?? null, channel: to.channel });
+    }
     return;
   }
 

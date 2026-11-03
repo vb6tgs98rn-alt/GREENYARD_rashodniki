@@ -509,6 +509,19 @@ async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messa
     return true;
   }
 
+  // Кнопка из списка «Мои уборки»: карточка одной уборки с кнопками действий.
+  if (action === "maid_card") {
+    if (cleaning.maid_id !== maid.id || !["accepted", "on_site"].includes(cleaning.status)) {
+      await sendMaid(to, "Эта уборка уже неактуальна.");
+      return true;
+    }
+    const time = (cleaning.scheduled_time || "").slice(0, 5);
+    const addr = await cleaningAddress(sb, maid.user_id, cleaning.realty_id);
+    const stText = cleaning.status === "on_site" ? " — <i>вы на месте</i>" : "";
+    await sendMaid(to, `🧹 <b>${fmtDateShort(cleaning.scheduled_date)}${time ? ", " + time : ""}</b>${stText}\n${placeLines(cleaning.apartment_title, addr)}`, workButtons(cleaning.id, cleaning.status));
+    return true;
+  }
+
   // Старое предложение (дата уборки уже прошла) — горничной не предлагаем.
   if ((action === "maid_accept" || action === "maid_decline") &&
       cleaning.status === "pending_response" && cleaning.scheduled_date && cleaning.scheduled_date < mskToday()) {
@@ -525,14 +538,22 @@ async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messa
       }
       return true;
     }
-    await sb.from("cleanings").update({
+    // Кто первый принял — тот и получает: обновляем, только если уборка ещё свободна.
+    const { data: won } = await sb.from("cleanings").update({
       status: "accepted",
       maid_id: maid.id,
       accepted_at: new Date().toISOString(),
       tg_message_id: to.channel === "telegram" && messageId ? Number(messageId) : null,
       channel: to.channel,
       channel_message_id: messageId,
-    }).eq("id", cleaning.id);
+    }).eq("id", cleaning.id)
+      .eq("status", "pending_response")
+      .or(`maid_id.is.null,maid_id.eq.${maid.id}`)
+      .select("id");
+    if (!Array.isArray(won) || won.length === 0) {
+      await sendMaid(to, `Эта уборка уже принята другой горничной. Спасибо.`);
+      return true;
+    }
 
     const offered: string[] = Array.isArray(cleaning.offered_to) ? cleaning.offered_to : [];
     for (const otherId of offered) {
@@ -755,37 +776,39 @@ async function showMyCleanings(maid: Maid, to: Recipient) {
     return;
   }
 
-  await sendMaid(to, `<b>Ваши предстоящие уборки (${mine.length}):</b>`);
+  // Все уборки — одним сообщением; под ним по строке кнопок на уборку.
+  // Лимит — чтобы сообщение и клавиатура уместились в ограничения мессенджеров.
+  const LIST_MAX = 15;
+  const shown = (mine as any[]).slice(0, LIST_MAX);
 
   // Адреса из инструкций для гостей — один раз на квартиру.
   const addrCache = new Map<string, string | null>();
-  for (const c of mine as any[]) {
+  for (const c of shown) {
     const k = String(c.realty_id ?? "");
     if (!addrCache.has(k)) addrCache.set(k, await cleaningAddress(sb, maid.user_id, c.realty_id));
   }
 
-  for (const c of mine as any[]) {
+  const lines: string[] = [];
+  const listKb: Btn[][] = [];
+  shown.forEach((c: any, i: number) => {
+    const n = i + 1;
     const time = (c.scheduled_time || "").slice(0, 5);
-    const marker = c.status === "accepted" ? "✅"
-      : c.status === "on_site" ? "🏠"
-      : "❓";
+    const marker = c.status === "accepted" ? "✅" : c.status === "on_site" ? "🏠" : "❓";
     const statusText = c.status === "pending_response" ? " — <i>ожидает ответа</i>"
       : c.status === "on_site" ? " — <i>вы на месте</i>"
       : "";
-    const body = `${marker} <b>${fmtDateShort(c.scheduled_date)}${time ? ", " + time : ""}</b>${statusText}\n${placeLines(c.apartment_title, addrCache.get(String(c.realty_id ?? "")) ?? null)}`;
-
-    let kb: Btn[][] | undefined;
+    lines.push(`${n}. ${marker} <b>${fmtDateShort(c.scheduled_date)}${time ? ", " + time : ""}</b>${statusText}\n${placeLines(c.apartment_title, addrCache.get(String(c.realty_id ?? "")) ?? null)}`);
     if (c.status === "pending_response") {
-      kb = [[
-        { text: "✅ Принять", data: `maid_accept:${c.id}` },
-        { text: "❌ Отказаться", data: `maid_decline:${c.id}` },
-      ]];
-    } else if (c.status === "accepted" || c.status === "on_site") {
-      kb = workButtons(c.id, c.status);
+      listKb.push([
+        { text: `✅ Принять №${n}`, data: `maid_accept:${c.id}` },
+        { text: `❌ Отказаться №${n}`, data: `maid_decline:${c.id}` },
+      ]);
+    } else {
+      listKb.push([{ text: `🧹 №${n} — действия`, data: `maid_card:${c.id}` }]);
     }
-
-    await sendMaid(to, body, kb);
-  }
+  });
+  const more = mine.length > shown.length ? `\n\n…и ещё ${mine.length - shown.length}.` : "";
+  await sendMaid(to, `<b>Ваши предстоящие уборки (${mine.length}):</b>\n\n${lines.join("\n\n")}${more}`, listKb);
 }
 
 async function handleMaidFreeText(maid: Maid, to: Recipient, text: string, messageId: string | null, photoUrl?: string) {
