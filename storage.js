@@ -355,6 +355,18 @@ export async function syncToApi(setStatus, silent = false) {
   return run;
 }
 
+// Данные для записи в облако: всё состояние, кроме технического журнала RC
+// (integrations.realtycalendar.recentLog). Журнал каждый раз заново берётся из базы
+// (rc_webhook_log) и нужен только на экране настроек — хранить его копию незачем.
+// Само состояние в памяти не меняется.
+function cloudPayloadState() {
+  const s = getState();
+  const rc = s?.integrations?.realtycalendar;
+  if (!rc || !('recentLog' in rc)) return s;
+  const { recentLog, ...rcRest } = rc;
+  return { ...s, integrations: { ...s.integrations, realtycalendar: rcRest } };
+}
+
 async function doSyncToApi(user, setStatus, silent) {
   if (cloudConflict) {
     notify(setStatus, 'Данные изменены на другом устройстве — обновите страницу', false);
@@ -375,7 +387,7 @@ async function doSyncToApi(user, setStatus, silent) {
       // Условная запись: только если в облаке всё ещё та версия, которую мы знаем.
       ({ data, error } = await supabase
         .from(USER_STATES_TABLE)
-        .update({ state: getState(), updated_at: updatedAt })
+        .update({ state: cloudPayloadState(), updated_at: updatedAt })
         .eq('user_id', user.id)
         .eq('updated_at', cloudVersion)
         .select('updated_at'));
@@ -388,7 +400,7 @@ async function doSyncToApi(user, setStatus, silent) {
       // Новый аккаунт: только вставка (если запись уже появилась — это конфликт).
       ({ data, error } = await supabase
         .from(USER_STATES_TABLE)
-        .insert({ user_id: user.id, state: getState(), updated_at: updatedAt })
+        .insert({ user_id: user.id, state: cloudPayloadState(), updated_at: updatedAt })
         .select('updated_at'));
       if (error && String(error.code) === '23505') {
         raiseConflict('exists');
