@@ -36,7 +36,8 @@ import {
   sendMessage,
   tgCopyMessage,
 } from "../_shared/channels.ts";
-import { ensureBookingPayment, paymentMessage } from "../_shared/tochka_booking.ts";
+import { ensureBookingPayment, paidTochkaSum, paymentMessage } from "../_shared/tochka_booking.ts";
+import { APP_URL } from "../_shared/tochka.ts";
 import {
   AUTO_MAX_DAYS,
   daysFromToday,
@@ -846,8 +847,6 @@ function blockHelp(_instr: any): string {
 }
 
 function buildAiSystemPrompt(instr: any): string {
-  const emergency = "связаться с менеджером через этот чат — он всё видит";
-
   const facts: string[] = [];
   if (instr?.apartment_title)     facts.push(`Название квартиры: ${instr.apartment_title}`);
   if (instr?.full_address)        facts.push(`Полный адрес: ${instr.full_address}`);
@@ -869,11 +868,11 @@ function buildAiSystemPrompt(instr: any): string {
     "ЖЕСТКИЕ ПРАВИЛА (нарушать НЕЛЬЗЯ):",
     "1. Используй ТОЛЬКО информацию из блока «ДАННЫЕ КВАРТИРЫ» ниже. Любые внешние знания запрещены.",
     "2. НИКОГДА не выдумывай адреса, коды, пароли, телефоны, правила, время, цены, названия мест, расстояния. Нет в данных — ты НЕ ЗНАЕШЬ ответа.",
-    "3. Если вопрос выходит за рамки данных, ответь честно: «К сожалению, я не знаю этого точно. Лучше спросить менеджера», и укажи контакт: " + emergency + ".",
+    "3. Если вопрос выходит за рамки данных — НЕ пиши «не знаю» и «спросите менеджера», а поставь в конце ответа метку " + AI_NEED_MANAGER + " (система сама позовёт менеджера). Если ответа нет совсем — ответь только меткой " + AI_NEED_MANAGER + ". Если на часть вопроса ответ есть — ответь на эту часть и добавь метку.",
     "4. Не предлагай внешние карты, гугл, яндекс, магазины, аптеки, транспорт и т.п., если это явно не указано в данных.",
     "5. Ответ — обычный текст (легкая Markdown-вёрстка допустима), без HTML-тегов, без вымышленных линков. Коротко, по делу, 1–5 предложений.",
     "6. Не придумывай за гостя что он хочет сделать. Не выполняй действия от его имени в каких-либо внешних сервисах.",
-    "7. Если гость просит решить проблему быта (поломка, шум соседей, пропал свет, горячая вода) — если в данных нет чёткого решения, переводи на менеджера.",
+    "7. Если гость просит решить проблему быта (поломка, шум соседей, пропал свет, горячая вода) — если в данных нет чёткого решения, поставь метку " + AI_NEED_MANAGER + ".",
     "",
     "=== ДАННЫЕ КВАРТИРЫ (единственный допустимый источник) ===",
     factsBlock,
@@ -881,7 +880,7 @@ function buildAiSystemPrompt(instr: any): string {
     "=== ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ ОТ МЕНЕДЖЕРА ПО ЭТОЙ КВАРТИРЕ ===",
     aiExtra,
     "",
-    "Контакт менеджера для выхода за рамки данных: " + emergency + ".",
+    "Если нужен менеджер — не отправляй гостя искать его сам, просто поставь метку " + AI_NEED_MANAGER + ". Менеджер видит этот чат и ответит здесь же.",
   ].join("\n");
 }
 
@@ -1215,6 +1214,8 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
     return;
   }
   const sb = svc();
+  // Гость уже открывал бота из этого же чата — повторно приветствие не шлём.
+  const wasStarted = !!session.started_at && session.channel === to.channel && session.channel_chat_id === to.chatId;
   const updatePatch: Record<string, any> = {
     // Telegram-колонки заполняем только для Telegram, чтобы не смешивать данные.
     tg_chat_id: to.channel === "telegram" ? Number(to.chatId) : null,
@@ -1237,6 +1238,11 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
   const { id: apartmentId } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
   const instr = await loadInstructions(session.user_id, apartmentId);
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
+
+  if (wasStarted) {
+    await handleRepeatStart(to, session, fromName, settings);
+    return;
+  }
 
   const welcome = buildWelcomeMessage(fromName, instr);
   await send(to, welcome, guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id));
@@ -1269,6 +1275,78 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
     await maybeSendDepositOnStart(to, session);
   } catch (e) {
     console.error("[bot] maybeSendDepositOnStart failed:", e);
+  }
+}
+
+/**
+ * Повторный вход гостя по ссылке. Без полного приветствия и без уведомления
+ * менеджеру «запустил бота»: короткое «С возвращением» и только то, что
+ * ещё не сделано — договор (если не подписан), оплата (если есть долг), залог.
+ * Если всё сделано — сообщаем, что всё готово, и показываем меню.
+ */
+async function handleRepeatStart(to: Recipient, session: Session, fromName: string, settings: ManagerSettings | null) {
+  const sb = svc();
+  const { data: bk } = await sb.from("rc_bookings")
+    .select("amount, prepayment, okidoki_link, contract_signed_at, contract_status_internal, begin_date, end_date")
+    .eq("user_id", session.user_id)
+    .eq("booking_id", session.booking_id)
+    .maybeSingle();
+  const { data: ms } = await sb.from("manager_settings")
+    .select("okidoki_auto_send, tochka_enabled")
+    .eq("user_id", session.user_id)
+    .maybeSingle();
+
+  const tochkaOn = !!ms?.tochka_enabled;
+  const signed = !!bk?.contract_signed_at || Number(bk?.contract_status_internal) === 2;
+  const contractTodo = !!bk && !signed && (!!bk.okidoki_link || !!ms?.okidoki_auto_send);
+  const paid = bk ? await paidTochkaSum(sb, session.user_id, session.booking_id) : 0;
+  const debt = bk ? Math.round((Number(bk.amount || 0) - Number(bk.prepayment || 0) - paid) * 100) / 100 : 0;
+  const payTodo = tochkaOn && debt > 0;
+
+  const kb = guestKeyboard(settings?.guest_channel_url ?? null, tochkaOn, session.booking_id);
+  const hello = `С возвращением, ${htmlEscape(fromName || "гость")}! 👋`;
+  let msg: string;
+  if (!contractTodo && !payTodo) {
+    const done: string[] = [];
+    if (signed) done.push("договор подписан");
+    if (tochkaOn) done.push("проживание оплачено");
+    msg = `${hello}\n\n✅ Всё готово${done.length ? ": " + done.join(", ") : ""}.\nАдрес, Wi-Fi и правила — в меню ниже. Если есть вопрос — просто напишите сюда.`;
+  } else {
+    const left: string[] = [];
+    if (contractTodo) left.push("подписать договор");
+    if (payTodo) left.push("оплатить проживание");
+    msg = `${hello}\n\nОсталось ${left.join(" и ")} — ссылки ниже.`;
+  }
+  await send(to, msg, kb);
+  await logMessage(session, "bot", msg, { kind: "welcome_back" });
+  await logEvent(session, "custom", { kind: "bot_reopened", channel: to.channel, chat_id: to.chatId, from: fromName });
+
+  if (contractTodo) {
+    try {
+      const hadLink = !!bk?.okidoki_link;
+      const link = await maybeCreateContract(session);
+      if (link) {
+        const c = `📄 <b>Договор аренды</b> ещё не подписан. Подпишите, пожалуйста, по ссылке:\n${htmlEscape(link)}`;
+        await sendMessage(to, c, { preview: true });
+        await logMessage(session, "bot", c, { kind: "okidoki_link", link });
+        if (!hadLink) await notifyManager(session.user_id, `📄 Гостю отправлена ссылка на договор (бронь <code>${session.booking_id}</code>).`);
+      }
+    } catch (e) {
+      console.error("[bot] repeat start contract failed:", e);
+    }
+  }
+
+  if (payTodo) {
+    try { await sendPaymentLink(to, session, true); }
+    catch (e) { console.error("[bot] repeat start payment failed:", e); }
+  }
+
+  // Залог — только если холд доживёт до выезда; без повторных предупреждений менеджеру.
+  try {
+    const toCheckout = daysFromToday(bk?.end_date);
+    if (toCheckout != null && toCheckout >= 0 && toCheckout <= AUTO_MAX_DAYS) await sendDepositLink(to, session, "bot");
+  } catch (e) {
+    console.error("[bot] repeat start deposit failed:", e);
   }
 }
 
@@ -1437,6 +1515,75 @@ async function callPerplexityAgent(
   }
 }
 
+// ─── Память диалога для ИИ ─────────────────────────────────────────
+const AI_HISTORY_LIMIT = 10;                    // сколько последних сообщений помнит ИИ
+const AI_HISTORY_MAX_AGE_MS = 3 * 24 * 3600000; // и не старше 3 суток
+const AI_HISTORY_MSG_CHARS = 600;               // длинные сообщения обрезаем
+// Служебные сообщения с деньгами, ссылками и почтой в ИИ не передаём.
+const AI_HISTORY_SKIP_KINDS = new Set([
+  "payment_link", "deposit_link", "okidoki_link", "ask_email", "email_saved", "rating", "rating_reply", "review_ask",
+]);
+
+/** Убираем из текста почту, телефоны и ссылки — ИИ они не нужны (152-ФЗ). */
+function scrubForAi(s: string): string {
+  return s
+    .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "[почта скрыта]")
+    .replace(/(?:\+7|8)[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/g, "[телефон скрыт]")
+    .replace(/https?:\/\/\S+/g, "[ссылка]");
+}
+
+/**
+ * Последние сообщения переписки с гостем (без текущего) — чтобы ИИ понимал
+ * уточняющие вопросы вроде «а где он?». Гость — user, бот и менеджер — assistant.
+ */
+async function loadAiHistory(session: Session, currentText: string): Promise<Array<{ role: "user" | "assistant"; content: string }>> {
+  try {
+    const { data } = await svc()
+      .from("guest_messages")
+      .select("direction, body, payload, created_at")
+      .eq("session_id", session.id)
+      .in("direction", ["inbound", "bot", "manager"])
+      .gte("created_at", new Date(Date.now() - AI_HISTORY_MAX_AGE_MS).toISOString())
+      .order("created_at", { ascending: false })
+      .limit(AI_HISTORY_LIMIT + 1);
+    const rows = (data || []).slice();
+    // Самое свежее входящее — это текущий вопрос, его передаём отдельно.
+    if (rows[0]?.direction === "inbound" && String(rows[0]?.body || "").trim() === currentText.trim()) rows.shift();
+    return rows
+      .slice(0, AI_HISTORY_LIMIT)
+      .reverse()
+      .filter((m: any) => !AI_HISTORY_SKIP_KINDS.has(String(m?.payload?.kind || "")) && String(m?.body || "").trim())
+      .map((m: any) => {
+        let body = scrubForAi(String(m.body).replace(/<[^>]+>/g, "")).trim();
+        if (body.length > AI_HISTORY_MSG_CHARS) body = body.slice(0, AI_HISTORY_MSG_CHARS) + "…";
+        if (m.direction === "manager") body = `(Ответ менеджера) ${body}`;
+        return { role: m.direction === "inbound" ? "user" as const : "assistant" as const, content: body };
+      });
+  } catch (e) {
+    console.error("[bot] loadAiHistory:", e);
+    return [];
+  }
+}
+
+/** Метка, которой ИИ сообщает, что не знает ответа и нужен менеджер. */
+const AI_NEED_MANAGER = "[[MANAGER]]";
+/** Запасная проверка: модель ответила «не знаю / спросите менеджера» своими словами. */
+const AI_DUNNO_RE = /не знаю|не могу (точно )?(ответить|подсказать)|нет (такой |этой )?информации|(спросить|уточнить)[^.!?\n]{0,15}(у )?менеджер/i;
+
+/**
+ * ИИ не смог ответить гостю — просим менеджера ответить как можно скорее через приложение.
+ * Шлём всегда, даже если обычные уведомления о сообщениях гостей выключены: гость ждёт.
+ */
+async function callManagerForGuest(session: Session, fromName: string, question: string, partial: string) {
+  await notifyManager(
+    session.user_id,
+    `🙋 <b>Гость ждёт ответа!</b>\n<b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>) спросил(а):\n\n${htmlEscape(question)}\n\n` +
+      (partial ? `<i>ИИ ответил только частично:</i>\n${htmlEscape(partial.slice(0, 800))}\n\n` : `ИИ не знает ответа. `) +
+      `Пожалуйста, ответьте гостю как можно скорее в приложении (раздел с перепиской гостей): <a href="${APP_URL}">открыть приложение</a>.\n` +
+      `Гостю уже сказали, что вы скоро ответите.`,
+  );
+}
+
 async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: string, messageId: string | null) {
   const sb = svc();
   // Сначала ищем сессию с awaiting_email=true — ответ на наш вопрос о email.
@@ -1506,6 +1653,15 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
 
   if (aiEnabled) {
     const systemPrompt = buildAiSystemPrompt(instr);
+    const history = await loadAiHistory(session, text);
+    // История передаётся текстом перед вопросом в одном сообщении: так её понимают
+    // все модели (некоторые не принимают подряд несколько реплик одной роли).
+    const question = scrubForAi(text);
+    const aiInput = history.length
+      ? "Предыдущая переписка (для контекста):\n" +
+        history.map((h) => `${h.role === "user" ? "Гость" : "Помощник"}: ${h.content}`).join("\n") +
+        `\n\nНовое сообщение гостя (ответь на него): ${question}`
+      : question;
     let aiText: string | null = null;
     let usedModel: string | null = null;
     const modelErrors: Array<{ model: string; error: string }> = [];
@@ -1533,7 +1689,7 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
             max_tokens: 500,
             messages: [
               { role: "system", content: systemPrompt },
-              { role: "user",   content: text },
+              { role: "user",   content: aiInput },
             ],
           }),
         });
@@ -1555,7 +1711,7 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
     // Платный резерв Perplexity — только если ни одна бесплатная модель не ответила.
     if (!aiText && PPLX_API_KEY) {
       for (const modelId of PPLX_MODELS) {
-        const r = await callPerplexityAgent(modelId, systemPrompt, text);
+        const r = await callPerplexityAgent(modelId, systemPrompt, aiInput);
         if (r.text) {
           aiText = r.text;
           usedModel = `perplexity:${modelId}`;
@@ -1570,6 +1726,20 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
     try {
       await svc().from("guest_sessions").update({ debug_last: { kind: "ai_result", at: new Date().toISOString(), ok: !!aiText, reply_len: aiText?.length ?? 0, used_model: usedModel, errors: modelErrors } }).eq("id", session.id);
     } catch (e) { console.error("[bot] debug_last result update failed:", e); }
+
+    // ИИ не знает ответа — зовём менеджера и честно говорим об этом гостю.
+    if (aiText && (aiText.includes(AI_NEED_MANAGER) || AI_DUNNO_RE.test(aiText))) {
+      // С меткой — убираем её; без метки (модель сказала «не знаю» своими словами) — оставляем ответ как есть.
+      const partial = aiText.split(AI_NEED_MANAGER).join("").trim();
+      const callMsg = "Я уже позвал менеджера — постараемся ответить как можно скорее. 🙏";
+      const outText = partial
+        ? `${partial.length > 3500 ? partial.slice(0, 3500) + "…" : partial}\n\n${callMsg}`
+        : `Точного ответа у меня нет. ${callMsg}`;
+      await sendMessage(to, outText, { buttons: kb, plain: true });
+      await logMessage(session, "bot", outText, { kind: "ai_need_manager", model: usedModel });
+      await callManagerForGuest(session, fromName, text, partial);
+      return;
+    }
 
     if (aiText) {
       const outText = aiText.length > 3800 ? aiText.slice(0, 3800) + "…" : aiText;

@@ -62,6 +62,17 @@ function buildPurpose(tpl: string, bk: any): string {
     .slice(0, 210);
 }
 
+/** Сумма уже оплаченных через Точку платежей по брони. */
+export async function paidTochkaSum(sb: any, userId: string, bookingId: number | string): Promise<number> {
+  const { data } = await sb
+    .from("tochka_payments")
+    .select("amount")
+    .eq("user_id", userId)
+    .eq("booking_id", bookingId)
+    .eq("status", "paid");
+  return (data || []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+}
+
 /**
  * Готовит оплату остатка по брони.
  *
@@ -69,6 +80,7 @@ function buildPurpose(tpl: string, bk: any): string {
  * предоплата (те же поля, что идут в договор). Если долга нет, ссылка не
  * создаётся. Если по брони уже есть неоплаченная действующая ссылка, она
  * переиспользуется — гость не получит два разных счёта на одну бронь.
+ * Уже оплаченные через Точку суммы тоже вычитаются.
  */
 export async function ensureBookingPayment(
   sb: any,
@@ -86,7 +98,10 @@ export async function ensureBookingPayment(
 
   const total = Number(bk.amount || 0);
   const prepaid = Number(bk.prepayment || 0);
-  const debt = Math.round((total - prepaid) * 100) / 100;
+  // Оплаты через Точку RealtyCalendar не видит (предоплата там не меняется) —
+  // вычитаем их сами, иначе оплативший гость получит новую ссылку на оплату.
+  const paidViaTochka = await paidTochkaSum(sb, userId, bookingId);
+  const debt = Math.round((total - prepaid - paidViaTochka) * 100) / 100;
 
   const { data: ms } = await sb
     .from("manager_settings")
