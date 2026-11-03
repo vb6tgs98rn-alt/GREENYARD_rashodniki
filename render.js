@@ -30,9 +30,13 @@ function apartmentButton(apartment, activeApartmentId) {
   const syncBtn = `<button type="button" class="apt-sync-btn ${isSynced ? 'is-synced' : ''}" data-sync-apartment="${apartment.id}" title="${syncedTitle}" aria-label="${syncedTitle}">${isSynced ? '✓ Синхронизировано' : 'Синхронизация'}</button>`;
   const deleteBtn = `<button type="button" class="apt-delete-btn" data-delete-apartment="${apartment.id}" data-delete-apartment-name="${apartment.name || ''}" title="Удалить квартиру" aria-label="Удалить квартиру"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>`;
   const isActive = apartment.id === activeApartmentId;
+  // Средняя оценка гостей: место под звёздочку, заполняет guestReviews.js после загрузки отзывов.
+  const ratingSlot = realtyId
+    ? `<span class="apt-rating" role="button" tabindex="0" data-apt-rating="${esc(realtyId)}" data-apt-name="${esc(getDisplayApartmentName(apartment.name))}" hidden></span>`
+    : '';
   // Кнопка-шестерёнка: открывает модалку «Параметры объекта» для этой квартиры.
   const configureBtn = `<button type="button" class="apt-configure-btn" data-configure-apartment="${apartment.id}" title="Настроить квартиру" aria-label="Настроить квартиру"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>`;
-  return `<div class="apartment-row${isActive ? ' is-active' : ''}"><button class="apartment-btn ${isActive ? 'active' : ''}" data-apartment-id="${apartment.id}" aria-pressed="${isActive}"><div class="apartment-meta"><strong>${getDisplayApartmentName(apartment.name)}</strong><span class="small">${low ? `Низкий остаток: ${low}` : 'Без критичных позиций'}</span></div></button><div class="apartment-row-actions">${configureBtn}${syncBtn}${deleteBtn}</div></div>`;
+  return `<div class="apartment-row${isActive ? ' is-active' : ''}"><button class="apartment-btn ${isActive ? 'active' : ''}" data-apartment-id="${apartment.id}" aria-pressed="${isActive}"><div class="apartment-meta"><div class="apt-title-row"><strong>${getDisplayApartmentName(apartment.name)}</strong>${ratingSlot}</div><span class="small">${low ? `Низкий остаток: ${low}` : 'Без критичных позиций'}</span></div></button><div class="apartment-row-actions">${configureBtn}${syncBtn}${deleteBtn}</div></div>`;
 }
 
 function itemCard(item) {
@@ -153,6 +157,8 @@ function renderInventory(state) {
   dom.apartmentsList.innerHTML = filteredApartments.length
     ? filteredApartments.map((a) => apartmentButton(a, state.activeApartmentId)).join('')
     : '<div class="empty">Ничего не найдено.</div>';
+  // Звёздочки с оценками гостей — отдельным запросом, не задерживая отрисовку.
+  import('./guestReviews.js?v=20261103-8').then((m) => m.paintApartmentRatings?.()).catch((e) => console.warn('[render] guestReviews:', e));
   // Старые списки расходников (linenList/guestList) и виджет statsGrid убраны вместе с UI:
   // весь учёт белья/полотенец теперь ведётся через новый модуль linenUI (ниже).
   if (dom.statsGrid) dom.statsGrid.innerHTML = '';
@@ -468,7 +474,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-11-03.7';
+      const BUILD_VERSION = 'v.2026-11-03.8';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
@@ -658,7 +664,7 @@ async function _renderFinanceByCyclesAsync() {
   if (myToken !== _financeAptSummaryToken) return;
   if (!dom.financeByApartment) return;
 
-  const BUILD_VERSION = 'v.2026-11-03.7';
+  const BUILD_VERSION = 'v.2026-11-03.8';
   const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
   const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

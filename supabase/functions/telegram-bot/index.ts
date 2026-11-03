@@ -178,10 +178,16 @@ type Session = {
   started_at: string | null;
   last_message_at: string | null;
   ai_enabled?: boolean | null;
+  // Контроль качества: когда гость нажал «Я приехал» / «Я уезжаю»
+  // и ждём ли от него ответ на вопрос «всё ли в порядке» или отзыв.
+  arrived_at?: string | null;
+  left_at?: string | null;
+  awaiting_feedback?: string | null;
+  awaiting_feedback_until?: string | null;
 };
 
 const SESSION_COLS =
-  "id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,channel,channel_chat_id,started_at,last_message_at,ai_enabled,awaiting_email";
+  "id,user_id,booking_id,secure_id,realty_id,tg_chat_id,tg_username,tg_first_name,tg_last_name,channel,channel_chat_id,started_at,last_message_at,ai_enabled,awaiting_email,arrived_at,left_at,awaiting_feedback,awaiting_feedback_until";
 
 /** Куда писать гостю. */
 function sessionRcpt(s: Session): Recipient {
@@ -260,7 +266,8 @@ async function findActiveSessions(to: Recipient): Promise<Array<Session & { begi
   const dayMs = 24 * 3600 * 1000;
   const isActiveBooking = (b: any): boolean => {
     if (!b) return false;
-    if (String(b.status || "").toLowerCase() === "cancelled") return false;
+    // RealtyCalendar пишет «canceled» и «deleted»; «cancelled» оставлен для старых записей.
+    if (["cancelled", "canceled", "deleted"].includes(String(b.status || "").toLowerCase())) return false;
     if (!b.begin_date || !b.end_date) return false;
     // Активная: today ∈ [begin - 1, end + 1].
     const begin = new Date(b.begin_date).getTime() - dayMs;
@@ -1333,12 +1340,23 @@ async function handleArrival(to: Recipient, from: InboundEvent["from"], kind: "a
     await send(to, reply, kb);
     await logMessage(session, "bot", reply, { kind: "arrival" });
     await logEvent(session, "checkin", { from: fromName });
+    // Первое нажатие: через час спросим, всё ли в квартире в порядке.
+    if (!session.arrived_at) {
+      const now = Date.now();
+      await svc().from("guest_sessions").update({
+        arrived_at: new Date(now).toISOString(),
+        checkin_ask_due_at: new Date(now + CHECKIN_ASK_DELAY_MS).toISOString(),
+      }).eq("id", session.id);
+    }
     await notifyManager(session.user_id, `✅ Гость <b>${htmlEscape(fromName || "—")}</b> сообщил о заселении.\nБронь: <code>${session.booking_id}</code>`, "notify_on_checkin");
   } else {
     const reply = "Спасибо, что были у нас! 👋 Я передал менеджеру, что вы уезжаете.";
     await send(to, reply, kb);
     await logMessage(session, "bot", reply, { kind: "departure" });
     await logEvent(session, "checkout", { from: fromName });
+    if (!session.left_at) {
+      await svc().from("guest_sessions").update({ left_at: new Date().toISOString() }).eq("id", session.id);
+    }
     await notifyManager(session.user_id, `👋 Гость <b>${htmlEscape(fromName || "—")}</b> сообщил, что уезжает.\nБронь: <code>${session.booking_id}</code>`, "notify_on_checkout");
   }
 }
@@ -1447,6 +1465,9 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
     const handled = await handleEmailAnswer(to, session, text);
     if (handled) return;
   }
+
+  // Ответ на «всё ли в порядке» или отзыв после оценки — сразу менеджеру, без ИИ.
+  if (await handleFeedbackAnswer(to, session, fromName, text)) return;
 
   const { id: apartmentId, diag: resolveDiag } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
   const instr = await loadInstructions(session.user_id, apartmentId);
@@ -1558,6 +1579,339 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
   await send(to, reply, kb);
   await logMessage(session, "bot", reply, { kind: "ack" });
   await notifyManager(session.user_id, `💬 <b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>):\n\n${htmlEscape(text)}`, "notify_on_inbound");
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// КОНТРОЛЬ КАЧЕСТВА: вопрос после заселения, напоминание о кнопке
+// «Я приехал», оценка квартиры накануне выезда
+// ═══════════════════════════════════════════════════════════════════
+
+const CHECKIN_ASK_DELAY_MS = 60 * 60000;     // вопрос «всё ли в порядке» — через час после «Я приехал»
+const CHECKIN_ASK_STALE_MS = 14 * 3600000;   // позже этого вопрос уже неактуален
+const CHECKIN_FEEDBACK_MS = 6 * 3600000;     // столько ждём ответ на вопрос после заселения
+const REVIEW_FEEDBACK_MS = 48 * 3600000;     // столько ждём отзыв после оценки ниже 5
+const ARRIVAL_REMINDER_HOUR = 17;            // напоминание о кнопке «Я приехал» в день заезда
+const REVIEW_HOUR_BEFORE = 19;               // оценка — накануне выезда в 19:00
+const REVIEW_HOUR_ONE_NIGHT = 10;            // бронь на одну ночь — в день выезда в 10:00
+const REVIEW_DEADLINE_HOUR = 14;             // после 14:00 в день выезда оценку не просим
+const QUIET_FROM = 23;                       // ночью (23:00–09:00) гостям не пишем
+const QUIET_TO = 9;
+
+// Где гость бронировал — с предлогом, для фразы «оставьте отзыв …».
+// Ручные брони и бронирования с сайта — без площадки.
+const PLATFORM_PHRASE: Record<string, string> = {
+  "avito": "на Авито",
+  "sutochno.ru": "на Суточно.ру",
+  "ostrovok.ru": "на Островке",
+  "cian": "на Циане",
+  "yandextravel": "в Яндекс Путешествиях",
+  "bronevik": "на Броневике",
+  "otello": "в Отелло",
+  "domclick": "на Домклике",
+};
+const NO_PLATFORM_SOURCES = new Set(["", "manual", "widget"]);
+
+function platformPhrase(source: string | null | undefined): string | null {
+  const key = String(source || "").trim().toLowerCase();
+  if (NO_PLATFORM_SOURCES.has(key)) return null;
+  return PLATFORM_PHRASE[key] || "на площадке, где вы бронировали";
+}
+
+/** Дата (YYYY-MM-DD) и час по Москве. */
+function mskParts(ms = Date.now()): { date: string; hour: number } {
+  const d = new Date(ms + 3 * 3600000);
+  return { date: d.toISOString().slice(0, 10), hour: d.getUTCHours() };
+}
+/** Момент «дата в hour:00 по Москве» в миллисекундах. */
+function mskAt(dateIso: string, hour: number): number {
+  return Date.parse(`${dateIso}T${String(hour).padStart(2, "0")}:00:00+03:00`);
+}
+function addDaysIso(dateIso: string, n: number): string {
+  const d = new Date(`${dateIso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function nightsOf(begin: string, end: string): number {
+  return Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${begin}T00:00:00Z`)) / 86400000);
+}
+
+function ratingKeyboard(bookingId: number | string): Btn[][] {
+  return [[1, 2, 3, 4, 5].map((n) => ({ text: `${n} ⭐`, data: cmdWithBooking(`rate_${n}`, bookingId) }))];
+}
+
+/** Имя гостя для отзыва: ФИО из брони, иначе имя из мессенджера. */
+function guestNameOf(session: Session, bk: any): string {
+  const fio = String(bk?.client_fio || "").trim();
+  if (fio) return fio;
+  return [session.tg_first_name, session.tg_last_name].filter(Boolean).join(" ") || session.tg_username || "Гость";
+}
+
+async function loadBookingForReview(userId: string, bookingId: number): Promise<any | null> {
+  const { data } = await svc().from("rc_bookings")
+    .select("booking_id, realty_id, apartment_title, begin_date, end_date, status, source, client_fio")
+    .eq("user_id", userId)
+    .eq("booking_id", bookingId)
+    .maybeSingle();
+  return data ?? null;
+}
+
+/** Создаёт или дополняет строку отзыва по брони. */
+async function upsertReview(session: Session, bk: any, patch: Record<string, any>): Promise<void> {
+  const row = {
+    user_id: session.user_id,
+    booking_id: session.booking_id,
+    session_id: session.id,
+    realty_id: bk?.realty_id ?? session.realty_id ?? null,
+    apartment_title: bk?.apartment_title ?? null,
+    guest_name: guestNameOf(session, bk),
+    begin_date: bk?.begin_date ?? null,
+    end_date: bk?.end_date ?? null,
+    source: bk?.source ?? null,
+    channel: session.channel,
+    updated_at: new Date().toISOString(),
+    ...patch,
+  };
+  const { error } = await svc().from("guest_reviews").upsert(row, { onConflict: "user_id,booking_id" });
+  if (error) console.error("[bot] upsertReview:", error.message);
+}
+
+function isBookedStatus(status: string | null | undefined): boolean {
+  return !["cancelled", "canceled", "deleted"].includes(String(status || "").toLowerCase());
+}
+
+/** Гость нажал оценку 1–5 под сообщением «Оцените квартиру». */
+async function handleRating(to: Recipient, from: InboundEvent["from"], rating: number, bookingIdFromCallback: number | null) {
+  const { session } = await resolveGuestSession(to, bookingIdFromCallback);
+  if (!session) {
+    await send(to, "Не нашёл ваше бронирование. Напишите сюда — менеджер ответит.");
+    return;
+  }
+  const sb = svc();
+  const { data: existing } = await sb.from("guest_reviews")
+    .select("rating")
+    .eq("user_id", session.user_id)
+    .eq("booking_id", session.booking_id)
+    .maybeSingle();
+  if (existing?.rating) {
+    await send(to, `Вы уже поставили оценку ${existing.rating} ⭐ — спасибо!`);
+    return;
+  }
+
+  const bk = await loadBookingForReview(session.user_id, session.booking_id);
+  await upsertReview(session, bk, { rating, rated_at: new Date().toISOString() });
+  await logMessage(session, "inbound", `Оценка: ${rating} из 5`, { kind: "rating", rating });
+
+  let reply: string;
+  if (rating < 5) {
+    await sb.from("guest_sessions").update({
+      awaiting_feedback: "review",
+      awaiting_feedback_until: new Date(Date.now() + REVIEW_FEEDBACK_MS).toISOString(),
+    }).eq("id", session.id);
+    reply = "Спасибо за оценку! 🙏\n\nПоделитесь, пожалуйста, впечатлениями: что понравилось, а что стоит улучшить. Если что-то не понравилось — расскажите честно, мы обязательно это исправим.\n\nНапишите ответ одним сообщением.";
+  } else {
+    const where = platformPhrase(bk?.source);
+    reply = where
+      ? `Спасибо за высокую оценку, нам очень приятно! 🙏\n\nБудем благодарны, если вы оставите отзыв ${where} — после выезда площадка сама предложит это сделать.`
+      : "Спасибо за высокую оценку, нам очень приятно! 🙏";
+  }
+  await send(to, reply);
+  await logMessage(session, "bot", reply, { kind: "rating_reply", rating });
+
+  const fromName = [from?.firstName, from?.lastName].filter(Boolean).join(" ") || guestNameOf(session, bk);
+  await notifyManager(
+    session.user_id,
+    `${rating < 5 ? "⚠️" : "⭐"} Оценка гостя: <b>${rating} из 5</b>\n${htmlEscape(bk?.apartment_title || "")}\nГость: ${htmlEscape(fromName)}\nБронь: <code>${session.booking_id}</code>` +
+      (rating < 5 ? "\n\nПопросил гостя рассказать, что не понравилось." : ""),
+  );
+}
+
+/**
+ * Ответ гостя на вопрос после заселения или отзыв после оценки ниже 5.
+ * Такое сообщение не уходит в ИИ, а сохраняется и пересылается менеджеру.
+ */
+async function handleFeedbackAnswer(to: Recipient, session: Session, fromName: string, text: string): Promise<boolean> {
+  const kind = session.awaiting_feedback;
+  if (kind !== "checkin" && kind !== "review") return false;
+  const until = session.awaiting_feedback_until ? Date.parse(session.awaiting_feedback_until) : 0;
+  const sb = svc();
+  await sb.from("guest_sessions").update({ awaiting_feedback: null, awaiting_feedback_until: null }).eq("id", session.id);
+  if (!until || until < Date.now()) return false;
+
+  const bk = await loadBookingForReview(session.user_id, session.booking_id);
+  const { data: existing } = await sb.from("guest_reviews")
+    .select("rating, comment, checkin_comment")
+    .eq("user_id", session.user_id)
+    .eq("booking_id", session.booking_id)
+    .maybeSingle();
+  const clean = text.trim().slice(0, 4000);
+  const join = (prev: string | null | undefined) => (prev ? `${prev}\n${clean}` : clean);
+
+  let reply: string;
+  let notice: string;
+  const head = `${htmlEscape(bk?.apartment_title || "")}\nГость: ${htmlEscape(fromName)}\nБронь: <code>${session.booking_id}</code>`;
+  if (kind === "review") {
+    await upsertReview(session, bk, { comment: join(existing?.comment) });
+    reply = "Спасибо, что поделились! Я передал ваш отзыв менеджеру.";
+    notice = `📝 Отзыв гостя${existing?.rating ? ` (оценка ${existing.rating} из 5)` : ""}\n${head}\n\n${htmlEscape(clean)}`;
+  } else {
+    await upsertReview(session, bk, { checkin_comment: join(existing?.checkin_comment) });
+    reply = "Спасибо! Я передал ваше сообщение менеджеру — он скоро ответит.";
+    notice = `🏠 Гость ответил на вопрос после заселения\n${head}\n\n${htmlEscape(clean)}`;
+  }
+  await send(to, reply);
+  await logMessage(session, "bot", reply, { kind: "feedback_ack", feedback: kind });
+  await notifyManager(session.user_id, notice);
+  return true;
+}
+
+/**
+ * Атомарно «занимает» отправку: ставит отметку времени, только если её ещё нет.
+ * Так одно и то же сообщение не уйдёт дважды, даже если запуски пересеклись.
+ */
+async function claimSession(sessionId: string, column: string): Promise<boolean> {
+  const { data } = await svc().from("guest_sessions")
+    .update({ [column]: new Date().toISOString() })
+    .eq("id", sessionId)
+    .is(column, null)
+    .select("id");
+  return Array.isArray(data) && data.length > 0;
+}
+
+/** Последняя запущенная сессия по каждой брони (гость мог открыть бота дважды). */
+async function latestSessionsFor(bookings: any[]): Promise<Map<string, Session & Record<string, any>>> {
+  const out = new Map<string, any>();
+  if (!bookings.length) return out;
+  const ids = Array.from(new Set(bookings.map((b) => b.booking_id)));
+  const { data } = await svc().from("guest_sessions")
+    .select(`${SESSION_COLS},arrival_reminder_sent_at,review_ask_sent_at`)
+    .in("booking_id", ids)
+    .not("started_at", "is", null)
+    .order("started_at", { ascending: false });
+  const owners = new Map(bookings.map((b) => [`${b.user_id}:${b.booking_id}`, true]));
+  for (const s of (data || []) as any[]) {
+    const key = `${s.user_id}:${s.booking_id}`;
+    if (!owners.has(key) || out.has(key)) continue;
+    out.set(key, s);
+  }
+  return out;
+}
+
+/**
+ * Плановая задача (каждые 10 минут): вопрос после заселения, напоминание
+ * о кнопке «Я приехал» и просьба оценить квартиру. Защита: заголовок x-cron-secret.
+ * ?dry=1 — только показать, кому ушли бы сообщения, ничего не отправляя.
+ */
+async function endpointQualityTick(req: Request, url: URL): Promise<Response> {
+  const got = req.headers.get("x-cron-secret") || "";
+  const sb = svc();
+  const { data: cfg } = await sb.from("cron_config").select("secret").eq("key", "quality_tick").maybeSingle();
+  const secret = cfg?.secret || "";
+  if (!secret || got !== secret) return json({ ok: false, error: "forbidden" }, 403);
+
+  const dry = url.searchParams.get("dry") === "1";
+  // Для проверки в режиме dry можно подставить момент времени: ?dry=1&at=2026-11-04T19:05:00%2B03:00
+  const atParam = dry ? Date.parse(url.searchParams.get("at") || "") : NaN;
+  const now = Number.isFinite(atParam) ? atParam : Date.now();
+  const { date: today, hour } = mskParts(now);
+  const result: Record<string, any> = { ok: true, dry, today, hour, checkin_ask: 0, arrival_reminder: 0, review_ask: 0, planned: [] };
+  if (hour >= QUIET_FROM || hour < QUIET_TO) return json({ ...result, quiet: true });
+  const plan = (kind: string, s: any) => result.planned.push({ kind, booking_id: s.booking_id, channel: s.channel });
+
+  // 1) Через час после «Я приехал»: всё ли в порядке.
+  const { data: dueRows } = await sb.from("guest_sessions")
+    .select(SESSION_COLS)
+    .lte("checkin_ask_due_at", new Date(now).toISOString())
+    .gt("checkin_ask_due_at", new Date(now - CHECKIN_ASK_STALE_MS).toISOString())
+    .is("checkin_ask_sent_at", null)
+    .is("left_at", null)
+    .limit(100);
+  for (const s of (dueRows || []) as Session[]) {
+    try {
+      const to = sessionRcpt(s);
+      if (!to.chatId) continue;
+      const bk = await loadBookingForReview(s.user_id, s.booking_id);
+      if (bk && !isBookedStatus(bk.status)) continue;
+      if (dry) { plan("checkin_ask", s); continue; }
+      if (!(await claimSession(s.id, "checkin_ask_sent_at"))) continue;
+      const msg = "Надеемся, вы хорошо устроились 🏠\n\nЕсли в квартире что-то не так — грязно, что-то не работает или чего-то не хватает, — просто напишите сюда. Мы быстро всё исправим.";
+      const r = await send(to, msg);
+      if (!(r as any)?.ok) continue;
+      await sb.from("guest_sessions").update({
+        awaiting_feedback: "checkin",
+        awaiting_feedback_until: new Date(Date.now() + CHECKIN_FEEDBACK_MS).toISOString(),
+      }).eq("id", s.id);
+      await logMessage(s, "bot", msg, { kind: "checkin_ask" });
+      result.checkin_ask++;
+    } catch (e) {
+      console.error("[bot] quality checkin_ask:", (e as Error).message);
+    }
+  }
+
+  // 2) В день заезда с 17:00: гость открыл бота, но не нажал «Я приехал».
+  if (hour >= ARRIVAL_REMINDER_HOUR) {
+    const { data: arrivals } = await sb.from("rc_bookings")
+      .select("user_id, booking_id, status")
+      .eq("begin_date", today)
+      .limit(500);
+    const list = (arrivals || []).filter((b: any) => isBookedStatus(b.status));
+    const sessions = await latestSessionsFor(list);
+    for (const s of sessions.values()) {
+      try {
+        if (s.arrived_at || s.left_at || s.arrival_reminder_sent_at) continue;
+        // Гость только что открыл бота — у него и так перед глазами кнопки.
+        if (s.started_at && Date.parse(s.started_at) > now - 30 * 60000) continue;
+        const to = sessionRcpt(s);
+        if (!to.chatId) continue;
+        if (dry) { plan("arrival_reminder", s); continue; }
+        if (!(await claimSession(s.id, "arrival_reminder_sent_at"))) continue;
+        const msg = "Вы уже заселились? 🔑\n\nМы узнаем о вашем приезде, только когда вы нажмёте кнопку «Я приехал». Пожалуйста, нажмите её, как только окажетесь в квартире.";
+        const r = await send(to, msg, [[{ text: "✅ Я приехал", data: cmdWithBooking("i_arrived", s.booking_id) }]]);
+        if (!(r as any)?.ok) continue;
+        await logMessage(s, "bot", msg, { kind: "arrival_reminder" });
+        result.arrival_reminder++;
+      } catch (e) {
+        console.error("[bot] quality arrival_reminder:", (e as Error).message);
+      }
+    }
+  }
+
+  // 3) Оценка: накануне выезда в 19:00, бронь на одну ночь — в день выезда в 10:00.
+  const { data: departures } = await sb.from("rc_bookings")
+    .select("user_id, booking_id, begin_date, end_date, status")
+    .in("end_date", [today, addDaysIso(today, 1)])
+    .limit(500);
+  const due = (departures || []).filter((b: any) => {
+    if (!isBookedStatus(b.status) || !b.begin_date || !b.end_date) return false;
+    const nights = nightsOf(b.begin_date, b.end_date);
+    if (nights < 1) return false;
+    const target = nights >= 2 ? mskAt(addDaysIso(b.end_date, -1), REVIEW_HOUR_BEFORE) : mskAt(b.end_date, REVIEW_HOUR_ONE_NIGHT);
+    return now >= target && now < mskAt(b.end_date, REVIEW_DEADLINE_HOUR);
+  });
+  const reviewSessions = await latestSessionsFor(due);
+  for (const s of reviewSessions.values()) {
+    try {
+      if (s.left_at || s.review_ask_sent_at) continue;
+      const { data: rv } = await sb.from("guest_reviews")
+        .select("rating")
+        .eq("user_id", s.user_id)
+        .eq("booking_id", s.booking_id)
+        .maybeSingle();
+      if (rv?.rating) continue;
+      const to = sessionRcpt(s);
+      if (!to.chatId) continue;
+      if (dry) { plan("review_ask", s); continue; }
+      if (!(await claimSession(s.id, "review_ask_sent_at"))) continue;
+      const msg = "Как вам у нас? ⭐\n\nОцените, пожалуйста, квартиру от 1 до 5 — просто нажмите на оценку ниже.";
+      const r = await send(to, msg, ratingKeyboard(s.booking_id));
+      if (!(r as any)?.ok) continue;
+      await logMessage(s, "bot", msg, { kind: "review_ask" });
+      result.review_ask++;
+    } catch (e) {
+      console.error("[bot] quality review_ask:", (e as Error).message);
+    }
+  }
+
+  return json(result);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1692,6 +2046,12 @@ async function handleEvent(ev: InboundEvent) {
     // Менеджер: «Указать причину» — ждём следующее сообщение с причиной.
     if (cmd === CANCEL_REASON_CMD) {
       if (bookingId) await handleCancelReasonStart(to, bookingId);
+      return;
+    }
+    // Гость: оценка квартиры 1–5 («rate_5:bk123»).
+    const rateMatch = cmd.match(/^rate_([1-5])$/);
+    if (rateMatch) {
+      await handleRating(to, ev.from, Number(rateMatch[1]), bookingId);
       return;
     }
     if (cmd === "i_arrived") await handleArrival(to, ev.from, "arrived", bookingId);
@@ -2142,6 +2502,7 @@ Deno.serve(async (req) => {
     if (req.method === "GET"  && path === "/channels")             return await endpointChannels(req);
     if (req.method === "POST" && path === "/cleaning_reminders")   return await endpointCleaningReminders(req);
     if (req.method === "POST" && path === "/deposit_autosend")     return await endpointDepositAutosend(req);
+    if (req.method === "POST" && path === "/quality_tick")         return await endpointQualityTick(req, url);
     if (req.method === "POST" && path === "/setup_webhook")        return await endpointSetupWebhook(req);
 
     if (req.method === "GET" && (path === "/" || path === "")) {

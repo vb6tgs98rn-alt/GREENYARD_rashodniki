@@ -1173,3 +1173,19 @@ body.is-guest .modal-backdrop{display:none !important}
 /* Регулярный расход на несколько квартир: сумма на квартиру и список квартир */
 .recurring-split-line{margin-top:.35rem;color:var(--color-text);font-weight:600}
 .recurring-split-apts{margin-top:.1rem;color:var(--color-text-muted)}
+
+/* Оценки гостей: звёздочка со средней оценкой на карточке квартиры и окно отзывов. */
+.apt-title-row{display:flex;align-items:baseline;gap:.45rem;min-width:0}
+.apt-title-row strong{min-width:0}
+.apt-rating{flex-shrink:0;display:inline-flex;align-items:center;gap:.15rem;padding:.05rem .35rem;border-radius:999px;font-size:.78rem;font-weight:600;line-height:1.4;color:var(--color-text-muted);cursor:pointer;font-variant-numeric:tabular-nums}
+.apt-rating[hidden]{display:none}
+.apt-rating:hover,.apt-rating:focus-visible{background:var(--color-surface);color:var(--color-text);outline:none}
+.apt-rating-star{color:#d4a017;font-size:.85rem;line-height:1}
+.rv-list{display:grid;gap:.75rem}
+.rv-item{padding:.85rem 1rem;border-radius:var(--radius-lg);background:var(--color-surface-2);border:1px solid var(--color-border,rgba(60,60,60,.1))}
+.rv-head{display:flex;justify-content:space-between;align-items:flex-start;gap:.75rem}
+.rv-dates{color:var(--color-text-muted);margin-top:.15rem}
+.rv-stars{color:#d4a017;letter-spacing:.05em;white-space:nowrap;font-size:.95rem}
+.rv-stars-off{color:color-mix(in oklab,var(--color-text) 18%,transparent)}
+.rv-text{margin-top:.5rem;white-space:pre-wrap;line-height:1.45;font-size:var(--text-sm)}
+.rv-checkin .small{color:var(--color-text-muted)}
