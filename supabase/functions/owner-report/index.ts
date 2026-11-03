@@ -226,6 +226,10 @@ function monthName(ym: string): string {
 /** Сводка для модели: главный месяц и два предыдущих. */
 async function loadAiData(userId: string, mainMonth: string, today: string) {
   const months = [shiftMonth(mainMonth, -2), shiftMonth(mainMonth, -1), mainMonth];
+  // Брони берём за 6 месяцев (нужны для расхода закупок на один выезд),
+  // но не позже начала самого раннего из анализируемых месяцев.
+  const sixMonthsAgo = new Date(Date.parse(today + "T00:00:00Z") - 190 * 86400000).toISOString().slice(0, 10);
+  const bookingsFrom = sixMonthsAgo < `${months[0]}-01` ? sixMonthsAgo : `${months[0]}-01`;
   const { data: st, error: e1 } = await admin
     .from("app_state").select("state").eq("user_id", userId).maybeSingle();
   if (e1) throw new Error(`app_state: ${e1.message}`);
@@ -233,7 +237,7 @@ async function loadAiData(userId: string, mainMonth: string, today: string) {
     .from("rc_bookings")
     .select("booking_id, realty_id, source, status, begin_date, end_date, amount, platform_tax, raw_tax:raw_payload->data->booking->>platform_tax")
     .eq("user_id", userId)
-    .gte("end_date", `${months[0]}-01`)
+    .gte("end_date", bookingsFrom)
     .limit(5000);
   if (e2) throw new Error(`rc_bookings: ${e2.message}`);
   return buildAnalyticsData(st?.state || {}, (bk || []) as AiBooking[], months, today);

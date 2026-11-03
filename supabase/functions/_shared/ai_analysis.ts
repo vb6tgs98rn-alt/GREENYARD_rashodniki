@@ -154,6 +154,8 @@ export function buildAnalyticsData(state: any, bookings: AiBooking[], months: st
         byPlatform[pl] = byPlatform[pl] || { nights: 0, gross: 0 };
         byPlatform[pl].nights += n; byPlatform[pl].gross += g * k;
       }
+      // Выезды (= уборки) в месяце — база для расхода на один заезд.
+      const checkouts = aptBookings.filter((b) => b.end_date && b.end_date >= from && b.end_date <= to && b.end_date <= today).length;
       let manualIncome = 0;
       const expenses: Record<string, number> = {};
       let rentRecorded = false;
@@ -202,6 +204,8 @@ export function buildAnalyticsData(state: any, bookings: AiBooking[], months: st
         profit_before_split: r0(raw),
         my_profit: r0(profit),
         cancelled_nights: cancelledNights,
+        checkouts,
+        purchases_per_checkout: checkouts ? r0((expenses["закупки"] || 0) / checkouts) : null,
         platforms: Object.fromEntries(Object.entries(byPlatform).map(([k, v]) => [k, { nights: v.nights, gross: r0(v.gross) }])),
       };
     });
@@ -258,6 +262,24 @@ export function buildAnalyticsData(state: any, bookings: AiBooking[], months: st
     }
   }
 
+  // --- Закупки: частота, расход на выезд, разброс цен (за последние 6 месяцев) ---
+  const purchases = buildPurchaseStats(state, apts, active, today, issues);
+
+  // Крупнейшие расходы главного месяца, кроме аренды и уборок.
+  const mainYm = months[months.length - 1];
+  const topExpenses = entries
+    .filter((e) => e.type === "expense" && e.status !== "cancelled" && e.date && String(e.date).slice(0, 7) === mainYm
+      && e.source !== "auto-owner-payout" && !["аренда", "уборка"].includes(expenseKind(e)))
+    .map((e) => ({
+      apartment: apts.find((a: any) => a.id === e.apartmentId)?.name || "без квартиры",
+      title: String(e.title || e.category || "без названия").slice(0, 60),
+      kind: expenseKind(e),
+      date: e.date,
+      amount: r0(Number(e.amount || 0)),
+    }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 15);
+
   const totals = months.map((ym) => {
     let gross = 0, income = 0, expenses = 0, mine = 0, nights = 0, days = 0;
     for (const a of apartments) {
@@ -277,7 +299,122 @@ export function buildAnalyticsData(state: any, bookings: AiBooking[], months: st
     ],
     totals,
     apartments,
+    top_expenses_main_month: topExpenses,
+    purchases,
     accounting_issues: Array.from(new Set(issues)).slice(0, 40),
+  };
+}
+
+// --- Закупки -----------------------------------------------------------------
+
+function normName(s: unknown): string {
+  return String(s || "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Статистика заявок на закупку за 6 месяцев по каждой позиции в каждой квартире:
+ * сколько раз и через сколько дней заказывали, сколько выездов прошло между первым
+ * и последним заказом (= сколько заездов «съела» закупка), цена за единицу.
+ */
+function buildPurchaseStats(state: any, apts: any[], active: AiBooking[], today: string, issues: string[]) {
+  const since = iso(new Date(parse(today) - 183 * DAY));
+  const reqs: any[] = (state?.purchaseRequests || []).filter((r: any) => String(r?.createdAt || "").slice(0, 10) >= since);
+  const groups = new Map<string, any>();
+  let openCount = 0;
+  for (const r of reqs) {
+    const date = String(r.createdAt || "").slice(0, 10);
+    const apt = apts.find((a: any) => a.id === r.apartmentId);
+    const aptName = apt?.name || r.apartmentName || "без квартиры";
+    if (!r.done) {
+      openCount += 1;
+      const age = nightsBetween(date, today);
+      if (age > 7) issues.push(`${aptName}: заявка на закупку от ${date} не выполнена уже ${age} дн.`);
+      continue;
+    }
+    const noCost = (r.items || []).filter((i: any) => !(Number(i.cost) > 0));
+    if (noCost.length) issues.push(`${aptName}: в выполненной заявке от ${date} нет цены у ${noCost.length} поз. (${noCost.slice(0, 3).map((i: any) => i.name).join(", ")}) — расход не попал в учёт.`);
+    for (const it of r.items || []) {
+      const key = `${r.apartmentId}|${normName(it.name)}`;
+      const g = groups.get(key) || { apartmentId: r.apartmentId, apartment: aptName, item: String(it.name || "").slice(0, 60), unit: it.unit || "шт", orders: [] as any[] };
+      g.orders.push({ date, qty: Number(it.qty || 0), cost: Number(it.cost || 0) });
+      groups.set(key, g);
+    }
+  }
+  const checkoutsBetween = (aptId: string, from: string, to: string) => {
+    const apt = apts.find((a: any) => a.id === aptId);
+    const rcId = apt?.externalIds?.realtyCalendarUnitId ? String(apt.externalIds.realtyCalendarUnitId) : "";
+    if (!rcId) return null;
+    return active.filter((b) => String(b.realty_id) === rcId && b.end_date && b.end_date > from && b.end_date <= to).length;
+  };
+  const items = Array.from(groups.values()).map((g) => {
+    g.orders.sort((a: any, b: any) => (a.date < b.date ? -1 : 1));
+    const first = g.orders[0], last = g.orders[g.orders.length - 1];
+    const totalQty = g.orders.reduce((s: number, o: any) => s + o.qty, 0);
+    const totalCost = g.orders.reduce((s: number, o: any) => s + o.cost, 0);
+    const unitPrices = g.orders.filter((o: any) => o.qty > 0 && o.cost > 0).map((o: any) => o.cost / o.qty);
+    const n = g.orders.length;
+    // Явная ошибка ввода: сотни единиц по 1–5 ₽ (скорее всего, сумму вписали в количество).
+    for (const o of g.orders) {
+      if (o.qty >= 100 && o.cost > 0 && o.cost / o.qty <= 5) {
+        issues.push(`${g.apartment}: в заявке от ${o.date} «${g.item}» — ${o.qty} ${g.unit} за ${r0(o.cost)} ₽ (≈${Math.round((o.cost / o.qty) * 100) / 100} ₽ за шт), похоже на ошибку в количестве.`);
+      }
+    }
+    const span = nightsBetween(first.date, last.date);
+    // Между первым и последним заказом израсходовано всё, кроме последней партии.
+    const usedQty = totalQty - last.qty;
+    const coBetween = n >= 2 ? checkoutsBetween(g.apartmentId, first.date, last.date) : null;
+    const coSinceLast = checkoutsBetween(g.apartmentId, last.date, today);
+    const apt = apts.find((a: any) => a.id === g.apartmentId);
+    // Норма расхода на заезд из инвентаря квартиры (если позиция там заведена).
+    const inv = (apt?.items || []).find((i: any) => normName(i.name) === normName(g.item));
+    return {
+      apartment: g.apartment,
+      guests_capacity: Number(apt?.sleepingCapacity || 0) || null,
+      norm_per_checkout: inv && Number(inv.perCheckin) > 0 ? Number(inv.perCheckin) : null,
+      item: g.item,
+      unit: g.unit,
+      orders: n,
+      dates: g.orders.map((o: any) => o.date),
+      qty_per_order: g.orders.map((o: any) => o.qty),
+      total_qty: totalQty,
+      total_cost: r0(totalCost),
+      avg_days_between_orders: n >= 2 ? r0(span / (n - 1)) : null,
+      checkouts_between_first_and_last: coBetween,
+      qty_used_per_checkout: n >= 2 && coBetween ? Math.round((usedQty / coBetween) * 100) / 100 : null,
+      checkouts_since_last_order: coSinceLast,
+      unit_price_min: unitPrices.length ? r0(Math.min(...unitPrices)) : null,
+      unit_price_max: unitPrices.length ? r0(Math.max(...unitPrices)) : null,
+    };
+  });
+  // Сравнение одной позиции между квартирами (цена за единицу).
+  const byItem = new Map<string, any[]>();
+  for (const it of items) {
+    const k = normName(it.item);
+    byItem.set(k, [...(byItem.get(k) || []), it]);
+  }
+  const crossApartment = Array.from(byItem.values())
+    .filter((list) => list.length >= 2)
+    .map((list) => ({
+      item: list[0].item,
+      by_apartment: list.map((x) => ({ apartment: x.apartment, orders: x.orders, total_qty: x.total_qty, total_cost: x.total_cost, unit_price_max: x.unit_price_max, qty_used_per_checkout: x.qty_used_per_checkout })),
+    }));
+  const totalCost = items.reduce((s, x) => s + x.total_cost, 0);
+  return {
+    period_from: since,
+    requests_done: reqs.filter((r) => r.done).length,
+    requests_open: openCount,
+    total_cost: r0(totalCost),
+    // Сначала повторяющиеся позиции и самые дорогие.
+    items: items.sort((a, b) => (b.orders - a.orders) || (b.total_cost - a.total_cost)).slice(0, 60),
+    same_item_across_apartments: crossApartment.slice(0, 20),
+    // Остатки расходников по инвентарю: норма на заезд, остаток, желаемый запас.
+    inventory: apts.map((a: any) => ({
+      apartment: a.name,
+      items: (a.items || [])
+        .filter((i: any) => Number(i.perCheckin) > 0 || Number(i.par) > 0)
+        .slice(0, 25)
+        .map((i: any) => ({ name: String(i.name || "").slice(0, 40), stock: Number(i.stock || 0), par: Number(i.par || 0), norm_per_checkout: Number(i.perCheckin || 0) || null })),
+    })).filter((x: any) => x.items.length),
   };
 }
 
@@ -295,9 +432,21 @@ export const AI_ANALYSIS_INSTRUCTIONS = [
   "ИТОГ — сколько заработано в главном (последнем) месяце и сравнение с прошлым; если месяц ещё идёт — так и скажи и дай грубый прогноз по уже полученным броням.",
   "ПО КВАРТИРАМ — по строке на квартиру: прибыль, заполняемость, средняя цена ночи, главная причина роста или падения.",
   "ЗАПОЛНЯЕМОСТЬ И ЦЕНЫ — где пустые даты в ближайшие 30 дней, где заполняемость низкая и что сделать с ценой (снизить/поднять, на сколько примерно и на какие даты); опирайся на сравнение квартир между собой и по месяцам.",
+  "РАСХОДЫ И ЗАКУПКИ — главный раздел про потери денег. Посмотри структуру расходов по квартирам (expenses, purchases_per_checkout,",
+  "top_expenses_main_month) и обязательно заявки на закупку (purchases): по каждой позиции даны даты заказов, количество,",
+  "среднее число дней между заказами, выезды между первым и последним заказом, расход на один выезд (qty_used_per_checkout),",
+  "цена за единицу и сравнение одной позиции между квартирами. Ищи, где теряются деньги: позиция заказывается слишком часто",
+  "для своего объёма (например, средство для пола 5 л раз в месяц — странно, его должно хватать надолго; 100 пар тапочек",
+  "закончились за 2 месяца — проверь, сколько пар уходит на выезд по сравнению с числом гостей guests_capacity),",
+  "расход на выезд сильно выше, чем в других квартирах, цена за единицу выросла или в одной квартире дороже, чем в другой.",
+  "Если norm_per_checkout задан — сравнивай фактический расход с этой нормой; guests_capacity=null — считай 2 гостя.",
+  "Количество «1 шт» часто означает упаковку (тапочки, бумага, таблетки) — тогда суди по сумме и частоте заказов, а не по штукам.",
+  "Если заказов по позиции пока по одному и сравнивать не с чем — скажи, что истории закупок мало, и что станет видно через 1–2 месяца.",
+  "Оценивай здраво, с примерной нормой на один заезд для посуточной квартиры; называй позицию, квартиру, цифры и возможную",
+  "причину (уносят гости, перерасход горничной, лишние заказы, дорогой поставщик). Если подозрительного нет — так и скажи.",
   "ОШИБКИ В УЧЁТЕ — перечисли несостыковки из accounting_issues своими словами; если их нет — напиши, что ошибок не найдено.",
   "ЧТО СДЕЛАТЬ — 3–5 конкретных действий по важности.",
-  "Общий объём — до 2500 знаков.",
+  "Общий объём — до 3500 знаков.",
 ].join("\n");
 
 export const AI_FOLLOWUP_INSTRUCTIONS = [
