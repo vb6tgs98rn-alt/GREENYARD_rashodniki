@@ -1522,6 +1522,18 @@ async function handleCommand(to: Recipient, cmd: string, bookingIdFromCallback: 
       await logMessage(session, "bot", reply, { kind: "command", cmd });
       return;
     }
+    case "checkin_ok": {
+      // «Всё отлично» под вопросом после заселения: ожидание ответа снимаем, менеджера не беспокоим.
+      await svc().from("guest_sessions").update({ awaiting_feedback: null, awaiting_feedback_until: null }).eq("id", session.id);
+      const bkR = await loadBookingForReview(session.user_id, session.booking_id);
+      const { data: rvR } = await svc().from("guest_reviews").select("checkin_comment")
+        .eq("user_id", session.user_id).eq("booking_id", session.booking_id).maybeSingle();
+      // Уже написанный гостем комментарий не затираем.
+      if (!rvR?.checkin_comment) await upsertReview(session, bkR, { checkin_comment: "Всё отлично 👍" });
+      await logMessage(session, "system", "Гость: «Всё отлично 👍» после заселения", { kind: "checkin_ok" });
+      reply = "Отлично, рады это слышать! 🙏 Хорошего отдыха. Если что-то понадобится — пишите сюда.";
+      break;
+    }
     case "extend": {
       const fromName = [session.tg_first_name, session.tg_last_name].filter(Boolean).join(" ") || session.tg_username || "Гость";
       await notifyManager(
@@ -1921,7 +1933,7 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
 
 const CHECKIN_ASK_DELAY_MS = 60 * 60000;     // вопрос «всё ли в порядке» — через час после «Я приехал»
 const CHECKIN_ASK_STALE_MS = 14 * 3600000;   // позже этого вопрос уже неактуален
-const CHECKIN_FEEDBACK_MS = 6 * 3600000;     // столько ждём ответ на вопрос после заселения
+const CHECKIN_FEEDBACK_MS = 1 * 3600000;     // столько ждём ответ на вопрос после заселения
 const REVIEW_FEEDBACK_MS = 48 * 3600000;     // столько ждём отзыв после оценки ниже 5
 const ARRIVAL_INFO_HOUR = 10;                // информация к заезду утром в день заезда
 const ARRIVAL_REMINDER_HOUR = 17;            // напоминание о кнопке «Я приехал» в день заезда
@@ -2136,8 +2148,11 @@ async function latestSessionsFor(bookings: any[]): Promise<Map<string, Session &
 
 /** Вопрос «всё ли в порядке» после заселения; ответ гостя уйдёт менеджеру. */
 async function sendCheckinAsk(s: Session): Promise<boolean> {
-  const msg = "Надеемся, вы хорошо устроились 🏠\n\nЕсли в квартире что-то не так — грязно, что-то не работает или чего-то не хватает, — просто напишите сюда. Мы быстро всё исправим.";
-  const r = await send(sessionRcpt(s), msg);
+  const msg = "Надеемся, вы хорошо устроились 🏠\n\nВсё ли в порядке в квартире? Если что-то не так — грязно, что-то не работает или чего-то не хватает, — нажмите «Есть проблема» или просто напишите сюда. Мы быстро всё исправим.";
+  const r = await send(sessionRcpt(s), msg, [[
+    { text: "Всё отлично 👍", data: cmdWithBooking("checkin_ok", s.booking_id) },
+    { text: "⚠️ Есть проблема", data: cmdWithBooking("problem", s.booking_id) },
+  ]]);
   if (!(r as any)?.ok) return false;
   await svc().from("guest_sessions").update({
     awaiting_feedback: "checkin",
