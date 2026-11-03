@@ -149,8 +149,60 @@ function parseCallbackData(raw: string): { cmd: string; bookingId: number | null
   return { cmd: s, bookingId: null };
 }
 
-function guestKeyboard(channelUrl?: string | null, payEnabled = false, bookingId?: number | string | null): Btn[][] {
+/**
+ * Этап проживания гостя (по московской дате):
+ * before — до дня заезда; arrival — день заезда; stay — проживание;
+ * checkout — день выезда; after — после выезда.
+ */
+type GuestStage = "before" | "arrival" | "stay" | "checkout" | "after";
+
+function guestStageOf(begin: string | null | undefined, end: string | null | undefined, today = todayMsk()): GuestStage | null {
+  const b = String(begin || "").slice(0, 10);
+  const e = String(end || "").slice(0, 10);
+  if (!b || !e) return null;
+  if (today < b) return "before";
+  if (today === b) return "arrival";
+  if (today < e) return "stay";
+  if (today === e) return "checkout";
+  return "after";
+}
+
+/** Даты брони и этап гостя. */
+async function loadStage(session: Session): Promise<{ stage: GuestStage | null; begin: string | null; end: string | null }> {
+  const { data } = await svc().from("rc_bookings")
+    .select("begin_date, end_date")
+    .eq("user_id", session.user_id)
+    .eq("booking_id", session.booking_id)
+    .maybeSingle();
+  return { stage: guestStageOf(data?.begin_date, data?.end_date), begin: data?.begin_date ?? null, end: data?.end_date ?? null };
+}
+
+function guestKeyboard(channelUrl?: string | null, payEnabled = false, bookingId?: number | string | null, stage: GuestStage | null = null): Btn[][] {
   const b = bookingId ?? null;
+  const pay: Btn[][] = payEnabled ? [[{ text: "💳 Оплатить проживание", data: cmdWithBooking("pay", b) }]] : [];
+  const channel: Btn[][] = channelUrl ? [[{ text: "📢 Наш канал", url: channelUrl }]] : [];
+  const problem: Btn = { text: "⚠️ Сообщить о проблеме", data: cmdWithBooking("problem", b) };
+  const extend: Btn = { text: "📅 Продлить", data: cmdWithBooking("extend", b) };
+  // Меню по этапу: до заезда — без адреса и Wi-Fi, в проживании — проблема и продление.
+  if (stage === "before") {
+    return [
+      [{ text: "🔑 Заселение", data: cmdWithBooking("checkin_info", b) }, { text: "📋 Правила", data: cmdWithBooking("rules", b) }],
+      [{ text: "📞 Помощь", data: cmdWithBooking("help", b) }],
+      ...pay, ...channel,
+    ];
+  }
+  if (stage === "stay" || stage === "checkout") {
+    return [
+      [{ text: "📶 Wi-Fi", data: cmdWithBooking("wifi", b) }, { text: "📍 Адрес", data: cmdWithBooking("address", b) }],
+      [problem, extend],
+      [{ text: "🚪 Выезд", data: cmdWithBooking("checkout_info", b) }, { text: "👋 Я уезжаю", data: cmdWithBooking("i_leaving", b) }],
+      [{ text: "📋 Правила", data: cmdWithBooking("rules", b) }, { text: "📞 Помощь", data: cmdWithBooking("help", b) }],
+      ...pay, ...channel,
+    ];
+  }
+  if (stage === "after") {
+    return [[{ text: "📞 Помощь", data: cmdWithBooking("help", b) }], ...channel];
+  }
   const rows: Btn[][] = [
     [{ text: "📍 Адрес", data: cmdWithBooking("address", b) }, { text: "📶 Wi-Fi", data: cmdWithBooking("wifi", b) }],
     [{ text: "🔑 Заселение", data: cmdWithBooking("checkin_info", b) }, { text: "🚪 Выезд", data: cmdWithBooking("checkout_info", b) }],
@@ -788,6 +840,7 @@ const INSTRUCTION_FORM_FIELDS = [
   "apartment_title",
   "full_address",
   "checkin_from",
+  "checkin_instruction",
   "checkout_until",
   "wifi_ssid",
   "wifi_password",
@@ -815,6 +868,7 @@ function blockCheckin(instr: any): string | null {
   if (!instr) return null;
   const parts: string[] = [];
   if (instr.checkin_from)         parts.push(`🕒 <b>Заезд с</b> ${htmlEscape(instr.checkin_from)}`);
+  if (instr.checkin_instruction)  parts.push(`🔑 <b>Как попасть в квартиру</b>\n${htmlEscape(instr.checkin_instruction)}`);
   return parts.length ? parts.join("\n\n") : null;
 }
 function blockWifi(instr: any): string | null {
@@ -846,13 +900,16 @@ function blockHelp(_instr: any): string {
   ].join("\n");
 }
 
-function buildAiSystemPrompt(instr: any): string {
+function buildAiSystemPrompt(instr: any, stage: GuestStage | null = null): string {
+  // До дня заезда адрес, коды и пароли ИИ не получает вовсе.
+  const early = stage === "before";
   const facts: string[] = [];
   if (instr?.apartment_title)     facts.push(`Название квартиры: ${instr.apartment_title}`);
-  if (instr?.full_address)        facts.push(`Полный адрес: ${instr.full_address}`);
+  if (instr?.full_address && !early) facts.push(`Полный адрес: ${instr.full_address}`);
   if (instr?.checkin_from)        facts.push(`Заезд с: ${instr.checkin_from}`);
-  if (instr?.wifi_ssid)           facts.push(`Wi-Fi сеть: ${instr.wifi_ssid}`);
-  if (instr?.wifi_password)       facts.push(`Wi-Fi пароль: ${instr.wifi_password}`);
+  if (instr?.checkin_instruction && !early) facts.push(`Как попасть в квартиру: ${instr.checkin_instruction}`);
+  if (instr?.wifi_ssid && !early) facts.push(`Wi-Fi сеть: ${instr.wifi_ssid}`);
+  if (instr?.wifi_password && !early) facts.push(`Wi-Fi пароль: ${instr.wifi_password}`);
   if (instr?.smoking_policy)      facts.push(`Курение: ${instr.smoking_policy}`);
   if (instr?.pets_policy)         facts.push(`Животные: ${instr.pets_policy}`);
   if (instr?.quiet_hours)         facts.push(`Часы тишины: ${instr.quiet_hours}`);
@@ -873,6 +930,7 @@ function buildAiSystemPrompt(instr: any): string {
     "5. Ответ — обычный текст (легкая Markdown-вёрстка допустима), без HTML-тегов, без вымышленных линков. Коротко, по делу, 1–5 предложений.",
     "6. Не придумывай за гостя что он хочет сделать. Не выполняй действия от его имени в каких-либо внешних сервисах.",
     "7. Если гость просит решить проблему быта (поломка, шум соседей, пропал свет, горячая вода) — если в данных нет чёткого решения, поставь метку " + AI_NEED_MANAGER + ".",
+    ...(early ? ["8. День заезда ещё не наступил. НЕ сообщай адрес, коды, пароли, Wi-Fi и способ попасть в квартиру, даже если они есть в дополнительных инструкциях. На такие вопросы отвечай: «Адрес, как попасть в квартиру и Wi-Fi я пришлю в день заезда»."] : []),
     "",
     "=== ДАННЫЕ КВАРТИРЫ (единственный допустимый источник) ===",
     factsBlock,
@@ -884,8 +942,45 @@ function buildAiSystemPrompt(instr: any): string {
   ].join("\n");
 }
 
-function buildWelcomeMessage(fromName: string, instr: any): string {
-  const greeting = `Здравствуйте, ${htmlEscape(fromName || "гость")}! 👋\n\nВаше бронирование найдено. Вот всё, что нужно знать:`;
+/** «12.11» из даты брони. */
+function ddmm(d: string | null | undefined): string {
+  const s = String(d || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s.slice(8, 10)}.${s.slice(5, 7)}` : "";
+}
+
+/** «через 5 дней» до даты заезда. */
+function daysUntilText(begin: string | null | undefined): string {
+  const n = Math.round((Date.parse(String(begin).slice(0, 10)) - Date.parse(todayMsk())) / 86400000);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n === 1) return "завтра";
+  const m10 = n % 10, m100 = n % 100;
+  const w = m10 === 1 && m100 !== 11 ? "день" : (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) ? "дня" : "дней";
+  return `через ${n} ${w}`;
+}
+
+/** Текст до дня заезда: дата и время, без адреса и кодов. */
+function blockBeforeArrival(instr: any, begin: string | null | undefined): string {
+  const from = instr?.checkin_from || "14:00";
+  const until = daysUntilText(begin);
+  return `🗓 <b>Заезд ${ddmm(begin)} с ${htmlEscape(from)}</b>${until ? `, ${until}` : ""}.\n\nАдрес, как попасть в квартиру и Wi-Fi я пришлю в день заезда.`;
+}
+
+/** Полная информация к заезду (день заезда). */
+function blockArrivalInfo(instr: any): string | null {
+  const blocks: string[] = [];
+  const addr = blockAddress(instr);  if (addr) blocks.push(addr);
+  const cin  = blockCheckin(instr);  if (cin)  blocks.push(cin);
+  const wifi = blockWifi(instr);     if (wifi) blocks.push(wifi);
+  return blocks.length ? blocks.join("\n\n━━━━━━━━━━━━━━━\n\n") : null;
+}
+
+function buildWelcomeMessage(fromName: string, instr: any, stage: GuestStage | null = null, begin: string | null = null): string {
+  const hello = `Здравствуйте, ${htmlEscape(fromName || "гость")}! 👋\n\nВаше бронирование найдено.`;
+  if (stage === "before") {
+    const rules = blockRules(instr);
+    return `${hello}\n\n${blockBeforeArrival(instr, begin)}${rules ? `\n\n━━━━━━━━━━━━━━━\n\n${rules}` : ""}\n\n💬 Если есть вопросы — напишите сюда.`;
+  }
+  const greeting = `${hello} Вот всё, что нужно знать:`;
   const blocks: string[] = [];
   const addr = blockAddress(instr);     if (addr)     blocks.push(addr);
   const cin  = blockCheckin(instr);     if (cin)      blocks.push(cin);
@@ -1240,13 +1335,15 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
 
   if (wasStarted) {
-    await handleRepeatStart(to, session, fromName, settings);
+    await handleRepeatStart(to, session, fromName, settings, instr);
     return;
   }
 
-  const welcome = buildWelcomeMessage(fromName, instr);
-  await send(to, welcome, guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id));
-  await logMessage(session, "bot", welcome, { kind: "welcome" });
+  const st = await loadStage(session);
+  const welcome = buildWelcomeMessage(fromName, instr, st.stage, st.begin);
+  await send(to, welcome, guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id, st.stage));
+  // stage в журнале: если приветствие ушло в день заезда, утреннюю «информацию к заезду» не дублируем.
+  await logMessage(session, "bot", welcome, { kind: "welcome", stage: st.stage, day: todayMsk() });
   await logEvent(session, "custom", { kind: "bot_started", channel: to.channel, chat_id: to.chatId, from: fromName });
   await notifyManager(session.user_id, `🟢 Гость <b>${htmlEscape(fromName || "—")}</b> запустил бота (${CHANNEL_TITLE[to.channel]}).\nБронь: <code>${session.booking_id}</code>`);
 
@@ -1284,7 +1381,7 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
  * ещё не сделано — договор (если не подписан), оплата (если есть долг), залог.
  * Если всё сделано — сообщаем, что всё готово, и показываем меню.
  */
-async function handleRepeatStart(to: Recipient, session: Session, fromName: string, settings: ManagerSettings | null) {
+async function handleRepeatStart(to: Recipient, session: Session, fromName: string, settings: ManagerSettings | null, instr: any = null) {
   const sb = svc();
   const { data: bk } = await sb.from("rc_bookings")
     .select("amount, prepayment, okidoki_link, contract_signed_at, contract_status_internal, begin_date, end_date")
@@ -1303,14 +1400,35 @@ async function handleRepeatStart(to: Recipient, session: Session, fromName: stri
   const debt = bk ? Math.round((Number(bk.amount || 0) - Number(bk.prepayment || 0) - paid) * 100) / 100 : 0;
   const payTodo = tochkaOn && debt > 0;
 
-  const kb = guestKeyboard(settings?.guest_channel_url ?? null, tochkaOn, session.booking_id);
+  const rawStage = guestStageOf(bk?.begin_date, bk?.end_date);
+  // В день заезда после «Я приехал» гость уже живёт в квартире.
+  const stage: GuestStage | null = rawStage === "arrival" && session.arrived_at ? "stay" : rawStage;
+  let kb = guestKeyboard(settings?.guest_channel_url ?? null, tochkaOn, session.booking_id, stage);
+  let needRate = false;
+  if (stage === "after") {
+    // После выезда — кнопки оценки, если гость ещё не оценил.
+    const { data: rv } = await sb.from("guest_reviews").select("rating")
+      .eq("user_id", session.user_id).eq("booking_id", session.booking_id).maybeSingle();
+    needRate = !rv?.rating;
+    if (needRate) kb = [...ratingKeyboard(session.booking_id), ...kb];
+  }
   const hello = `С возвращением, ${htmlEscape(fromName || "гость")}! 👋`;
   let msg: string;
   if (!contractTodo && !payTodo) {
     const done: string[] = [];
     if (signed) done.push("договор подписан");
     if (tochkaOn) done.push("проживание оплачено");
-    msg = `${hello}\n\n✅ Всё готово${done.length ? ": " + done.join(", ") : ""}.\nАдрес, Wi-Fi и правила — в меню ниже. Если есть вопрос — просто напишите сюда.`;
+    const ready = `✅ Всё готово${done.length ? ": " + done.join(", ") : ""}.`;
+    const outTime = htmlEscape(instr?.checkout_until || "12:00");
+    // Что показать — зависит от этапа проживания.
+    let stageText: string;
+    if (stage === "before") stageText = `${ready}\n\n${blockBeforeArrival(instr, bk?.begin_date)}`;
+    else if (stage === "arrival") stageText = `${ready}\n\n${blockArrivalInfo(instr) || "Инструкция по заселению ещё не заполнена — менеджер пришлёт её сюда."}\n\nКогда будете в квартире, нажмите «Я приехал».`;
+    else if (stage === "stay") stageText = `🏠 Вы у нас до ${ddmm(bk?.end_date)}, выезд до ${outTime}.`;
+    else if (stage === "checkout") stageText = `🚪 Сегодня день выезда — выезд до ${outTime}.`;
+    else if (stage === "after") stageText = "Спасибо, что были у нас! 🙏 Будем рады видеть вас снова." + (needRate ? " Оцените, пожалуйста, квартиру от 1 до 5." : "");
+    else stageText = `${ready}\nАдрес, Wi-Fi и правила — в меню ниже.`;
+    msg = `${hello}\n\n${stageText}\n\nЕсли есть вопрос — просто напишите сюда.`;
   } else {
     const left: string[] = [];
     if (contractTodo) left.push("подписать договор");
@@ -1318,7 +1436,7 @@ async function handleRepeatStart(to: Recipient, session: Session, fromName: stri
     msg = `${hello}\n\nОсталось ${left.join(" и ")} — ссылки ниже.`;
   }
   await send(to, msg, kb);
-  await logMessage(session, "bot", msg, { kind: "welcome_back" });
+  await logMessage(session, "bot", msg, { kind: "welcome_back", stage, day: todayMsk() });
   await logEvent(session, "custom", { kind: "bot_reopened", channel: to.channel, chat_id: to.chatId, from: fromName });
 
   if (contractTodo) {
@@ -1385,11 +1503,35 @@ async function handleCommand(to: Recipient, cmd: string, bookingIdFromCallback: 
   const instr = await loadInstructions(session.user_id, apartmentId);
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
   const fallback = "Инструкция ещё не заполнена менеджером. Напишите сюда — менеджер ответит.";
+  const st = await loadStage(session);
+  const early = st.stage === "before";
   let reply = "";
   switch (cmd) {
-    case "address": case "info": reply = blockAddress(instr) || fallback; break;
-    case "wifi": reply = blockWifi(instr) || fallback; break;
-    case "checkin": case "checkin_info": reply = blockCheckin(instr) || fallback; break;
+    // До дня заезда адрес, Wi-Fi и способ попасть в квартиру не выдаём.
+    case "address": case "info": reply = early ? blockBeforeArrival(instr, st.begin) : (blockAddress(instr) || fallback); break;
+    case "wifi": reply = early ? blockBeforeArrival(instr, st.begin) : (blockWifi(instr) || fallback); break;
+    case "checkin": case "checkin_info": reply = early ? blockBeforeArrival(instr, st.begin) : (blockCheckin(instr) || fallback); break;
+    case "problem": {
+      // Следующее сообщение гостя (в течение часа) уйдёт менеджеру, не в ИИ.
+      await svc().from("guest_sessions").update({
+        awaiting_feedback: "problem",
+        awaiting_feedback_until: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      }).eq("id", session.id);
+      reply = "Опишите, пожалуйста, проблему одним сообщением. Можно приложить фото или видео — я сразу передам менеджеру.";
+      await send(to, reply);
+      await logMessage(session, "bot", reply, { kind: "command", cmd });
+      return;
+    }
+    case "extend": {
+      const fromName = [session.tg_first_name, session.tg_last_name].filter(Boolean).join(" ") || session.tg_username || "Гость";
+      await notifyManager(
+        session.user_id,
+        `📅 <b>Гость хочет продлить проживание</b>\n${htmlEscape(instr?.apartment_title || "")}\nГость: ${htmlEscape(fromName)}\nБронь: <code>${session.booking_id}</code>${st.end ? `, выезд ${ddmm(st.end)}` : ""}\n\n` +
+          `Проверьте, свободна ли квартира, и ответьте гостю в приложении: <a href="${APP_URL}">открыть приложение</a>.`,
+      );
+      reply = "Передал менеджеру, что вы хотите продлить проживание. Он проверит, свободна ли квартира, и напишет вам здесь. На сколько суток хотите продлить? Можете написать сюда.";
+      break;
+    }
     case "checkout": case "checkout_info": reply = blockCheckout(instr) || fallback; break;
     case "rules": reply = blockRules(instr) || "Особых правил нет. Будьте аккуратны и уважайте соседей."; break;
     case "help": reply = blockHelp(instr); break;
@@ -1400,7 +1542,7 @@ async function handleCommand(to: Recipient, cmd: string, bookingIdFromCallback: 
     case "menu": case "start_menu": reply = "Выберите, что вас интересует:"; break;
     default: reply = "Команда не распознана. Используйте кнопки ниже.";
   }
-  await send(to, reply, guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id));
+  await send(to, reply, guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id, st.stage));
   await logMessage(session, "bot", reply, { kind: "command", cmd });
 }
 
@@ -1414,7 +1556,17 @@ async function handleArrival(to: Recipient, from: InboundEvent["from"], kind: "a
   if (!session) { await send(to, "У вас нет активных бронирований. Напишите сюда — менеджер ответит."); return; }
   const fromName = [from?.firstName, from?.lastName].filter(Boolean).join(" ") || from?.username || "";
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
-  const kb = guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id);
+  const st = await loadStage(session);
+  // После «Я приехал» в день заезда показываем меню проживания (проблема, продление).
+  const kbStage: GuestStage | null = kind === "arrived" && st.stage === "arrival" ? "stay" : st.stage;
+  const kb = guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id, kbStage);
+  // Кнопка из старого меню до дня заезда — менеджеру не сообщаем.
+  if (st.stage === "before") {
+    const early = `Ваш заезд ${ddmm(st.begin)} — нажмите эту кнопку, когда будете в квартире.`;
+    await send(to, early, kb);
+    await logMessage(session, "bot", early, { kind: "command", cmd: kind === "arrived" ? "i_arrived" : "i_leaving" });
+    return;
+  }
   if (kind === "arrived") {
     const reply = "Спасибо! ✅ Я передал менеджеру, что вы приехали. Хорошего отдыха!";
     await send(to, reply, kb);
@@ -1628,7 +1780,9 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
   const { id: apartmentId, diag: resolveDiag } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
   const instr = await loadInstructions(session.user_id, apartmentId);
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
-  const kb = guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id);
+  const st = await loadStage(session);
+  const kbStage: GuestStage | null = st.stage === "arrival" && session.arrived_at ? "stay" : st.stage;
+  const kb = guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id, kbStage);
 
   const aiInstrLen = (instr?.ai_instructions ?? "").toString().trim().length;
   const sessionAiEnabled = session.ai_enabled !== false;
@@ -1652,7 +1806,7 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
   } catch (e) { console.error("[bot] debug_last diag update failed:", e); }
 
   if (aiEnabled) {
-    const systemPrompt = buildAiSystemPrompt(instr);
+    const systemPrompt = buildAiSystemPrompt(instr, st.stage);
     const history = await loadAiHistory(session, text);
     // История передаётся текстом перед вопросом в одном сообщении: так её понимают
     // все модели (некоторые не принимают подряд несколько реплик одной роли).
@@ -1769,6 +1923,7 @@ const CHECKIN_ASK_DELAY_MS = 60 * 60000;     // вопрос «всё ли в п
 const CHECKIN_ASK_STALE_MS = 14 * 3600000;   // позже этого вопрос уже неактуален
 const CHECKIN_FEEDBACK_MS = 6 * 3600000;     // столько ждём ответ на вопрос после заселения
 const REVIEW_FEEDBACK_MS = 48 * 3600000;     // столько ждём отзыв после оценки ниже 5
+const ARRIVAL_INFO_HOUR = 10;                // информация к заезду утром в день заезда
 const ARRIVAL_REMINDER_HOUR = 17;            // напоминание о кнопке «Я приехал» в день заезда
 const REVIEW_HOUR_BEFORE = 19;               // оценка — накануне выезда в 19:00
 const REVIEW_HOUR_ONE_NIGHT = 10;            // бронь на одну ночь — в день выезда в 10:00
@@ -1910,7 +2065,7 @@ async function handleRating(to: Recipient, from: InboundEvent["from"], rating: n
  */
 async function handleFeedbackAnswer(to: Recipient, session: Session, fromName: string, text: string): Promise<boolean> {
   const kind = session.awaiting_feedback;
-  if (kind !== "checkin" && kind !== "review") return false;
+  if (kind !== "checkin" && kind !== "review" && kind !== "problem") return false;
   const until = session.awaiting_feedback_until ? Date.parse(session.awaiting_feedback_until) : 0;
   const sb = svc();
   await sb.from("guest_sessions").update({ awaiting_feedback: null, awaiting_feedback_until: null }).eq("id", session.id);
@@ -1928,7 +2083,11 @@ async function handleFeedbackAnswer(to: Recipient, session: Session, fromName: s
   let reply: string;
   let notice: string;
   const head = `${htmlEscape(bk?.apartment_title || "")}\nГость: ${htmlEscape(fromName)}\nБронь: <code>${session.booking_id}</code>`;
-  if (kind === "review") {
+  if (kind === "problem") {
+    // Кнопка «Сообщить о проблеме»: в отзывы не пишем, сразу зовём менеджера.
+    reply = "Спасибо! Я передал проблему менеджеру — он скоро ответит. Фото или видео можно прислать сюда же.";
+    notice = `⚠️ <b>Гость сообщил о проблеме</b>\n${head}\n\n${htmlEscape(clean)}\n\nПожалуйста, ответьте гостю как можно скорее в приложении: <a href="${APP_URL}">открыть приложение</a>.`;
+  } else if (kind === "review") {
     await upsertReview(session, bk, { comment: join(existing?.comment) });
     reply = "Спасибо, что поделились! Я передал ваш отзыв менеджеру.";
     notice = `📝 Отзыв гостя${existing?.rating ? ` (оценка ${existing.rating} из 5)` : ""}\n${head}\n\n${htmlEscape(clean)}`;
@@ -1997,6 +2156,34 @@ async function sendArrivalReminder(s: Session): Promise<boolean> {
   return true;
 }
 
+/** Утро дня заезда: адрес, как попасть в квартиру, Wi-Fi и кнопка «Я приехал». */
+async function sendArrivalInfo(s: Session): Promise<boolean> {
+  const { id: apartmentId } = await resolveApartmentId(s.user_id, s.realty_id, s.booking_id);
+  const instr = await loadInstructions(s.user_id, apartmentId);
+  const info = blockArrivalInfo(instr);
+  // Инструкция не заполнена — гостю не пишем пустое сообщение.
+  if (!info) return false;
+  const msg = `Сегодня ваш заезд с ${htmlEscape(instr?.checkin_from || "14:00")} 🏠\n\n${info}\n\nКогда будете в квартире, нажмите «Я приехал».`;
+  const settings = (await loadManagerSettings(s.user_id)) as ManagerSettings | null;
+  const kb = guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), s.booking_id, "arrival");
+  const r = await send(sessionRcpt(s), msg, kb);
+  if (!(r as any)?.ok) return false;
+  await logMessage(s, "bot", msg, { kind: "arrival_info", day: todayMsk() });
+  return true;
+}
+
+/** Информация к заезду уже ушла сегодня (утренняя рассылка или приветствие в день заезда). */
+async function arrivalInfoSentToday(userId: string, bookingId: number, today: string): Promise<boolean> {
+  const { data } = await svc().from("guest_messages")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("booking_id", bookingId)
+    .eq("payload->>day", today)
+    .or("payload->>kind.eq.arrival_info,payload->>stage.eq.arrival")
+    .limit(1);
+  return Array.isArray(data) && data.length > 0;
+}
+
 /** Просьба оценить квартиру от 1 до 5 кнопками. */
 async function sendReviewAsk(s: Session): Promise<boolean> {
   const msg = "Как вам у нас? ⭐\n\nОцените, пожалуйста, квартиру от 1 до 5 — просто нажмите на оценку ниже.";
@@ -2034,6 +2221,7 @@ async function endpointQualityTick(req: Request, url: URL): Promise<Response> {
     const s = ts as Session;
     const sent = kind === "checkin" ? await sendCheckinAsk(s)
       : kind === "arrival" ? await sendArrivalReminder(s)
+      : kind === "arrival_info" ? await sendArrivalInfo(s)
       : kind === "review" ? await sendReviewAsk(s)
       : null;
     if (sent === null) return json({ ok: false, error: "bad_kind" }, 400);
@@ -2068,6 +2256,28 @@ async function endpointQualityTick(req: Request, url: URL): Promise<Response> {
       if (await sendCheckinAsk(s)) result.checkin_ask++;
     } catch (e) {
       console.error("[bot] quality checkin_ask:", (e as Error).message);
+    }
+  }
+
+  // 1a) В день заезда с 10:00: адрес, как попасть в квартиру и Wi-Fi (один раз).
+  if (hour >= ARRIVAL_INFO_HOUR) {
+    const { data: arrivalsInfo } = await sb.from("rc_bookings")
+      .select("user_id, booking_id, status")
+      .eq("begin_date", today)
+      .limit(500);
+    const listInfo = (arrivalsInfo || []).filter((b: any) => isBookedStatus(b.status));
+    const infoSessions = await latestSessionsFor(listInfo);
+    for (const s of infoSessions.values()) {
+      try {
+        if (s.arrived_at || s.left_at) continue;
+        const to = sessionRcpt(s);
+        if (!to.chatId) continue;
+        if (await arrivalInfoSentToday(s.user_id, s.booking_id, today)) continue;
+        if (dry) { plan("arrival_info", s); continue; }
+        if (await sendArrivalInfo(s)) result.arrival_info = (result.arrival_info || 0) + 1;
+      } catch (e) {
+        console.error("[bot] quality arrival_info:", (e as Error).message);
+      }
     }
   }
 

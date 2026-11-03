@@ -217,7 +217,7 @@ export async function saveInstruction(apartmentId, apartmentTitle, patch) {
   // менеджер уже не видит и не может исправить.
   const LEGACY_FIELDS = {
     directions_metro: null, parking_info: null, entrance_code: null,
-    door_code: null, key_location: null, checkin_instruction: null,
+    door_code: null, key_location: null,
     checkout_checklist: null, key_return_info: null,
     emergency_phone: null, emergency_telegram: null,
     apartment_notes: null, amenities: null,
@@ -923,6 +923,7 @@ async function loadInstructionIntoForm(apartmentId, apartmentTitle) {
   setFieldVal('instr_full_address', data.full_address);
   setFieldVal('instr_checkin_from', data.checkin_from || '14:00');
   setFieldVal('instr_checkout_until', data.checkout_until || '12:00');
+  setFieldVal('instr_checkin_instruction', data.checkin_instruction);
   setFieldVal('instr_wifi_ssid', data.wifi_ssid);
   setFieldVal('instr_wifi_password', data.wifi_password);
   setFieldVal('instr_smoking_policy', data.smoking_policy);
@@ -957,7 +958,7 @@ function setInstructionsReadOnly(readOnly) {
 
 function hasAnyInstructionData(data) {
   if (!data) return false;
-  const keys = ['full_address','wifi_ssid','wifi_password','smoking_policy','pets_policy','quiet_hours','other_rules','ai_instructions'];
+  const keys = ['full_address','checkin_instruction','wifi_ssid','wifi_password','smoking_policy','pets_policy','quiet_hours','other_rules','ai_instructions'];
   return keys.some(k => data[k] && String(data[k]).trim());
 }
 
@@ -972,6 +973,7 @@ function readInstructionForm() {
     full_address:    get('instr_full_address'),
     checkin_from:    get('instr_checkin_from') || '14:00',
     checkout_until:  get('instr_checkout_until') || '12:00',
+    checkin_instruction: get('instr_checkin_instruction'),
     wifi_ssid:       get('instr_wifi_ssid'),
     wifi_password:   get('instr_wifi_password'),
     smoking_policy:  get('instr_smoking_policy'),
@@ -1007,6 +1009,10 @@ function ensureInstructionsModal() {
           <label><span class="small">Заезд с</span><input data-instr-field id="instr_checkin_from" type="text" placeholder="14:00" /></label>
           <label><span class="small">Выезд до</span><input data-instr-field id="instr_checkout_until" type="text" placeholder="12:00" /></label>
         </div>
+
+        <h3 class="instr-h">🔑 Как попасть в квартиру</h3>
+        <p class="muted small" style="margin:-.2rem 0 .4rem;">Гость получит это в день заезда вместе с адресом и Wi-Fi. До дня заезда бот это не показывает.</p>
+        <label><textarea data-instr-field id="instr_checkin_instruction" rows="3" placeholder="Код домофона 45К, ключи в сейфе у двери, код сейфа 1234"></textarea></label>
 
         <h3 class="instr-h">📶 Wi-Fi</h3>
         <div class="instr-grid-2">
