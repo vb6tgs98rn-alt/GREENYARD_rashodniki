@@ -508,11 +508,38 @@ async function handleApp(req: Request, body: any): Promise<Response> {
     const today = moscowToday();
     const month = /^\d{4}-\d{2}$/.test(String(body?.month || "")) ? String(body.month) : today.slice(0, 7);
     if (month > today.slice(0, 7)) return json({ ok: false, error: "Месяц ещё не начался" }, 400);
-    if (!aiRateOk(user.id)) return json({ ok: false, error: "Слишком много запросов, попробуйте через час" }, 429);
     const question = String(body?.question || "").trim().slice(0, 1000);
     const previous = String(body?.previous || "").slice(0, 4000);
-    const res = await runAiAnalysis(user.id, month, today, question, previous);
-    return json({ ok: true, month, text: res.text, model: res.model, issues: res.issues });
+    // Повторное нажатие, пока прошлый такой же разбор ещё готовится, — отдаём тот же.
+    const since = new Date(Date.now() - 4 * 60000).toISOString();
+    let dupQ = admin.from("ai_analysis_results").select("id")
+      .eq("user_id", user.id).eq("month", month).eq("status", "pending").gte("created_at", since);
+    dupQ = question ? dupQ.eq("question", question) : dupQ.is("question", null);
+    const { data: dup } = await dupQ.order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (dup?.id) return json({ ok: true, month, jobId: dup.id });
+
+    if (!aiRateOk(user.id)) return json({ ok: false, error: "Слишком много запросов, попробуйте через час" }, 429);
+    // Чистим разборы старше 30 дней.
+    await admin.from("ai_analysis_results").delete()
+      .eq("user_id", user.id).lt("created_at", new Date(Date.now() - 30 * 86400000).toISOString());
+    const { data: job, error: jErr } = await admin.from("ai_analysis_results")
+      .insert({ user_id: user.id, month, question: question || null, status: "pending" })
+      .select("id").single();
+    if (jErr || !job) return json({ ok: false, error: `Не удалось создать разбор: ${jErr?.message || "ошибка"}` }, 500);
+
+    // Разбор готовится в фоне и записывается в таблицу: приложение заберёт его,
+    // даже если телефон оборвал соединение (свернули приложение).
+    const work = runAiAnalysis(user.id, month, today, question, previous)
+      .then((res) => admin.from("ai_analysis_results").update({
+        status: "done", text: res.text, model: res.model, cost_usd: res.costUsd, finished_at: new Date().toISOString(),
+      }).eq("id", job.id))
+      .catch((e) => admin.from("ai_analysis_results").update({
+        status: "error", error: String((e as Error)?.message || e).slice(0, 500), finished_at: new Date().toISOString(),
+      }).eq("id", job.id))
+      .then((r: any) => { if (r?.error) console.error("[owner-report] ai job save error:", r.error.message); });
+    const rt = (globalThis as any).EdgeRuntime;
+    if (rt?.waitUntil) rt.waitUntil(work); else await work;
+    return json({ ok: true, month, jobId: job.id });
   }
 
   if (action === "pdf" || action === "send") {
