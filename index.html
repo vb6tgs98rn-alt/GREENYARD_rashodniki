@@ -16,7 +16,7 @@
   <title>Green Yard</title>
   <!-- Шрифт грузится неблокирующе: если fontshare недоступен, страница не зависает (системный шрифт). -->
   <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-  <link rel="stylesheet" href="./styles.css?v=20261103-8" />
+  <link rel="stylesheet" href="./styles.css?v=20261104-1" />
 </head>
 <body class="is-guest is-booting">
   <!-- ─── Заставка загрузки (видна, пока на body есть класс is-booting) ──────────
@@ -34,7 +34,7 @@
   <!-- ─── Экран входа для гостя (виден только при body.is-guest) ────────── -->
   <div class="guest-gate" id="guestGate" role="dialog" aria-labelledby="guestGateTitle">
     <div class="guest-gate-card">
-      <div class="brand-company" style="margin-bottom:.35rem;">GREEN YARD</div>
+      <div class="brand-logo" role="img" aria-label="А-Смена" style="margin-bottom:.6rem;"><img class="brand-logo-mark" src="./a-smena-mark.png?v=20261104-1" alt="" /><span class="brand-logo-word"></span></div>
       <h1 id="guestGateTitle" class="guest-gate-title">Вход в аккаунт</h1>
       <p class="guest-gate-hint">Доступ к приложению только после входа. Данные привязаны к аккаунту и доступны на любом устройстве.</p>
       <input type="email" id="gateEmail" placeholder="Email" autocomplete="email" inputmode="email" />
@@ -58,7 +58,7 @@
   <aside class="drawer" id="drawerMenu" aria-hidden="true">
     <div class="drawer-head">
       <div>
-        <div class="brand-company">GREEN YARD</div>
+        <div class="brand-logo" role="img" aria-label="А-Смена"><img class="brand-logo-mark" src="./a-smena-mark.png?v=20261104-1" alt="" /><span class="brand-logo-word"></span></div>
         <strong>Меню</strong>
         <div class="small">Настройки, учёт, чаты, интеграции</div>
       </div>
@@ -122,7 +122,7 @@
       <div class="brand">
         <button class="menu-toggle" id="openDrawerSidebar" aria-label="Открыть меню">☰</button>
         <div>
-          <div class="brand-company">GREEN YARD</div>
+          <div class="brand-logo" role="img" aria-label="А-Смена"><img class="brand-logo-mark" src="./a-smena-mark.png?v=20261104-1" alt="" /><span class="brand-logo-word"></span></div>
           <h1>Учёт расходников</h1>
           <p>Квартиры, закупки, история и быстрые действия</p>
         </div>
@@ -574,6 +574,6 @@
     </div>
   </div>
 
-  <script type="module" src="./app.js?v=20261103-8"></script>
+  <script type="module" src="./app.js?v=20261104-1"></script>
 </body>
 </html>
