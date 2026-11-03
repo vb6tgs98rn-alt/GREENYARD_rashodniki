@@ -244,15 +244,17 @@ function financeEntryCard(entry) {
 
   // Компактные иконки в правом верхнем углу: карандаш (редактировать) + корзина (удалить).
   // Системные брони из RealtyCalendar не редактируем. Автосписания (auto-rent/auto-owner-payout/cleaning) — редактируем и удаляем.
-  const isSystem = entry.source === 'realtycalendar';
+  // Автоуборку можно только редактировать: удалённая уборка вернулась бы при следующем синке.
+  const isCleaningEntry = entry.source === 'realtycalendar' && String(entry.externalBookingId || '').endsWith(':cleaning');
+  const isSystem = entry.source === 'realtycalendar' && !isCleaningEntry;
   const iconsHtml = isSystem ? '' : `
     <div class="finance-card-icons">
       <button class="finance-icon-btn" data-action="edit-entry" data-id="${entry.id}" title="Редактировать" aria-label="Редактировать">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
       </button>
-      <button class="finance-icon-btn" data-action="delete-entry" data-id="${entry.id}" title="Удалить" aria-label="Удалить">
+      ${isCleaningEntry ? '' : `<button class="finance-icon-btn" data-action="delete-entry" data-id="${entry.id}" title="Удалить" aria-label="Удалить">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
-      </button>
+      </button>`}
     </div>`;
 
   return `<article class="finance-card ${entry.type}" data-entry-id="${entry.id}">
@@ -466,7 +468,7 @@ async function _renderFinanceByApartmentAsync() {
       const periodLabel = apt.period.from && apt.period.to
         ? `${apt.period.from} — ${apt.period.to} (${apt.period.days} сут.)`
         : 'без периода';
-      const BUILD_VERSION = 'v.2026-10-29.1';
+      const BUILD_VERSION = 'v.2026-11-03.1';
       const profitColor = (v) => v >= 0 ? 'var(--color-success)' : 'var(--color-error)';
       // Выплата собственнику: для субаренды — прочерк; для ДУ — сумма.
       const payoutCell = (r) => {
@@ -656,7 +658,7 @@ async function _renderFinanceByCyclesAsync() {
   if (myToken !== _financeAptSummaryToken) return;
   if (!dom.financeByApartment) return;
 
-  const BUILD_VERSION = 'v.2026-10-29.1';
+  const BUILD_VERSION = 'v.2026-11-03.1';
   const fmt2 = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pct = (n) => `${Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
   const stay = (n) => Number(n || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

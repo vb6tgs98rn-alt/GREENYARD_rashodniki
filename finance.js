@@ -128,7 +128,21 @@ export function updateFinanceEntry(id, patch = {}) {
     if (patch.date != null) entry.date = patch.date;
     if (patch.notes != null) entry.notes = patch.notes;
     if (patch.status != null) entry.status = patch.status;
+    // Ручная правка главнее автоматики: такую запись больше не пересчитываем
+    // (аренда, выплата собу, уборка, регулярный платёж).
+    if (patch.manualEdit) entry.meta = { ...(entry.meta || {}), manualEdit: true };
   });
+}
+
+// Сегодняшняя дата по местному времени (ГГГГ-ММ-ДД).
+function _todayIso() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+// Запись можно пересчитывать автоматически: её не правили вручную и дата ещё не прошла.
+function _isAutoUpdatable(e, today = _todayIso()) {
+  return !e?.meta?.manualEdit && String(e?.date || '') >= today;
 }
 
 export function addRecurringRule(rule) {
@@ -140,9 +154,11 @@ export function addRecurringRule(rule) {
 export function deleteRecurringRule(id) {
   updateState((state) => {
     state.finance.recurringRules = state.finance.recurringRules.filter((r) => r.id !== id);
-    // Удаляем сгенерированные записи этого правила со статусом planned
+    // Удаляем только предстоящие запланированные записи правила, которые не правили вручную.
+    // Прошедшие оплаты остаются в финучёте.
+    const today = _todayIso();
     state.finance.entries = state.finance.entries.filter(
-      (e) => !(e.source === 'recurring' && e.meta?.ruleId === id && e.status === 'planned')
+      (e) => !(e.source === 'recurring' && e.meta?.ruleId === id && e.status === 'planned' && _isAutoUpdatable(e, today))
     );
   });
 }
@@ -169,8 +185,10 @@ export function deleteRecurringGroup(groupId) {
   updateState((state) => {
     const ids = _ruleIdsOfGroup(state, groupId);
     state.finance.recurringRules = state.finance.recurringRules.filter((r) => !ids.has(r.id));
+    // Прошедшие и исправленные вручную записи остаются в финучёте.
+    const today = _todayIso();
     state.finance.entries = state.finance.entries.filter(
-      (e) => !(e.source === 'recurring' && ids.has(e.meta?.ruleId) && e.status === 'planned')
+      (e) => !(e.source === 'recurring' && ids.has(e.meta?.ruleId) && e.status === 'planned' && _isAutoUpdatable(e, today))
     );
   });
 }
@@ -217,8 +235,9 @@ export function updateRecurringRules({ ruleIds = [], apartments = [], payload = 
     const keepIds = new Set();
 
     // Предстоящая запись правила: запланирована и дата не раньше сегодня.
+    // Записи, исправленные вручную, не трогаем — ручная правка главнее.
     const isUpcoming = (e, ids) => e.source === 'recurring' && ids.has(e.meta?.ruleId)
-      && e.status === 'planned' && String(e.date || '') >= today;
+      && e.status === 'planned' && String(e.date || '') >= today && !e.meta?.manualEdit;
 
     apartments.forEach((apt, idx) => {
       const share = idx === 0 ? Math.round((per + residue) * 100) / 100 : per;
@@ -400,12 +419,22 @@ export function applyRealtyCalendarBookings(bookings = []) {
   // Сначала чистим возможные дубли от старых багов синхронизации.
   dedupeFinanceEntriesByExternalId();
   updateState((state) => {
+    // Запоминаем записи (а не их позиции!): во время синка список меняется —
+    // новые брони добавляются в начало, отменённые удаляются, и старые позиции
+    // начинают указывать на чужие записи. Из-за этого раньше затирались ручные расходы.
     const existingByBookingId = new Map();
-    state.finance.entries.forEach((entry, idx) => {
+    state.finance.entries.forEach((entry) => {
       if (entry.source === 'realtycalendar' && entry.externalBookingId) {
-        existingByBookingId.set(String(entry.externalBookingId), { entry, idx });
+        existingByBookingId.set(String(entry.externalBookingId), { entry });
       }
     });
+    // Заменяет запись по её id в текущем списке (позицию ищем заново на момент записи).
+    const replaceEntry = (oldEntry, next) => {
+      const i = state.finance.entries.findIndex((e) => e === oldEntry || e.id === oldEntry.id);
+      if (i >= 0) state.finance.entries[i] = next;
+      else state.finance.entries.unshift(next);
+      existingByBookingId.set(String(next.externalBookingId), { entry: next });
+    };
 
     bookings.forEach((b) => {
       const bookingId = String(b.booking_id);
@@ -479,13 +508,13 @@ export function applyRealtyCalendarBookings(bookings = []) {
       };
 
       if (existingByBookingId.has(bookingId)) {
-        const { entry, idx } = existingByBookingId.get(bookingId);
-        state.finance.entries[idx] = {
+        const { entry } = existingByBookingId.get(bookingId);
+        replaceEntry(entry, {
           ...entry,
           ...payload,
           apartmentName: getDisplayApartmentName(apartment.name),
           id: entry.id,
-        };
+        });
         result.updated++;
       } else {
         const entry = createFinanceEntryDraft(payload);
@@ -514,8 +543,10 @@ export function applyRealtyCalendarBookings(bookings = []) {
         if (existingByBookingId.has(cleaningId)) {
           // Старые автоуборки НЕ перецениваем: если цена уборки в настройках изменилась,
           // у уже созданных записей оставляем прежнюю сумму. Новая цена применится только к новым броням.
-          const { entry, idx } = existingByBookingId.get(cleaningId);
-          state.finance.entries[idx] = {
+          // Уборку, исправленную вручную, не трогаем совсем — ручная правка главнее.
+          const { entry } = existingByBookingId.get(cleaningId);
+          if (entry.meta?.manualEdit) return;
+          replaceEntry(entry, {
             ...entry,
             // обновляем только отображаемые поля, без amount/netAmount:
             apartmentId: cleaningPayload.apartmentId,
@@ -530,16 +561,21 @@ export function applyRealtyCalendarBookings(bookings = []) {
             meta: cleaningPayload.meta,
             apartmentName: getDisplayApartmentName(apartment.name),
             id: entry.id,
-          };
+          });
         } else {
           const entry = createFinanceEntryDraft(cleaningPayload);
           state.finance.entries.unshift(entry);
         }
       } else if (existingByBookingId.has(cleaningId)) {
-        // cleaningPrice убрали — удаляем вручную связанную запись
-        state.finance.entries = state.finance.entries.filter(
-          (e) => !(e.source === 'realtycalendar' && String(e.externalBookingId) === cleaningId)
-        );
+        // Цену уборки в настройках убрали — удаляем только предстоящую автоуборку.
+        // Прошедшие и исправленные вручную уборки остаются в финучёте.
+        const { entry } = existingByBookingId.get(cleaningId);
+        if (_isAutoUpdatable(entry)) {
+          state.finance.entries = state.finance.entries.filter(
+            (e) => !(e.source === 'realtycalendar' && String(e.externalBookingId) === cleaningId)
+          );
+          existingByBookingId.delete(cleaningId);
+        }
       }
     });
 
@@ -576,10 +612,13 @@ export function regenerateAutoRentEntries(apartmentId, options = {}) {
   const trustShare = Math.min(100, Math.max(0, Number(apt.trustShare || 0)));
   const rentAmount = Math.max(0, Number(apt.rentAmount || 0));
 
-  // 1) Удаляем все прежние автозаписи этой квартиры (чтобы не было дублей/старых сумм).
+  // 1) Удаляем только предстоящие автозаписи этой квартиры, которые не правили вручную
+  //    (их пересоздадим по текущим настройкам). Прошедшие месяцы и ручные правки сохраняем.
+  const today = _todayIso();
   state.finance.entries = state.finance.entries.filter((e) => {
     if (e.apartmentId !== apartmentId) return true;
-    return !(e.source === 'auto-rent' || e.source === 'auto-owner-payout');
+    if (!(e.source === 'auto-rent' || e.source === 'auto-owner-payout')) return true;
+    return !_isAutoUpdatable(e, today);
   });
 
   // 1б) Опционально: удаляем ручные записи-аренды/выплаты собу (только при сохранении настроек).
@@ -681,7 +720,9 @@ function _ensureAutoRentEntryForMonth(state, apt, year, month1) {
       meta: { kind: 'auto-rent', month: monthKeyStr, apartmentId: apt.id },
     };
     if (existsIdx >= 0) {
-      state.finance.entries[existsIdx] = { ...state.finance.entries[existsIdx], ...payload };
+      // Прошедшую или исправленную вручную запись не пересчитываем.
+      const ex = state.finance.entries[existsIdx];
+      if (_isAutoUpdatable(ex)) state.finance.entries[existsIdx] = { ...ex, ...payload };
     } else {
       state.finance.entries.unshift(createFinanceEntryDraft(payload));
     }
@@ -706,6 +747,8 @@ function _ensureAutoRentEntryForMonth(state, apt, year, month1) {
     const extId = `auto-owner-payout:${apt.id}:${monthKeyStr}`;
     const existsIdx = state.finance.entries.findIndex((e) => String(e.externalBookingId || '') === extId);
     // Если выплата ≤ 0 (убыток) — не создаём запись.
+    // Прошедшую или исправленную вручную выплату не трогаем.
+    if (existsIdx >= 0 && !_isAutoUpdatable(state.finance.entries[existsIdx])) return;
     if (!(ownerPayout > 0)) {
       if (existsIdx >= 0) state.finance.entries.splice(existsIdx, 1);
       return;
