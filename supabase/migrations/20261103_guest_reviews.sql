@@ -67,3 +67,7 @@ select cron.schedule('guest-quality-tick', '*/10 * * * *', $$
     timeout_milliseconds := 60000
   );
 $$);
+
+-- Боту (service_role) нужны права на запись в таблицу оценок.
+grant select, insert, update, delete on public.guest_reviews to service_role;
+grant usage, select on sequence public.guest_reviews_id_seq to service_role;

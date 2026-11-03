@@ -1796,6 +1796,37 @@ async function latestSessionsFor(bookings: any[]): Promise<Map<string, Session &
   return out;
 }
 
+/** Вопрос «всё ли в порядке» после заселения; ответ гостя уйдёт менеджеру. */
+async function sendCheckinAsk(s: Session): Promise<boolean> {
+  const msg = "Надеемся, вы хорошо устроились 🏠\n\nЕсли в квартире что-то не так — грязно, что-то не работает или чего-то не хватает, — просто напишите сюда. Мы быстро всё исправим.";
+  const r = await send(sessionRcpt(s), msg);
+  if (!(r as any)?.ok) return false;
+  await svc().from("guest_sessions").update({
+    awaiting_feedback: "checkin",
+    awaiting_feedback_until: new Date(Date.now() + CHECKIN_FEEDBACK_MS).toISOString(),
+  }).eq("id", s.id);
+  await logMessage(s, "bot", msg, { kind: "checkin_ask" });
+  return true;
+}
+
+/** Напоминание о кнопке «Я приехал» — с самой кнопкой под сообщением. */
+async function sendArrivalReminder(s: Session): Promise<boolean> {
+  const msg = "Вы уже заселились? 🔑\n\nМы узнаем о вашем приезде, только когда вы нажмёте кнопку «Я приехал». Пожалуйста, нажмите её, как только окажетесь в квартире.";
+  const r = await send(sessionRcpt(s), msg, [[{ text: "✅ Я приехал", data: cmdWithBooking("i_arrived", s.booking_id) }]]);
+  if (!(r as any)?.ok) return false;
+  await logMessage(s, "bot", msg, { kind: "arrival_reminder" });
+  return true;
+}
+
+/** Просьба оценить квартиру от 1 до 5 кнопками. */
+async function sendReviewAsk(s: Session): Promise<boolean> {
+  const msg = "Как вам у нас? ⭐\n\nОцените, пожалуйста, квартиру от 1 до 5 — просто нажмите на оценку ниже.";
+  const r = await send(sessionRcpt(s), msg, ratingKeyboard(s.booking_id));
+  if (!(r as any)?.ok) return false;
+  await logMessage(s, "bot", msg, { kind: "review_ask" });
+  return true;
+}
+
 /**
  * Плановая задача (каждые 10 минут): вопрос после заселения, напоминание
  * о кнопке «Я приехал» и просьба оценить квартиру. Защита: заголовок x-cron-secret.
@@ -1807,6 +1838,28 @@ async function endpointQualityTick(req: Request, url: URL): Promise<Response> {
   const { data: cfg } = await sb.from("cron_config").select("secret").eq("key", "quality_tick").maybeSingle();
   const secret = cfg?.secret || "";
   if (!secret || got !== secret) return json({ ok: false, error: "forbidden" }, 403);
+
+  // Ручная проверка: отправить одно сообщение цепочки сразу, без учёта времени.
+  // ?test_booking=<id>&test_kind=checkin|arrival|review
+  const testBooking = Number(url.searchParams.get("test_booking") || 0);
+  if (testBooking) {
+    const kind = url.searchParams.get("test_kind") || "";
+    const { data: ts } = await sb.from("guest_sessions")
+      .select(SESSION_COLS)
+      .eq("booking_id", testBooking)
+      .not("started_at", "is", null)
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!ts) return json({ ok: false, error: "session_not_found" }, 404);
+    const s = ts as Session;
+    const sent = kind === "checkin" ? await sendCheckinAsk(s)
+      : kind === "arrival" ? await sendArrivalReminder(s)
+      : kind === "review" ? await sendReviewAsk(s)
+      : null;
+    if (sent === null) return json({ ok: false, error: "bad_kind" }, 400);
+    return json({ ok: sent, test: kind, booking_id: testBooking });
+  }
 
   const dry = url.searchParams.get("dry") === "1";
   // Для проверки в режиме dry можно подставить момент времени: ?dry=1&at=2026-11-04T19:05:00%2B03:00
@@ -1833,15 +1886,7 @@ async function endpointQualityTick(req: Request, url: URL): Promise<Response> {
       if (bk && !isBookedStatus(bk.status)) continue;
       if (dry) { plan("checkin_ask", s); continue; }
       if (!(await claimSession(s.id, "checkin_ask_sent_at"))) continue;
-      const msg = "Надеемся, вы хорошо устроились 🏠\n\nЕсли в квартире что-то не так — грязно, что-то не работает или чего-то не хватает, — просто напишите сюда. Мы быстро всё исправим.";
-      const r = await send(to, msg);
-      if (!(r as any)?.ok) continue;
-      await sb.from("guest_sessions").update({
-        awaiting_feedback: "checkin",
-        awaiting_feedback_until: new Date(Date.now() + CHECKIN_FEEDBACK_MS).toISOString(),
-      }).eq("id", s.id);
-      await logMessage(s, "bot", msg, { kind: "checkin_ask" });
-      result.checkin_ask++;
+      if (await sendCheckinAsk(s)) result.checkin_ask++;
     } catch (e) {
       console.error("[bot] quality checkin_ask:", (e as Error).message);
     }
@@ -1864,11 +1909,7 @@ async function endpointQualityTick(req: Request, url: URL): Promise<Response> {
         if (!to.chatId) continue;
         if (dry) { plan("arrival_reminder", s); continue; }
         if (!(await claimSession(s.id, "arrival_reminder_sent_at"))) continue;
-        const msg = "Вы уже заселились? 🔑\n\nМы узнаем о вашем приезде, только когда вы нажмёте кнопку «Я приехал». Пожалуйста, нажмите её, как только окажетесь в квартире.";
-        const r = await send(to, msg, [[{ text: "✅ Я приехал", data: cmdWithBooking("i_arrived", s.booking_id) }]]);
-        if (!(r as any)?.ok) continue;
-        await logMessage(s, "bot", msg, { kind: "arrival_reminder" });
-        result.arrival_reminder++;
+        if (await sendArrivalReminder(s)) result.arrival_reminder++;
       } catch (e) {
         console.error("[bot] quality arrival_reminder:", (e as Error).message);
       }
@@ -1901,11 +1942,7 @@ async function endpointQualityTick(req: Request, url: URL): Promise<Response> {
       if (!to.chatId) continue;
       if (dry) { plan("review_ask", s); continue; }
       if (!(await claimSession(s.id, "review_ask_sent_at"))) continue;
-      const msg = "Как вам у нас? ⭐\n\nОцените, пожалуйста, квартиру от 1 до 5 — просто нажмите на оценку ниже.";
-      const r = await send(to, msg, ratingKeyboard(s.booking_id));
-      if (!(r as any)?.ok) continue;
-      await logMessage(s, "bot", msg, { kind: "review_ask" });
-      result.review_ask++;
+      if (await sendReviewAsk(s)) result.review_ask++;
     } catch (e) {
       console.error("[bot] quality review_ask:", (e as Error).message);
     }
