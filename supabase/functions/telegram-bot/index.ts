@@ -1448,9 +1448,16 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
     .limit(1)
     .maybeSingle();
 
-  let session: Session | null = (waitingRow as Session) ?? null;
+  const active = await findActiveSessions(to);
+  const nowMs = Date.now();
+  // 1) Ждём ответ на вопрос после заселения или отзыв — это важнее всего.
+  const feedbackRow = active.find((s) =>
+    s.awaiting_feedback && s.awaiting_feedback_until && Date.parse(s.awaiting_feedback_until) > nowMs) ?? null;
+  // 2) Ждём почту. Старая бронь с забытым флагом не должна перехватывать
+  //    сообщения, если у гостя есть действующая бронь.
+  const waitingOk = waitingRow && (!active.length || active.some((s) => s.id === (waitingRow as Session).id));
+  let session: Session | null = feedbackRow ?? (waitingOk ? (waitingRow as Session) : null);
   if (!session) {
-    const active = await findActiveSessions(to);
     session = active.length ? active[0] : await findSessionByRcpt(to);
   }
   if (!session) {
