@@ -45,7 +45,12 @@ import {
   todayMsk,
 } from "../_shared/tochka_deposit.ts";
 import { cleaningAddress, placeLines } from "../_shared/cleaning_address.ts";
-import { bookingIdFromNotice, CANCEL_IGNORE_CMD } from "../_shared/cancel_report.ts";
+import {
+  bookingIdFromNotice,
+  CANCEL_IGNORE_CMD,
+  CANCEL_REASON_CMD,
+  CANCEL_WAIT_MINUTES,
+} from "../_shared/cancel_report.ts";
 
 const TG_SECRET    = Deno.env.get("TELEGRAM_WEBHOOK_SECRET")   ?? "";
 const MAX_SECRET   = Deno.env.get("MAX_WEBHOOK_SECRET")        ?? "";
@@ -1520,7 +1525,7 @@ async function handleCancelIgnore(to: Recipient, bookingId: number): Promise<boo
   const owners = await managerBookingOwners(to, bookingId);
   if (owners.length === 0) return false;
   const { error } = await svc().from("rc_bookings")
-    .update({ cancel_ignored: true })
+    .update({ cancel_ignored: true, cancel_wait_rcpt: null, cancel_wait_until: null })
     .eq("booking_id", bookingId)
     .in("user_id", owners);
   if (error) {
@@ -1539,7 +1544,7 @@ async function handleCancelReasonReply(to: Recipient, bookingId: number, text: s
   const reason = text.trim().slice(0, 1000);
   if (!reason) return true;
   const { error } = await svc().from("rc_bookings")
-    .update({ cancellation_reason: reason, cancel_ignored: false })
+    .update({ cancellation_reason: reason, cancel_ignored: false, cancel_wait_rcpt: null, cancel_wait_until: null })
     .eq("booking_id", bookingId)
     .in("user_id", owners);
   if (error) {
@@ -1549,6 +1554,50 @@ async function handleCancelReasonReply(to: Recipient, bookingId: number, text: s
   }
   await send(to, `Причина отмены записана (бронь №${bookingId}):\n${htmlEscape(reason)}`);
   return true;
+}
+
+/** Ключ чата для ожидания причины: «канал:chat_id». */
+function waitKey(to: Recipient): string {
+  return `${to.channel}:${to.chatId}`;
+}
+
+/**
+ * Кнопка «Указать причину»: запоминаем, что этот чат ждёт причину по брони.
+ * Следующее сообщение из чата (в течение CANCEL_WAIT_MINUTES) станет причиной отмены.
+ */
+async function handleCancelReasonStart(to: Recipient, bookingId: number): Promise<boolean> {
+  const owners = await managerBookingOwners(to, bookingId);
+  if (owners.length === 0) return false;
+  const sb = svc();
+  const key = waitKey(to);
+  // Ждём причину только по одной брони на чат: прежнее ожидание снимаем.
+  await sb.from("rc_bookings")
+    .update({ cancel_wait_rcpt: null, cancel_wait_until: null })
+    .eq("cancel_wait_rcpt", key);
+  const until = new Date(Date.now() + CANCEL_WAIT_MINUTES * 60_000).toISOString();
+  const { error } = await sb.from("rc_bookings")
+    .update({ cancel_wait_rcpt: key, cancel_wait_until: until })
+    .eq("booking_id", bookingId)
+    .in("user_id", owners);
+  if (error) {
+    console.error("[bot] cancel wait save failed:", error.message);
+    await send(to, "Не удалось начать ввод причины, попробуйте ещё раз.");
+    return true;
+  }
+  await send(to, `✍️ Напишите причину отмены брони №${bookingId} одним сообщением.`);
+  return true;
+}
+
+/** Бронь, по которой этот чат сейчас ждёт причину отмены (или null). */
+async function pendingCancelBooking(to: Recipient): Promise<number | null> {
+  const { data } = await svc().from("rc_bookings")
+    .select("booking_id")
+    .eq("cancel_wait_rcpt", waitKey(to))
+    .gt("cancel_wait_until", new Date().toISOString())
+    .order("cancel_wait_until", { ascending: false })
+    .limit(1);
+  const id = data?.[0]?.booking_id;
+  return id != null ? Number(id) : null;
 }
 
 async function handleEvent(ev: InboundEvent) {
@@ -1573,6 +1622,11 @@ async function handleEvent(ev: InboundEvent) {
     // Менеджер: «Игнорировать» отменённую бронь в отчёте по отменам.
     if (cmd === CANCEL_IGNORE_CMD) {
       if (bookingId) await handleCancelIgnore(to, bookingId);
+      return;
+    }
+    // Менеджер: «Указать причину» — ждём следующее сообщение с причиной.
+    if (cmd === CANCEL_REASON_CMD) {
+      if (bookingId) await handleCancelReasonStart(to, bookingId);
       return;
     }
     if (cmd === "i_arrived") await handleArrival(to, ev.from, "arrived", bookingId);
@@ -1608,6 +1662,12 @@ async function handleEvent(ev: InboundEvent) {
   const cancelBk = bookingIdFromNotice(ev.replyToText);
   if (cancelBk && text.trim() && !text.startsWith("/")) {
     if (await handleCancelReasonReply(to, cancelBk, text)) return;
+  }
+
+  // Менеджер нажал «Указать причину» — это сообщение и есть причина отмены.
+  if (text.trim() && !text.startsWith("/")) {
+    const waitBk = await pendingCancelBooking(to);
+    if (waitBk && await handleCancelReasonReply(to, waitBk, text)) return;
   }
 
   // Команда /id (или просто «id»): бот сообщает chat_id — чтобы менеджер

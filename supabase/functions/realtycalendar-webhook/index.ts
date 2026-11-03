@@ -29,7 +29,7 @@ import {
 } from "../_shared/channels.ts";
 import { ensureBookingPayment, paymentMessage } from "../_shared/tochka_booking.ts";
 import { cleaningAddress, placeLines } from "../_shared/cleaning_address.ts";
-import { cancelNoticeHtml, objectName, CANCEL_IGNORE_CMD } from "../_shared/cancel_report.ts";
+import { cancelNoticeHtml, objectName, cancelKeyboard } from "../_shared/cancel_report.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -170,7 +170,7 @@ async function askCancelReason(userId: string, bookingId: number, deleted: boole
   const apts = Array.isArray(st?.apartments) ? st.apartments : [];
 
   const html = cancelNoticeHtml(b, objectName(apts, b), deleted);
-  const kb: Btn[][] = [[{ text: "Игнорировать", data: `${CANCEL_IGNORE_CMD}:bk${b.booking_id}` }]];
+  const kb: Btn[][] = cancelKeyboard(b.booking_id);
   let sent = 0;
   for (const to of managerRecipientsAll(ms)) {
     try {

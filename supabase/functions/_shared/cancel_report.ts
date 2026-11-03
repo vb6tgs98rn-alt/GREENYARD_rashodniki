@@ -76,6 +76,18 @@ export function objectName(apartments: any[], b: any): string {
 
 export const CANCEL_ASK_MARK = "напишите причину отмены";
 export const CANCEL_IGNORE_CMD = "cxl_ignore";
+/** Кнопка «Указать причину»: следующее сообщение менеджера станет причиной отмены. */
+export const CANCEL_REASON_CMD = "cxl_reason";
+/** Сколько минут после нажатия «Указать причину» ждём сообщение с причиной. */
+export const CANCEL_WAIT_MINUTES = 30;
+
+/** Кнопки под сообщением об отмене. */
+export function cancelKeyboard(bookingId: number | string): { text: string; data: string }[][] {
+  return [
+    [{ text: "✍️ Указать причину", data: `${CANCEL_REASON_CMD}:bk${bookingId}` }],
+    [{ text: "Игнорировать", data: `${CANCEL_IGNORE_CMD}:bk${bookingId}` }],
+  ];
+}
 
 function esc(s: string): string {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -93,7 +105,7 @@ export function cancelNoticeHtml(b: any, objName: string, deleted: boolean): str
     Number(b?.amount || 0) > 0 ? `💰 ${esc(money(net))} (после комиссии)` : `💰 сумма не передана`,
     ...(guest ? [`👤 ${esc(guest)}`] : []),
     "",
-    `Ответьте на это сообщение и ${CANCEL_ASK_MARK}.`,
+    `Нажмите «Указать причину» или ответьте на это сообщение и ${CANCEL_ASK_MARK}.`,
     `Если это дубль или техническая запись — нажмите «Игнорировать».`,
   ].join("\n");
 }
