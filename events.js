@@ -1201,6 +1201,16 @@ function bindFinanceModals() {
     updateSplitUi('recurringSplitHint', 'recurringAptMulti', dom.recurringApartment?.value);
   }
   dom.recurringApartment?.addEventListener('change', updateRecurringApartmentHint);
+  // ИИ-анализ финучёта — отдельное окно поверх финучёта.
+  byId('financeAiAnalysisBtn')?.addEventListener('click', async () => {
+    try {
+      const { openAiAnalysisModal } = await import('./aiAnalysis.js?v=20261103-1');
+      openAiAnalysisModal();
+    } catch (err) {
+      setStatus('Ошибка открытия: ' + (err?.message || err));
+    }
+  });
+
   dom.financeAddRecurringBtn?.addEventListener('click', () => {
     setRecurringModalMode(null);
     const typeSel = document.getElementById('recurringType');

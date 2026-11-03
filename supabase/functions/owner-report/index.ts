@@ -40,6 +40,16 @@ import {
   cancelReportFileName,
   previousMonth,
 } from "../_shared/cancel_report.ts";
+import {
+  buildAnalyticsData,
+  askAi,
+  plainText,
+  splitForTelegram,
+  shiftMonth,
+  AI_ANALYSIS_INSTRUCTIONS,
+  AI_FOLLOWUP_INSTRUCTIONS,
+  type AiBooking,
+} from "../_shared/ai_analysis.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -202,6 +212,84 @@ function captionOf(fileName: string): string {
 }
 
 // =============================================================================
+// ИИ-анализ финучёта (Perplexity Agent API, ключ — секрет PERPLEXITY_API_KEY)
+// =============================================================================
+const PPLX_API_KEY = (Deno.env.get("PERPLEXITY_API_KEY") || "").trim();
+const AI_WEEKLY_LOG_KEY = "__ai_weekly__";
+const AI_MONTHLY_LOG_KEY = "__ai_monthly__";
+const MONTH_NAMES = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
+function monthName(ym: string): string {
+  const [y, m] = ym.split("-").map(Number);
+  return `${MONTH_NAMES[m - 1]} ${y}`;
+}
+
+/** Сводка для модели: главный месяц и два предыдущих. */
+async function loadAiData(userId: string, mainMonth: string, today: string) {
+  const months = [shiftMonth(mainMonth, -2), shiftMonth(mainMonth, -1), mainMonth];
+  const { data: st, error: e1 } = await admin
+    .from("app_state").select("state").eq("user_id", userId).maybeSingle();
+  if (e1) throw new Error(`app_state: ${e1.message}`);
+  const { data: bk, error: e2 } = await admin
+    .from("rc_bookings")
+    .select("booking_id, realty_id, source, status, begin_date, end_date, amount, platform_tax, raw_tax:raw_payload->data->booking->>platform_tax")
+    .eq("user_id", userId)
+    .gte("end_date", `${months[0]}-01`)
+    .limit(5000);
+  if (e2) throw new Error(`rc_bookings: ${e2.message}`);
+  return buildAnalyticsData(st?.state || {}, (bk || []) as AiBooking[], months, today);
+}
+
+// Ограничение частоты запросов из приложения: не больше 20 в час на пользователя.
+const aiHits = new Map<string, number[]>();
+function aiRateOk(userId: string): boolean {
+  const now = Date.now();
+  const list = (aiHits.get(userId) || []).filter((t) => now - t < 3600000);
+  if (list.length >= 20) { aiHits.set(userId, list); return false; }
+  list.push(now);
+  aiHits.set(userId, list);
+  return true;
+}
+
+async function runAiAnalysis(userId: string, mainMonth: string, today: string, question = "", previous = "") {
+  if (!PPLX_API_KEY) throw new Error("Не задан ключ PERPLEXITY_API_KEY");
+  const data = await loadAiData(userId, mainMonth, today);
+  const payload = JSON.stringify(data);
+  const res = question
+    ? await askAi(PPLX_API_KEY, AI_FOLLOWUP_INSTRUCTIONS,
+      `Данные (JSON):\n${payload}\n\nПрошлый разбор:\n${previous.slice(0, 4000)}\n\nВопрос владельца: ${question.slice(0, 1000)}`, 1200)
+    : await askAi(PPLX_API_KEY, AI_ANALYSIS_INSTRUCTIONS,
+      `Главный месяц: ${mainMonth} (${monthName(mainMonth)}). Сегодня ${today}.\nДанные (JSON):\n${payload}`);
+  console.log(`[owner-report] ai ok model=${res.model} cost_usd=${res.costUsd ?? "?"} q=${question ? 1 : 0}`);
+  return { text: plainText(res.text), model: res.model, costUsd: res.costUsd, issues: data.accounting_issues.length };
+}
+
+/** Плановый ИИ-разбор в Telegram: 1-го числа — за прошлый месяц, по понедельникам — текущий месяц. */
+async function sendAiDigest(cfg: { user_id: string; telegram_chat_id: number | string }, today: string, dry: boolean): Promise<any> {
+  const isFirst = today.endsWith("-01");
+  const isMonday = new Date(today + "T00:00:00Z").getUTCDay() === 1;
+  if (!isFirst && !isMonday) return null;
+  const key = isFirst ? AI_MONTHLY_LOG_KEY : AI_WEEKLY_LOG_KEY;
+  const mainMonth = isFirst ? shiftMonth(today.slice(0, 7), -1) : today.slice(0, 7);
+  const periodFrom = isFirst ? `${mainMonth}-01` : today;
+  const { data: done } = await admin.from("owner_report_log")
+    .select("sent_at").eq("user_id", cfg.user_id).eq("apartment_id", key).eq("period_from", periodFrom).maybeSingle();
+  if (done) return { report: key, skipped: "уже отправлен" };
+  const res = await runAiAnalysis(cfg.user_id, mainMonth, today);
+  const title = isFirst ? `ИИ-разбор за ${monthName(mainMonth)}` : `ИИ-разбор: ${monthName(mainMonth)} на ${today.split("-").reverse().join(".")}`;
+  if (!dry) {
+    const parts = splitForTelegram(`${title}\n\n${res.text}`);
+    for (const p of parts) {
+      const j = await tg("sendMessage", { chat_id: Number(cfg.telegram_chat_id), text: p, disable_web_page_preview: true });
+      if (!j?.ok) throw new Error(`Telegram: ${j?.description || "ошибка"}`);
+    }
+    await admin.from("owner_report_log").insert({
+      user_id: cfg.user_id, apartment_id: key, period_from: periodFrom, period_to: today, file_name: title,
+    });
+  }
+  return { report: key, month: mainMonth, sent: !dry, model: res.model, cost_usd: res.costUsd, chars: res.text.length, ...(dry ? { text: res.text } : {}) };
+}
+
+// =============================================================================
 // 1) Telegram webhook
 // =============================================================================
 async function handleTelegram(req: Request): Promise<Response> {
@@ -257,7 +345,11 @@ async function handleCron(body: any): Promise<Response> {
   // Ручной предпросмотр: только PDF по отменам, без записи в журнал
   // (плановая отправка 1-го числа после этого не пропускается).
   const onlyCancel = body?.only === "cancellations";
+  // Ручной запуск только ИИ-разбора (для проверки): {only:"ai", date:"ГГГГ-ММ-ДД", dry:true}.
+  const onlyAi = body?.only === "ai";
   const preview = body?.preview === true;
+  // ИИ-разборы идут в фоне после ответа: модель отвечает дольше, чем ждёт pg_cron.
+  const aiJobs: Promise<unknown>[] = [];
 
   let q = admin.from("owner_report_config").select("user_id, telegram_chat_id").eq("enabled", true).not("telegram_chat_id", "is", null);
   if (onlyUser) q = q.eq("user_id", onlyUser);
@@ -271,7 +363,7 @@ async function handleCron(body: any): Promise<Response> {
       const since = new Date(Date.parse(today + "T00:00:00Z") - 40 * 86400000).toISOString().slice(0, 10);
       const pre = await loadUserData(cfg.user_id, since);
       const apts = (pre.state.apartments || []).filter((a: any) => {
-        if (onlyCancel) return false;
+        if (onlyCancel || onlyAi) return false;
         if (a.archived) return false;
         const pd = Math.trunc(Number(a.paymentDay || 0));
         return pd >= 1 && pd <= 31 && isPaymentDay(today, pd);
@@ -291,8 +383,16 @@ async function handleCron(body: any): Promise<Response> {
         results.push({ apt: apt.name, from, to, sent: !dry, bytes: rep.bytes.length });
       }
 
+      // ИИ-разбор: 1-го числа — за прошлый месяц, по понедельникам — текущий месяц.
+      if (!onlyCancel) {
+        const job = sendAiDigest(cfg, today, dry)
+          .then((r) => { if (r) console.log("[owner-report] ai digest", JSON.stringify(r)); return r; })
+          .catch((e) => { console.error("[owner-report] ai digest error:", e); return { report: "ai", error: String((e as Error)?.message || e) }; });
+        aiJobs.push(job);
+      }
+
       // Первое число месяца — отчёт по отменам за прошлый месяц (один раз, по журналу).
-      if (today.endsWith("-01") || onlyCancel) {
+      if (!onlyAi && (today.endsWith("-01") || onlyCancel)) {
         try {
           const pm = previousMonth(today);
           const { data: doneC } = preview ? { data: null } : await admin.from("owner_report_log")
@@ -317,7 +417,18 @@ async function handleCron(body: any): Promise<Response> {
       results.push({ user: cfg.user_id, error: String((e as Error)?.message || e) });
     }
   }
-  return json({ ok: true, date: today, results });
+  // Ручная проверка ИИ — ждём результат и возвращаем его в ответе.
+  if (onlyAi) {
+    const ai = await Promise.all(aiJobs);
+    return json({ ok: true, date: today, results, ai });
+  }
+  // Плановый запуск — ИИ-разбор досылается в фоне, cron получает ответ сразу.
+  if (aiJobs.length) {
+    const all = Promise.all(aiJobs);
+    const rt = (globalThis as any).EdgeRuntime;
+    if (rt?.waitUntil) rt.waitUntil(all); else await all;
+  }
+  return json({ ok: true, date: today, results, ai_scheduled: aiJobs.length });
 }
 
 // =============================================================================
@@ -390,6 +501,18 @@ async function handleApp(req: Request, body: any): Promise<Response> {
       .update({ enabled: !!body?.enabled, updated_at: new Date().toISOString() }).eq("user_id", user.id);
     if (error) return json({ ok: false, error: error.message }, 500);
     return json({ ok: true });
+  }
+
+  // ИИ-разбор финучёта: {month: 'ГГГГ-ММ', question?, previous?}.
+  if (action === "ai_analysis") {
+    const today = moscowToday();
+    const month = /^\d{4}-\d{2}$/.test(String(body?.month || "")) ? String(body.month) : today.slice(0, 7);
+    if (month > today.slice(0, 7)) return json({ ok: false, error: "Месяц ещё не начался" }, 400);
+    if (!aiRateOk(user.id)) return json({ ok: false, error: "Слишком много запросов, попробуйте через час" }, 429);
+    const question = String(body?.question || "").trim().slice(0, 1000);
+    const previous = String(body?.previous || "").slice(0, 4000);
+    const res = await runAiAnalysis(user.id, month, today, question, previous);
+    return json({ ok: true, month, text: res.text, model: res.model, issues: res.issues });
   }
 
   if (action === "pdf" || action === "send") {
