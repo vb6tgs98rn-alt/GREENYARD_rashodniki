@@ -67,6 +67,13 @@ async function init() {
   if (booted) return;
   booted = true;
 
+  // Страховка: если даже проверка входа зависла — через 15 с показываем на заставке
+  // «Медленное соединение» и кнопку «Обновить» (только если заставка ещё в режиме загрузки).
+  setTimeout(() => {
+    const btn = document.getElementById('bootSplashBtn');
+    if (document.body.classList.contains('is-booting') && (!btn || btn.hidden)) showBootSplash('slow');
+  }, 15000);
+
   try {
     // 1. Кто залогинен (может быть null)
     let user = null;
@@ -92,6 +99,8 @@ async function init() {
       render();
       renderAuthStatus(null);
       renderStorageBadge('local');
+      // Не вошёл — убираем заставку, виден экран входа.
+      hideBootSplash();
       // Если ничего не загрузилось — сохраняем дефолт локально (mode='local',
       // флаг hydrating не выставлен — persistState отработает в локалку).
       if (!loaded) {
@@ -112,6 +121,7 @@ async function init() {
       render();
       renderAuthStatus(null);
       renderStorageBadge('local');
+      hideBootSplash();
       setStatus('Ошибка инициализации, работаем локально');
     } catch (e2) {
       console.error('[init] fallback also failed:', e2);
@@ -137,6 +147,57 @@ async function init() {
 let _bootstrapInFlight = null;
 let _lastBootstrappedUserId = null;
 
+// ─── Заставка загрузки ─────────────────────────────────────────────────────
+// Разметка #bootSplash — в index.html (видна сразу, ещё до загрузки скриптов).
+// Пока на body есть класс is-booting, приложение и экран входа скрыты.
+//   'loading' — «Загрузка…»;
+//   'slow'    — дольше 15 с: «Медленное соединение…» + кнопка «Обновить»;
+//   'error'   — «Не удалось загрузить данные» + кнопка «Повторить».
+let _bootFailedUser = null;
+
+function showBootSplash(mode = 'loading') {
+  try {
+    document.body.classList.add('is-booting');
+    const text = document.getElementById('bootSplashText');
+    const hint = document.getElementById('bootSplashHint');
+    const btn = document.getElementById('bootSplashBtn');
+    const spinner = document.getElementById('bootSplashSpinner');
+    if (mode === 'error') {
+      if (text) text.textContent = 'Не удалось загрузить данные';
+      if (hint) { hint.textContent = 'Проверьте интернет и попробуйте ещё раз. Ваши данные в облаке не тронуты.'; hint.hidden = false; }
+      if (btn) { btn.textContent = 'Повторить'; btn.dataset.mode = 'retry'; btn.hidden = false; }
+      if (spinner) spinner.hidden = true;
+    } else if (mode === 'slow') {
+      if (text) text.textContent = 'Загрузка…';
+      if (hint) { hint.textContent = 'Медленное соединение, продолжаем загружать…'; hint.hidden = false; }
+      if (btn) { btn.textContent = 'Обновить'; btn.dataset.mode = 'reload'; btn.hidden = false; }
+      if (spinner) spinner.hidden = false;
+    } else {
+      if (text) text.textContent = 'Загрузка…';
+      if (hint) hint.hidden = true;
+      if (btn) btn.hidden = true;
+      if (spinner) spinner.hidden = false;
+    }
+  } catch (e) {
+    console.warn('[boot] showBootSplash:', e);
+  }
+}
+
+function hideBootSplash() {
+  try { document.body.classList.remove('is-booting'); } catch {}
+}
+
+// Кнопка на заставке: «Обновить» перезагружает страницу, «Повторить» — заново читает облако.
+document.getElementById('bootSplashBtn')?.addEventListener('click', (ev) => {
+  const mode = ev.currentTarget?.dataset?.mode;
+  if (mode === 'retry' && _bootFailedUser) {
+    const u = _bootFailedUser;
+    bootstrapForSignedInUser(u, { firstBoot: false }).catch((e) => console.warn('[boot] retry:', e));
+  } else {
+    location.reload();
+  }
+});
+
 async function bootstrapForSignedInUser(user, { firstBoot = false } = {}) {
   if (_bootstrapInFlight && _lastBootstrappedUserId === (user?.id || null)) {
     return _bootstrapInFlight;
@@ -158,14 +219,24 @@ async function _doBootstrapForSignedInUser(user, { firstBoot = false } = {}) {
   renderAuthStatus(user);
   renderStorageBadge('cloud');
 
+  // Заставка «А-Смена · Загрузка…» закрывает приложение, пока не придут данные аккаунта:
+  // пустую заготовку пользователь не видит и ничего не может в ней нажать.
+  _bootFailedUser = null;
+  showBootSplash('loading');
+  let loadedOk = false;
+
   try {
     setStatus('Загружаем данные аккаунта...');
-    // Таймаут 15с — чтобы бесконечно не висеть на select'е (бывает при первом REST-вызове через кэш-connection cloudflare).
-    const res = await Promise.race([
-      fetchCloudState(setStatus),
-      new Promise((resolve) => setTimeout(() => resolve({ ok: false, timeout: true }), 15000)),
-    ]);
-    if (res.timeout) console.warn('[bootstrap] fetchCloudState timeout after 15s');
+    // Ждём ответа облака без обрыва по таймауту. Раньше через 15 с показывалась пустая
+    // заготовка, а запоздавший ответ разрешал её сохранение поверх настоящих данных.
+    // Теперь через 15 с заставка лишь сообщает о медленной связи и предлагает «Обновить».
+    const slowTimer = setTimeout(() => showBootSplash('slow'), 15000);
+    let res;
+    try {
+      res = await fetchCloudState(setStatus);
+    } finally {
+      clearTimeout(slowTimer);
+    }
 
     if (res.ok && res.found) {
       // 2a. В облаке есть запись — это источник истины. Просто показываем её.
@@ -195,16 +266,20 @@ async function _doBootstrapForSignedInUser(user, { firstBoot = false } = {}) {
       setHydrating(true);
     } else {
       // 2c. Ошибка сети/чтения. КРИТИЧЕСКИ ВАЖНО: НЕ перезаписывать облако
-      //     дефолтным state'ом. Просто показываем default в UI и ждём, пока
-      //     пользователь обновит страницу или сеть восстановится.
+      //     дефолтным state'ом. Пустую заготовку не показываем: заставка остаётся
+      //     с надписью «Не удалось загрузить данные» и кнопкой «Повторить».
+      //     Флаг hydrating остаётся включённым — сохранение заблокировано.
       console.warn('[bootstrap] cloud read failed, NOT touching cloud:', res.error);
-      setState(createDefaultState());
-      ensureFinanceGeneratedForCurrentMonth();
-      setStatus('Не удалось загрузить данные из облака. Не редактируйте — обновите страницу.');
+      setStatus('Не удалось загрузить данные из облака');
+      _bootFailedUser = user;
+      showBootSplash('error');
+      return;
     }
 
     // 4. Рендер с уже корректным state (bindEvents/renderAuthStatus уже отработали выше)
     render();
+    loadedOk = true;
+    hideBootSplash();
 
     // 4.5. Проверяем consent (не блокируем bootstrap — модалка поверх UI).
     // Запускаем ФОНОМ — если модалка нужна, она всплывёт поверх UI сама.
@@ -212,11 +287,22 @@ async function _doBootstrapForSignedInUser(user, { firstBoot = false } = {}) {
     Promise.resolve().then(() => checkConsentAfterAuth()).catch((e) => {
       console.warn('[bootstrap] consent check failed:', e);
     });
+  } catch (e) {
+    // Непредвиденная ошибка при разборе/отрисовке данных — не показываем полуготовый экран.
+    console.error('[bootstrap] error:', e);
   } finally {
-    // 5. Снимаем блокировку — с этого момента persistState() снова работает,
-    //    и любые правки пользователя начнут сохраняться в облако (источник истины).
-    setHydrating(false);
+    // 5. Снимаем блокировку только если данные аккаунта реально загружены —
+    //    с этого момента persistState() снова работает и правки уходят в облако.
+    //    При ошибке блокировка остаётся: сохранять нечего и нельзя.
+    if (loadedOk) {
+      setHydrating(false);
+    } else if (!_bootFailedUser) {
+      _bootFailedUser = user;
+      showBootSplash('error');
+    }
   }
+
+  if (!loadedOk) return;
 
   // 6. Поднимаем интеграцию с RealtyCalendar: тянем существующие брони/лог,
   //    подписываемся на realtime-обновления rc_bookings. Не блокирует UI.
@@ -265,9 +351,8 @@ async function bootstrapRealtyCalendar(user) {
           filter: 'user_id=eq.' + user.id,
         },
         () => {
-          refreshRealtyCalendarData().catch((e) => {
-            console.warn('[rc] realtime refresh failed:', e);
-          });
+          // RC часто шлёт 2–3 события на одну бронь подряд — объединяем их в одну загрузку.
+          scheduleRealtyCalendarRefresh();
         },
       )
       .subscribe();
@@ -280,6 +365,9 @@ async function bootstrapRealtyCalendar(user) {
  * Снимает realtime-подписку и сбрасывает локальные ссылки.
  */
 async function teardownRealtyCalendar() {
+  // Отменяем отложенную загрузку броней — она относится к прежнему пользователю.
+  if (_rcRefreshTimer) { clearTimeout(_rcRefreshTimer); _rcRefreshTimer = null; }
+  _rcRefreshAgain = false;
   if (!rcRealtimeChannel) {
     rcCurrentUserId = null;
     return;
@@ -305,6 +393,37 @@ async function teardownRealtyCalendar() {
  * После обновления state — финансы пересчитываются через applyRealtyCalendarBookings,
  * затем выполняется render().
  */
+// Объединение realtime-событий: ждём 1,5 с тишины, затем одна загрузка.
+// Если загрузка уже идёт — после её окончания делаем ещё одну (чтобы не потерять изменения).
+const RC_REFRESH_DEBOUNCE_MS = 1500;
+let _rcRefreshTimer = null;
+let _rcRefreshRunning = false;
+let _rcRefreshAgain = false;
+
+function scheduleRealtyCalendarRefresh() {
+  if (_rcRefreshTimer) clearTimeout(_rcRefreshTimer);
+  _rcRefreshTimer = setTimeout(() => {
+    _rcRefreshTimer = null;
+    runRealtyCalendarRefresh();
+  }, RC_REFRESH_DEBOUNCE_MS);
+}
+
+async function runRealtyCalendarRefresh() {
+  if (_rcRefreshRunning) { _rcRefreshAgain = true; return; }
+  _rcRefreshRunning = true;
+  try {
+    await refreshRealtyCalendarData();
+  } catch (e) {
+    console.warn('[rc] realtime refresh failed:', e);
+  } finally {
+    _rcRefreshRunning = false;
+    if (_rcRefreshAgain) {
+      _rcRefreshAgain = false;
+      scheduleRealtyCalendarRefresh();
+    }
+  }
+}
+
 async function refreshRealtyCalendarData() {
   try {
     const [integration, bookings, log] = await Promise.all([
@@ -471,6 +590,10 @@ window.addEventListener('focus', () => { refreshIfCloudNewer(); });
 // если signOut() виснет).
 async function handleSignOut() {
   await teardownRealtyCalendar().catch(() => {});
+  // Выход во время заставки (например, после ошибки загрузки) — убираем её и блокировку.
+  _bootFailedUser = null;
+  hideBootSplash();
+  setHydrating(false);
   setStorageMode('local', null);
   setState(createDefaultState());
   ensureFinanceGeneratedForCurrentMonth();

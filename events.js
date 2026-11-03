@@ -8,7 +8,7 @@
  * 1301 ГК РФ.
  */
 import dom, { byId } from './dom.js';
-import { fetchRealtyCalendarBookings, fetchRealtyCalendarLog, fetchRealtyCalendarIntegration, saveRealtyCalendarIntegration, disconnectRealtyCalendar, buildFinanceWebhookExample, getWebhookUrl } from './api.js';
+import { fetchRealtyCalendarBookings, fetchRealtyCalendarRawPayloads, fetchRealtyCalendarLog, fetchRealtyCalendarIntegration, saveRealtyCalendarIntegration, disconnectRealtyCalendar, buildFinanceWebhookExample, getWebhookUrl } from './api.js';
 import { addFinanceEntry, addRecurringRule, deleteFinanceEntry, deleteRecurringRule, deleteRecurringGroup, setRecurringGroupActive, updateRecurringRules, updateFinanceEntryStatus, updateFinanceEntry, toggleRecurringRule, ensureFinanceGeneratedForCurrentMonth, applyRealtyCalendarBookings, monthKey, createFinanceEntryDraft, setUnitEcoActiveReport, updateUnitEcoActiveReport, advanceUnitEcoReportIfNeeded, deleteUnitEcoHistoryReport, dedupeFinanceEntriesByExternalId, regenerateAutoRentEntriesForAllApartments, cleanupManualRentEntries, STATUS_LABELS, FINANCE_TYPES } from './finance.js';
 import { closeDrawer, closeModal, openDrawer, openModal, render, renderAuthStatus, setStatus, setAuthMsg } from './render.js';
 import { currentApartment, getDisplayApartmentName, getState, roundSmart, setState, updateState } from './state.js';
@@ -1935,13 +1935,18 @@ function bindRealtyCalendarIntegration() {
         : '';
 
       // Сырой payload последних 2 броней — чтобы увидеть какие поля передаёт RealtyCalendar (комиссия, скидки и т.д.)
+      // Список броней грузится облегчённым (без полного raw_payload), поэтому полный payload
+      // этих двух броней дочитываем отдельным маленьким запросом.
       const recent = (bookings || []).slice(0, 2);
+      let fullRaw = new Map();
+      try { fullRaw = await fetchRealtyCalendarRawPayloads(recent.map((b) => b.booking_id)); } catch (_e) { /* покажем то, что есть */ }
       const payloadBlocks = recent.map((b, i) => {
+        const raw = fullRaw.get(String(b.booking_id)) ?? b.raw_payload;
         let pretty = '';
         try {
-          pretty = JSON.stringify(b.raw_payload ?? b, null, 2);
+          pretty = JSON.stringify(raw ?? b, null, 2);
         } catch (_e) {
-          pretty = String(b.raw_payload || '');
+          pretty = String(raw || '');
         }
         const head = `№${i + 1} · realty_id=${esc(b.realty_id)} · amount=${esc(b.amount)} · prepayment=${esc(b.prepayment)} · status=${esc(b.status)}`;
         return `<details style="margin:.4rem 0;"><summary style="cursor:pointer;color:var(--color-text-muted);">Сырой payload брони ${head}</summary><pre style="max-height:340px;overflow:auto;background:rgba(0,0,0,.04);padding:.6rem;border-radius:8px;font-size:11px;line-height:1.4;white-space:pre-wrap;word-break:break-word;">${esc(pretty)}</pre></details>`;

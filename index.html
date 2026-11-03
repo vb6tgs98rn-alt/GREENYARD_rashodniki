@@ -16,9 +16,21 @@
   <title>Green Yard</title>
   <!-- Шрифт грузится неблокирующе: если fontshare недоступен, страница не зависает (системный шрифт). -->
   <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-  <link rel="stylesheet" href="./styles.css?v=20261103-1" />
+  <link rel="stylesheet" href="./styles.css?v=20261103-2" />
 </head>
-<body class="is-guest">
+<body class="is-guest is-booting">
+  <!-- ─── Заставка загрузки (видна, пока на body есть класс is-booting) ──────────
+       Показывается сразу при открытии и держится, пока не придут данные аккаунта.
+       Управление — showBootSplash()/hideBootSplash() в app.js. -->
+  <div class="boot-splash" id="bootSplash" role="status" aria-live="polite">
+    <img class="boot-splash-logo" src="./a-smena-logo.jpg?v=20261103-2" alt="А-Смена" width="640" height="208" />
+    <div class="boot-splash-row">
+      <span class="boot-splash-spinner" id="bootSplashSpinner" aria-hidden="true"></span>
+      <span class="boot-splash-text" id="bootSplashText">Загрузка…</span>
+    </div>
+    <div class="boot-splash-hint" id="bootSplashHint" hidden></div>
+    <button type="button" class="boot-splash-btn" id="bootSplashBtn" hidden>Обновить</button>
+  </div>
   <!-- ─── Экран входа для гостя (виден только при body.is-guest) ────────── -->
   <div class="guest-gate" id="guestGate" role="dialog" aria-labelledby="guestGateTitle">
     <div class="guest-gate-card">
@@ -542,6 +554,6 @@
     </div>
   </div>
 
-  <script type="module" src="./app.js?v=20261103-1"></script>
+  <script type="module" src="./app.js?v=20261103-2"></script>
 </body>
 </html>

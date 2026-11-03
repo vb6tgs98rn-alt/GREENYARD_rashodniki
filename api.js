@@ -39,23 +39,107 @@ export function getWebhookUrl() {
  * @returns {Promise<Array>}
  */
 export async function fetchRealtyCalendarBookings(limit = 500) {
+  const n = Math.max(1, Math.min(1000, Number(limit) || 500));
+  // Явная загрузка (старт, realtime, вкладка «Брони», настройки) — всегда свежие данные;
+  // заодно обновляет кэш для итогов и выплат площадок.
+  const all = await getRcBookingsCached({ force: true });
+  return all.slice(0, n);
+}
+
+// ─── Облегчённая загрузка броней с кэшем ─────────────────────────────────────
+// Полный raw_payload брони весит 5–11 КБ, а приложению из него нужны только
+// комиссия площадки (platform_tax) и secure_id. Поэтому грузим все колонки, кроме
+// raw_payload, и два поля из него — так ответ меньше примерно в 20 раз.
+// Чтобы потребители кода не менялись, raw_payload собирается обратно в той же
+// форме: { data: { booking: { platform_tax, secure_id } } }.
+const RC_LIGHT_COLUMNS = [
+  'booking_id', 'user_id', 'agency_id', 'realty_id', 'apartment_title',
+  'begin_date', 'end_date', 'amount', 'prepayment', 'status', 'source',
+  'client_fio', 'client_phone', 'client_email', 'booking_url',
+  'rc_created_at', 'rc_updated_at', 'received_at', 'platform_tax',
+  'guest_link_sent_at', 'okidoki_contract_id', 'okidoki_link', 'contract_status',
+  'contract_status_internal', 'contract_signed_at', 'contract_updated_at',
+  'cancellation_reason', 'tochka_card_enabled', 'cancel_ignored', 'cancel_asked_at',
+  'cancel_wait_rcpt', 'cancel_wait_until',
+  'raw_tax:raw_payload->data->booking->platform_tax',
+  'raw_secure_id:raw_payload->data->booking->>secure_id',
+  'raw_secure_id_old:raw_payload->booking->>secure_id',
+].join(',');
+
+// Сколько живёт кэш без внешнего сброса (сброс делает realtime-обновление броней).
+const RC_CACHE_TTL_MS = 60 * 1000;
+let _rcCache = { at: 0, userId: null, rows: null };
+let _rcInFlight = null;
+
+function _restoreRawPayload(row) {
+  const { raw_tax, raw_secure_id, raw_secure_id_old, ...rest } = row || {};
+  const booking = {};
+  if (raw_tax != null) booking.platform_tax = raw_tax;
+  const sid = raw_secure_id || raw_secure_id_old || null;
+  if (sid) booking.secure_id = sid;
+  return { ...rest, raw_payload: { data: { booking } } };
+}
+
+/** Сбросить кэш броней (после realtime-события или ручной пересинхронизации). */
+export function invalidateRcBookingsCache() {
+  _rcCache = { at: 0, userId: null, rows: null };
+}
+
+/**
+ * Все брони пользователя (до 1000, новые сверху), облегчённые, из кэша.
+ * Несколько одновременных вызовов делят один сетевой запрос.
+ * @param {{force?: boolean}} [opts]
+ * @returns {Promise<Array>}
+ */
+export async function getRcBookingsCached({ force = false } = {}) {
   const supabase = getSupabaseClient();
   if (!supabase) return [];
   // Ждём готовности сессии с ретраями (5×200мс). Без этого после быстрого входа
   // supabase-js ещё не успевает обновить getSession(), и запрос возвращает пустоту.
   const user = await requireUser();
   if (!user) return [];
+  const fresh = _rcCache.rows && _rcCache.userId === user.id && (Date.now() - _rcCache.at) < RC_CACHE_TTL_MS;
+  if (!force && fresh) return _rcCache.rows;
+  if (_rcInFlight && _rcInFlight.userId === user.id && !force) return _rcInFlight.promise;
+  const promise = (async () => {
+    const { data, error } = await supabase
+      .from('rc_bookings')
+      .select(RC_LIGHT_COLUMNS)
+      .eq('user_id', user.id)
+      .order('rc_created_at', { ascending: false })
+      .limit(1000);
+    if (error) {
+      console.warn('[RC] fetchRealtyCalendarBookings error:', error.message);
+      return _rcCache.userId === user.id && _rcCache.rows ? _rcCache.rows : [];
+    }
+    const rows = (data || []).map(_restoreRawPayload);
+    _rcCache = { at: Date.now(), userId: user.id, rows };
+    return rows;
+  })();
+  _rcInFlight = { userId: user.id, promise };
+  try { return await promise; }
+  finally { if (_rcInFlight && _rcInFlight.promise === promise) _rcInFlight = null; }
+}
+
+/**
+ * Полный raw_payload нескольких броней — только для диагностики в настройках RC.
+ * @param {Array<number|string>} ids
+ */
+export async function fetchRealtyCalendarRawPayloads(ids) {
+  const supabase = getSupabaseClient();
+  if (!supabase || !Array.isArray(ids) || !ids.length) return new Map();
+  const user = await requireUser();
+  if (!user) return new Map();
   const { data, error } = await supabase
     .from('rc_bookings')
-    .select('*')
+    .select('booking_id, raw_payload')
     .eq('user_id', user.id)
-    .order('rc_created_at', { ascending: false })
-    .limit(Math.max(1, Math.min(1000, Number(limit) || 500)));
+    .in('booking_id', ids);
   if (error) {
-    console.warn('[RC] fetchRealtyCalendarBookings error:', error.message);
-    return [];
+    console.warn('[RC] fetchRealtyCalendarRawPayloads error:', error.message);
+    return new Map();
   }
-  return data || [];
+  return new Map((data || []).map((r) => [String(r.booking_id), r.raw_payload]));
 }
 
 /**

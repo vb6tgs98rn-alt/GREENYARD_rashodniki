@@ -29,6 +29,7 @@
 
 import { getSupabaseClient, requireUser } from './supabase-client.js';
 import { getState } from './state.js';
+import { getRcBookingsCached } from './api.js';
 
 // Правила выплат. Ключ — значение поля source в RealtyCalendar.
 export const PAYOUT_RULES = {
@@ -170,14 +171,15 @@ export async function getPlatformPayoutsAsync() {
   const user = supabase ? await requireUser() : null;
   if (!supabase || !user) return [];
   const platforms = Object.keys(PAYOUT_RULES);
-  const { data, error } = await supabase
-    .from('rc_bookings')
-    .select('booking_id, source, apartment_title, begin_date, end_date, amount, prepayment, platform_tax, status, raw_payload')
-    .eq('user_id', user.id)
-    .in('source', platforms)
-    .not('status', 'in', '(canceled,deleted)')
-    .limit(3000);
-  if (error) { console.warn('[payouts] rc_bookings fetch error:', error.message); return []; }
+  // Брони — из общего облегчённого кэша (api.js), без отдельного запроса на каждую перерисовку.
+  // Фильтр тот же, что был в запросе: нужная площадка, статус есть и не отмена/удаление.
+  let data = [];
+  try {
+    const all = await getRcBookingsCached();
+    data = all
+      .filter((b) => platforms.includes(b.source) && b.status != null && b.status !== 'canceled' && b.status !== 'deleted')
+      .map((b) => ({ ...b }));
+  } catch (e) { console.warn('[payouts] rc_bookings fetch error:', e?.message || e); return []; }
 
   // Снимки на момент поступления брони: дата выезда и суммы не меняются
   // при ручных продлениях. Если снимка нет — берём текущие данные брони.

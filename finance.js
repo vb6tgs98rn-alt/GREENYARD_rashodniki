@@ -10,6 +10,7 @@
 import { currentApartment, findApartmentById, getDisplayApartmentName, getState, updateState } from './state.js';
 import { getSupabaseClient, requireUser } from './supabase-client.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
+import { getRcBookingsCached } from './api.js';
 
 export const FINANCE_TYPES = { income: 'income', expense: 'expense' };
 
@@ -1090,14 +1091,16 @@ export async function getFinanceApartmentSummaryAsync() {
   // 2) Загружаем брони из rc_bookings напрямую.
   let bookings = [];
   if (supabase && user) {
-    const { data, error } = await supabase
-      .from('rc_bookings')
-      .select('booking_id, realty_id, apartment_title, begin_date, end_date, amount, status, raw_payload, platform_tax')
-      .eq('user_id', user.id)
-      .not('status', 'in', '(canceled,deleted)')
-      .limit(2000);
-    if (error) console.warn('[finance] rc_bookings fetch error:', error.message);
-    else bookings = data || [];
+    // Брони берём из общего облегчённого кэша (api.js), а не грузим заново при каждой
+    // перерисовке. Фильтр тот же, что был в запросе: статус есть и не отмена/удаление.
+    try {
+      const all = await getRcBookingsCached();
+      bookings = all
+        .filter((b) => b.status != null && b.status !== 'canceled' && b.status !== 'deleted')
+        .map((b) => ({ ...b }));
+    } catch (e) {
+      console.warn('[finance] rc_bookings fetch error:', e?.message || e);
+    }
   }
 
   // 3) Строим строки по квартирам.
@@ -1386,14 +1389,16 @@ export async function getFinanceCyclesSummaryAsync(offsetByApt = {}) {
 
   let bookings = [];
   if (supabase && user) {
-    const { data, error } = await supabase
-      .from('rc_bookings')
-      .select('booking_id, realty_id, apartment_title, begin_date, end_date, amount, status, raw_payload, platform_tax')
-      .eq('user_id', user.id)
-      .not('status', 'in', '(canceled,deleted)')
-      .limit(2000);
-    if (error) console.warn('[finance] rc_bookings fetch error:', error.message);
-    else bookings = data || [];
+    // Брони берём из общего облегчённого кэша (api.js), а не грузим заново при каждой
+    // перерисовке. Фильтр тот же, что был в запросе: статус есть и не отмена/удаление.
+    try {
+      const all = await getRcBookingsCached();
+      bookings = all
+        .filter((b) => b.status != null && b.status !== 'canceled' && b.status !== 'deleted')
+        .map((b) => ({ ...b }));
+    } catch (e) {
+      console.warn('[finance] rc_bookings fetch error:', e?.message || e);
+    }
   }
 
   const aptsWithCycle = [];
