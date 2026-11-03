@@ -1917,6 +1917,34 @@ async function buildCheckinText(booking, state, kind, email) {
   };
 }
 
+// Подпись кнопки времени заезда/выезда: с уже указанным временем или без.
+function timeBtnLabel(field, value) {
+  const t = String(value || '').slice(0, 5);
+  if (field === 'checkin_time') return t ? `🕒 Время заезда: ${t}` : '🕒 Указать время заезда';
+  return t ? `🕒 Время выезда: ${t}` : '🕒 Указать время выезда';
+}
+
+// Сохранение времени заезда/выезда конкретной брони (null — сбросить).
+async function saveBookingTime(booking, field, value) {
+  const supabase = getSupabaseClient();
+  if (!supabase) throw new Error('Supabase не подключён');
+  await waitForAuthReady();
+  const { data: { session: _sess } } = await supabase.auth.getSession();
+  const user = _sess?.user ?? null;
+  if (!user) throw new Error('Сеанс не найден. Войдите заново.');
+  const { data: updated, error } = await supabase
+    .from('rc_bookings')
+    .update({ [field]: value || null })
+    .eq('user_id', user.id)
+    .eq('booking_id', Number(booking.booking_id))
+    .select('booking_id');
+  if (error) throw error;
+  if (!updated?.length) throw new Error('Запись не найдена или нет прав на изменение.');
+  booking[field] = value || null;
+  const b = _bookingsState.all.find(x => String(x.booking_id) === String(booking.booking_id));
+  if (b && b !== booking) b[field] = value || null;
+}
+
 // Окно «Оформить заезд» для конкретной брони.
 function openCheckinModal(booking, state, onChanged) {
   document.getElementById('bkCheckinModal')?.remove();
@@ -1944,6 +1972,10 @@ function openCheckinModal(booking, state, onChanged) {
         <button class="btn btn-secondary" type="button" data-ci-kind="deposit">Ссылка на залог</button>
         <button class="btn btn-secondary" type="button" data-ci-kind="pay">Ссылка на оплату</button>
         <button class="btn btn-secondary" type="button" data-ci-kind="contract">Ссылка на договор</button>
+      </div>
+      <div class="bk-checkin-group">
+        <button class="btn btn-secondary" type="button" data-ci-time="checkin_time">${esc(timeBtnLabel('checkin_time', booking.checkin_time))}</button>
+        <button class="btn btn-secondary" type="button" data-ci-time="checkout_time">${esc(timeBtnLabel('checkout_time', booking.checkout_time))}</button>
       </div>
       <div class="small bk-checkin-status" role="status" aria-live="polite"></div>
     </div>`;
@@ -1987,6 +2019,32 @@ function openCheckinModal(booking, state, onChanged) {
       return;
     }
 
+    // Время заезда/выезда: под кнопкой появляется поле времени с «Сохранить» и «Сбросить».
+    const timeBtn = e.target.closest('[data-ci-time]');
+    if (timeBtn) {
+      showTimeField(timeBtn, timeBtn.getAttribute('data-ci-time'));
+      return;
+    }
+    const timeSave = e.target.closest('[data-ci-time-save], [data-ci-time-clear]');
+    if (timeSave) {
+      const box = timeSave.closest('.bk-checkin-extra');
+      const field = box?.dataset.field;
+      if (!field) return;
+      const value = timeSave.hasAttribute('data-ci-time-clear') ? null : (box.querySelector('input')?.value || null);
+      timeSave.disabled = true;
+      saveBookingTime(booking, field, value).then(() => {
+        box.remove();
+        const btn = wrap.querySelector(`[data-ci-time="${field}"]`);
+        if (btn) btn.textContent = timeBtnLabel(field, value);
+        showStatus(value ? `Сохранено: ${value}` : 'Время сброшено — бот покажет время из настроек квартиры');
+        onChanged?.();
+      }).catch((err) => {
+        timeSave.disabled = false;
+        showStatus('Не удалось сохранить: ' + (err?.message || err), true);
+      });
+      return;
+    }
+
     // «Готово» в поле почты: поле пропадает, текст со ссылкой на оплату копируется.
     const doneBtn = e.target.closest('[data-ci-email-done]');
     if (doneBtn) {
@@ -2012,6 +2070,9 @@ function openCheckinModal(booking, state, onChanged) {
     // Enter в поле почты — как нажатие «Готово».
     if (e.key === 'Enter' && e.target.matches('.bk-checkin-email input')) {
       e.preventDefault();
+      // Поле времени — Enter сохраняет время, а не копирует ссылку на оплату.
+      const timeBox = e.target.closest('.bk-checkin-extra[data-field]');
+      if (timeBox) { timeBox.querySelector('[data-ci-time-save]')?.click(); return; }
       submitEmail(e.target.closest('.bk-checkin-email'));
     }
   });
@@ -2041,6 +2102,26 @@ function openCheckinModal(booking, state, onChanged) {
     if (input) input.value = booking.client_email || '';
     btn.insertAdjacentElement('afterend', box);
     (input || box.querySelector('[data-ci-email-done]')).focus();
+  }
+  function showTimeField(btn, field) {
+    hideEmailField();
+    showStatus('');
+    const cur = String(booking[field] || '').slice(0, 5);
+    const box = document.createElement('div');
+    box.className = 'bk-checkin-extra';
+    box.dataset.field = field;
+    box.innerHTML = `
+      <p class="small bk-checkin-note">${field === 'checkin_time'
+        ? 'Гость увидит это время в боте вместо времени из настроек квартиры, горничная — в уборке перед заездом.'
+        : 'Гость увидит это время в боте вместо времени из настроек квартиры, горничная — в уборке после выезда.'}</p>
+      <div class="bk-checkin-email">
+        <input type="time" step="900" aria-label="${field === 'checkin_time' ? 'Время заезда' : 'Время выезда'}" />
+        <button class="btn btn-primary" type="button" data-ci-time-save>Сохранить</button>
+        ${cur ? '<button class="btn btn-secondary" type="button" data-ci-time-clear>Сбросить</button>' : ''}
+      </div>`;
+    box.querySelector('input').value = cur || (field === 'checkin_time' ? '14:00' : '12:00');
+    btn.insertAdjacentElement('afterend', box);
+    box.querySelector('input').focus();
   }
   function submitEmail(row) {
     const box = row?.closest('.bk-checkin-extra');

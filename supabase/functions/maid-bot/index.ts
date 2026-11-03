@@ -34,7 +34,7 @@ import {
   type Recipient,
   sendMessage,
 } from "../_shared/channels.ts";
-import { cleaningAddress, placeLines } from "../_shared/cleaning_address.ts";
+import { cleaningAddress, cleaningGuestTimes, placeLines } from "../_shared/cleaning_address.ts";
 
 const MAID_PROFILE: BotProfile = "maid";
 
@@ -518,7 +518,8 @@ async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messa
     const time = (cleaning.scheduled_time || "").slice(0, 5);
     const addr = await cleaningAddress(sb, maid.user_id, cleaning.realty_id);
     const stText = cleaning.status === "on_site" ? " — <i>вы на месте</i>" : "";
-    await sendMaid(to, `🧹 <b>${fmtDateShort(cleaning.scheduled_date)}${time ? ", " + time : ""}</b>${stText}\n${placeLines(cleaning.apartment_title, addr)}`, workButtons(cleaning.id, cleaning.status));
+    const gt = await cleaningGuestTimes(sb, maid.user_id, cleaning.booking_id, cleaning.realty_id, cleaning.scheduled_date);
+    await sendMaid(to, `🧹 <b>${fmtDateShort(cleaning.scheduled_date)}${time ? ", " + time : ""}</b>${stText}\n${placeLines(cleaning.apartment_title, addr)}${gt ? "\n" + gt : ""}`, workButtons(cleaning.id, cleaning.status));
     return true;
   }
 
@@ -754,7 +755,7 @@ async function showMyCleanings(maid: Maid, to: Recipient) {
 
   const { data: rows } = await sb
     .from("cleanings")
-    .select("id, apartment_title, scheduled_date, scheduled_time, status, maid_id, offered_to, realty_id")
+    .select("id, booking_id, apartment_title, scheduled_date, scheduled_time, status, maid_id, offered_to, realty_id")
     .eq("user_id", maid.user_id)
     .gte("scheduled_date", todayIso)
     .in("status", ["pending_response", "accepted", "on_site"])
@@ -787,6 +788,9 @@ async function showMyCleanings(maid: Maid, to: Recipient) {
     const k = String(c.realty_id ?? "");
     if (!addrCache.has(k)) addrCache.set(k, await cleaningAddress(sb, maid.user_id, c.realty_id));
   }
+  // Время гостей (выезд/следующий заезд), если менеджер указал его в брони — параллельно.
+  const guestTimes = await Promise.all(shown.map((c: any) =>
+    cleaningGuestTimes(sb, maid.user_id, c.booking_id, c.realty_id, c.scheduled_date)));
 
   const lines: string[] = [];
   const listKb: Btn[][] = [];
@@ -797,7 +801,7 @@ async function showMyCleanings(maid: Maid, to: Recipient) {
     const statusText = c.status === "pending_response" ? " — <i>ожидает ответа</i>"
       : c.status === "on_site" ? " — <i>вы на месте</i>"
       : "";
-    lines.push(`${n}. ${marker} <b>${fmtDateShort(c.scheduled_date)}${time ? ", " + time : ""}</b>${statusText}\n${placeLines(c.apartment_title, addrCache.get(String(c.realty_id ?? "")) ?? null)}`);
+    lines.push(`${n}. ${marker} <b>${fmtDateShort(c.scheduled_date)}${time ? ", " + time : ""}</b>${statusText}\n${placeLines(c.apartment_title, addrCache.get(String(c.realty_id ?? "")) ?? null)}${guestTimes[i] ? "\n" + guestTimes[i] : ""}`);
     if (c.status === "pending_response") {
       listKb.push([
         { text: `✅ Принять №${n}`, data: `maid_accept:${c.id}` },

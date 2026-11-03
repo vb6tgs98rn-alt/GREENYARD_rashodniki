@@ -28,7 +28,7 @@ import {
   sendMessage,
 } from "../_shared/channels.ts";
 import { ensureBookingPayment, paymentMessage } from "../_shared/tochka_booking.ts";
-import { cleaningAddress, placeLines } from "../_shared/cleaning_address.ts";
+import { cleaningAddress, cleaningGuestTimes, placeLines } from "../_shared/cleaning_address.ts";
 import { cancelNoticeHtml, objectName, cancelKeyboard } from "../_shared/cancel_report.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -352,6 +352,9 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
     .eq("active", true);
 
   const address = await cleaningAddress(admin, userId, booking.realty_id);
+  // Время уборки и время гостей (если менеджер указал в брони) — чтобы было понятно, насколько срочно.
+  const guestTimes = await cleaningGuestTimes(admin, userId, bookingIdStr, booking.realty_id, booking.end_date);
+  const offerTime = String(cleaningTime || "").slice(0, 5);
   const offered: string[] = [];
   for (const m of maids || []) {
     const to = maidRcpt(m);
@@ -360,7 +363,7 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
       { text: "✅ Принять", data: `maid_accept:${cleaningId}` },
       { text: "❌ Отказаться", data: `maid_decline:${cleaningId}` },
     ]];
-    const text = `Следующая уборка <b>${fmtDate(booking.end_date)}</b>\n${placeLines(booking.apartment_title, address)}`;
+    const text = `Следующая уборка <b>${fmtDate(booking.end_date)}${offerTime ? ", " + offerTime : ""}</b>\n${placeLines(booking.apartment_title, address)}${guestTimes ? "\n" + guestTimes : ""}`;
     const r = await sendMaid(to, text, kb);
     if (r?.ok) {
       offered.push(m.id);

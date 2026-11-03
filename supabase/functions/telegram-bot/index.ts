@@ -47,7 +47,7 @@ import {
   HOLD_DAYS,
   todayMsk,
 } from "../_shared/tochka_deposit.ts";
-import { cleaningAddress, placeLines } from "../_shared/cleaning_address.ts";
+import { cleaningAddress, cleaningGuestTimes, placeLines } from "../_shared/cleaning_address.ts";
 import {
   bookingIdFromNotice,
   CANCEL_IGNORE_CMD,
@@ -168,13 +168,31 @@ function guestStageOf(begin: string | null | undefined, end: string | null | und
 }
 
 /** Даты брони и этап гостя. */
-async function loadStage(session: Session): Promise<{ stage: GuestStage | null; begin: string | null; end: string | null }> {
+async function loadStage(session: Session): Promise<{ stage: GuestStage | null; begin: string | null; end: string | null; checkin_time: string | null; checkout_time: string | null }> {
   const { data } = await svc().from("rc_bookings")
-    .select("begin_date, end_date")
+    .select("begin_date, end_date, checkin_time, checkout_time")
     .eq("user_id", session.user_id)
     .eq("booking_id", session.booking_id)
     .maybeSingle();
-  return { stage: guestStageOf(data?.begin_date, data?.end_date), begin: data?.begin_date ?? null, end: data?.end_date ?? null };
+  return {
+    stage: guestStageOf(data?.begin_date, data?.end_date),
+    begin: data?.begin_date ?? null,
+    end: data?.end_date ?? null,
+    checkin_time: data?.checkin_time ? String(data.checkin_time).slice(0, 5) : null,
+    checkout_time: data?.checkout_time ? String(data.checkout_time).slice(0, 5) : null,
+  };
+}
+
+/**
+ * Время заезда/выезда, указанное менеджером в брони («Оформить заезд»),
+ * важнее времени из настроек квартиры.
+ */
+function withBookingTimes(instr: any, bk: { checkin_time?: string | null; checkout_time?: string | null } | null | undefined): any {
+  if (!bk || (!bk.checkin_time && !bk.checkout_time)) return instr;
+  const out = { ...(instr || {}) };
+  if (bk.checkin_time) out.checkin_from = String(bk.checkin_time).slice(0, 5);
+  if (bk.checkout_time) out.checkout_until = String(bk.checkout_time).slice(0, 5);
+  return out;
 }
 
 function guestKeyboard(channelUrl?: string | null, payEnabled = false, bookingId?: number | string | null, stage: GuestStage | null = null): Btn[][] {
@@ -1340,7 +1358,7 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
   }
 
   const st = await loadStage(session);
-  const welcome = buildWelcomeMessage(fromName, instr, st.stage, st.begin);
+  const welcome = buildWelcomeMessage(fromName, withBookingTimes(instr, st), st.stage, st.begin);
   await send(to, welcome, guestKeyboard(settings?.guest_channel_url ?? null, Boolean((settings as any)?.tochka_enabled), session.booking_id, st.stage));
   // stage в журнале: если приветствие ушло в день заезда, утреннюю «информацию к заезду» не дублируем.
   await logMessage(session, "bot", welcome, { kind: "welcome", stage: st.stage, day: todayMsk() });
@@ -1384,7 +1402,7 @@ async function handleStart(to: Recipient, args: string, from: InboundEvent["from
 async function handleRepeatStart(to: Recipient, session: Session, fromName: string, settings: ManagerSettings | null, instr: any = null) {
   const sb = svc();
   const { data: bk } = await sb.from("rc_bookings")
-    .select("amount, prepayment, okidoki_link, contract_signed_at, contract_status_internal, begin_date, end_date")
+    .select("amount, prepayment, okidoki_link, contract_signed_at, contract_status_internal, begin_date, end_date, checkin_time, checkout_time")
     .eq("user_id", session.user_id)
     .eq("booking_id", session.booking_id)
     .maybeSingle();
@@ -1400,6 +1418,7 @@ async function handleRepeatStart(to: Recipient, session: Session, fromName: stri
   const debt = bk ? Math.round((Number(bk.amount || 0) - Number(bk.prepayment || 0) - paid) * 100) / 100 : 0;
   const payTodo = tochkaOn && debt > 0;
 
+  instr = withBookingTimes(instr, bk as any);
   const rawStage = guestStageOf(bk?.begin_date, bk?.end_date);
   // В день заезда после «Я приехал» гость уже живёт в квартире.
   const stage: GuestStage | null = rawStage === "arrival" && session.arrived_at ? "stay" : rawStage;
@@ -1500,10 +1519,11 @@ async function handleCommand(to: Recipient, cmd: string, bookingIdFromCallback: 
   void activeCount;
 
   const { id: apartmentId } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
-  const instr = await loadInstructions(session.user_id, apartmentId);
+  const instrBase = await loadInstructions(session.user_id, apartmentId);
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
   const fallback = "Инструкция ещё не заполнена менеджером. Напишите сюда — менеджер ответит.";
   const st = await loadStage(session);
+  const instr = withBookingTimes(instrBase, st);
   const early = st.stage === "before";
   let reply = "";
   switch (cmd) {
@@ -1840,9 +1860,10 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
   if (await handleFeedbackAnswer(to, session, fromName, text)) return;
 
   const { id: apartmentId, diag: resolveDiag } = await resolveApartmentId(session.user_id, session.realty_id, session.booking_id);
-  const instr = await loadInstructions(session.user_id, apartmentId);
+  const instrBase = await loadInstructions(session.user_id, apartmentId);
   const settings = (await loadManagerSettings(session.user_id)) as ManagerSettings | null;
   const st = await loadStage(session);
+  const instr = withBookingTimes(instrBase, st);
   // Под ответами на свободный текст — одна кнопка «Меню» вместо 9–10 кнопок.
   const kbMini: Btn[][] = [[{ text: "☰ Меню", data: cmdWithBooking("menu", session.booking_id) }]];
   void settings;
@@ -2234,7 +2255,7 @@ async function sendArrivalReminder(s: Session): Promise<boolean> {
 /** Утро дня заезда: адрес, как попасть в квартиру, Wi-Fi и кнопка «Я приехал». */
 async function sendArrivalInfo(s: Session): Promise<boolean> {
   const { id: apartmentId } = await resolveApartmentId(s.user_id, s.realty_id, s.booking_id);
-  const instr = await loadInstructions(s.user_id, apartmentId);
+  const instr = withBookingTimes(await loadInstructions(s.user_id, apartmentId), await loadStage(s));
   const info = blockArrivalInfo(instr);
   // Инструкция не заполнена — гостю не пишем пустое сообщение.
   if (!info) return false;
@@ -2988,7 +3009,7 @@ async function endpointCleaningReminders(req: Request): Promise<Response> {
 
   const { data: cleanings } = await sb
     .from("cleanings")
-    .select("id, user_id, maid_id, realty_id, apartment_title, scheduled_date, scheduled_time, status, reminded_at")
+    .select("id, user_id, booking_id, maid_id, realty_id, apartment_title, scheduled_date, scheduled_time, status, reminded_at")
     .eq("scheduled_date", today)
     .in("status", ["accepted", "pending_response"])
     .is("reminded_at", null);
@@ -3001,7 +3022,8 @@ async function endpointCleaningReminders(req: Request): Promise<Response> {
     if (!to) continue;
     const address = await cleaningAddress(sb, c.user_id, c.realty_id);
     const time = String(c.scheduled_time || "").slice(0, 5);
-    const text = `⏰ Напоминание: сегодня уборка${time ? ", " + time : ""}.\n${placeLines(c.apartment_title, address)}`;
+    const guestTimes = await cleaningGuestTimes(sb, c.user_id, c.booking_id, c.realty_id, c.scheduled_date);
+    const text = `⏰ Напоминание: сегодня уборка${time ? ", " + time : ""}.\n${placeLines(c.apartment_title, address)}${guestTimes ? "\n" + guestTimes : ""}`;
     // Кнопки: ещё не ответила — «Принять/Отказаться», приняла — «Приступила», бельё, расходники.
     const kb: Btn[][] = c.status === "pending_response"
       ? [[
