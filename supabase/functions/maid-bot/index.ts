@@ -259,6 +259,11 @@ async function findMaidByInviteToken(token: string): Promise<Maid | null> {
   return (data as Maid) || null;
 }
 
+/** Сегодняшняя дата по Москве (YYYY-MM-DD). */
+function mskToday(): string {
+  return new Date(Date.now() + 3 * 3600_000).toISOString().slice(0, 10);
+}
+
 function fmtDateShort(iso: string | null): string {
   if (!iso) return "?";
   const d = new Date(iso);
@@ -437,6 +442,21 @@ function linenActionButtons(cleaningId: string): Btn[] {
   ];
 }
 
+/**
+ * Рабочие кнопки уборки по статусу:
+ * принята — «Приступила», на месте — «Завершена»; плюс бельё и расходники.
+ */
+function workButtons(cleaningId: string, status: string): Btn[][] {
+  const main: Btn[] = status === "on_site"
+    ? [{ text: "✅ Уборка завершена", data: `maid_completed:${cleaningId}` }]
+    : [{ text: "🧹 Приступила к уборке", data: `maid_on_site:${cleaningId}` }];
+  return [
+    main,
+    linenActionButtons(cleaningId),
+    [{ text: "📦 Нужны расходники", data: `maid_supply:${cleaningId}` }],
+  ];
+}
+
 /** Обработка нажатий кнопок горничной. */
 async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messageId: string | null): Promise<boolean> {
   const sb = svc();
@@ -452,6 +472,13 @@ async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messa
 
   if (!cleaning || cleaning.user_id !== maid.user_id) {
     await sendMaid(to, "Уборка не найдена или уже неактуальна.");
+    return true;
+  }
+
+  // Старое предложение (дата уборки уже прошла) — горничной не предлагаем.
+  if ((action === "maid_accept" || action === "maid_decline") &&
+      cleaning.status === "pending_response" && cleaning.scheduled_date && cleaning.scheduled_date < mskToday()) {
+    await sendMaid(to, "Эта уборка уже неактуальна.");
     return true;
   }
 
@@ -483,11 +510,11 @@ async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messa
       }
     }
 
-    // Подтверждение принятия уборки + кнопки «Бельё» и «Проблема с ID».
+    // Подтверждение принятия уборки + рабочие кнопки («Приступила», бельё, расходники).
     await sendMaid(
       to,
-      `✅ Спасибо. Уборка <b>${fmtDateShort(cleaning.scheduled_date)}</b> за вами.`,
-      [linenActionButtons(cleaning.id)],
+      `✅ Спасибо. Уборка <b>${fmtDateShort(cleaning.scheduled_date)}</b> за вами.\nКогда придёте на место — нажмите «Приступила к уборке».`,
+      workButtons(cleaning.id, "accepted"),
     );
     await notifyManager(maid.user_id, `✅ <b>${htmlEscape(maid.name)}</b> сможет убраться <b>${fmtDateShort(cleaning.scheduled_date)}</b> (${htmlEscape(cleaning.apartment_title || "")}).`, "notify_on_cleaning_response");
     return true;
@@ -523,10 +550,7 @@ async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messa
       on_site_at: new Date().toISOString(),
     }).eq("id", cleaning.id);
 
-    const kb: Btn[][] = [
-      [{ text: "✅ Уборка завершена", data: `maid_completed:${cleaning.id}` }],
-      linenActionButtons(cleaning.id),
-    ];
+    const kb: Btn[][] = workButtons(cleaning.id, "on_site");
     await sendMaid(to, `🏠 Отмечено: вы на месте.\n📍 ${htmlEscape(cleaning.apartment_title || "")}\n\nКогда закончите — нажмите кнопку ниже.`, kb);
     await notifyManager(maid.user_id, `🏠 Горничная <b>${htmlEscape(maid.name)}</b> на месте: ${htmlEscape(cleaning.apartment_title || "")}.`, "notify_on_cleaning_response");
     return true;
@@ -663,9 +687,7 @@ function isMyCleaningsCmd(text: string): boolean {
  * Завершённые и отменённые не показываем. Чужие (кто-то уже взял) — тоже не. */
 async function showMyCleanings(maid: Maid, to: Recipient) {
   const sb = svc();
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
-  const todayIso = today.toISOString().slice(0, 10);
+  const todayIso = mskToday();
 
   // Квартиры, закреплённые за горничной сейчас (могут взять любую без приглашения).
   const { data: myApts } = await sb
@@ -724,16 +746,8 @@ async function showMyCleanings(maid: Maid, to: Recipient) {
         { text: "✅ Принять", data: `maid_accept:${c.id}` },
         { text: "❌ Отказаться", data: `maid_decline:${c.id}` },
       ]];
-    } else if (c.status === "accepted") {
-      kb = [
-        [{ text: "🧹 Приступила к уборке", data: `maid_on_site:${c.id}` }],
-        linenActionButtons(c.id),
-      ];
-    } else if (c.status === "on_site") {
-      kb = [
-        [{ text: "✅ Уборка завершена", data: `maid_completed:${c.id}` }],
-        linenActionButtons(c.id),
-      ];
+    } else if (c.status === "accepted" || c.status === "on_site") {
+      kb = workButtons(c.id, c.status);
     }
 
     await sendMaid(to, body, kb);

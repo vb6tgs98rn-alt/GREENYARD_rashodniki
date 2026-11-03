@@ -2456,9 +2456,38 @@ async function endpointCleaningReminders(req: Request): Promise<Response> {
     const to = maid ? maidRcpt(maid) : null;
     if (!to) continue;
     const address = await cleaningAddress(sb, c.user_id, c.realty_id);
-    const text = `⏰ Напоминание: сегодня уборка.\n${placeLines(c.apartment_title, address)}`;
-    const r = await send(to, text);
+    const time = String(c.scheduled_time || "").slice(0, 5);
+    const text = `⏰ Напоминание: сегодня уборка${time ? ", " + time : ""}.\n${placeLines(c.apartment_title, address)}`;
+    // Кнопки: ещё не ответила — «Принять/Отказаться», приняла — «Приступила», бельё, расходники.
+    const kb: Btn[][] = c.status === "pending_response"
+      ? [[
+          { text: "✅ Принять", data: `maid_accept:${c.id}` },
+          { text: "❌ Отказаться", data: `maid_decline:${c.id}` },
+        ]]
+      : [
+          [{ text: "🧹 Приступила к уборке", data: `maid_on_site:${c.id}` }],
+          [
+            { text: "📋 Бельё", data: `linen_show:${c.id}` },
+            { text: "⚠️ Проблема с ID", data: `linen_report:${c.id}` },
+          ],
+          [{ text: "📦 Нужны расходники", data: `maid_supply:${c.id}` }],
+        ];
+    // Горничные подключены к отдельному боту — шлём через него (профиль "maid").
+    const r = await sendMessage(to, text, { buttons: kb, botProfile: "maid" });
     if (r.ok) {
+      try {
+        await sb.from("maid_messages").insert({
+          user_id: c.user_id,
+          maid_id: c.maid_id,
+          tg_chat_id: to.channel === "telegram" ? Number(to.chatId) : null,
+          tg_message_id: to.channel === "telegram" && r.messageId != null ? Number(r.messageId) : null,
+          channel: to.channel,
+          channel_chat_id: to.chatId,
+          direction: "outbound",
+          sender: "bot",
+          text: text.replace(/<[^>]+>/g, ""),
+        });
+      } catch (e) { console.error("[tg-bot] reminder log failed:", e); }
       await sb.from("cleanings").update({ reminded_at: new Date().toISOString() }).eq("id", c.id);
       sent++;
     }

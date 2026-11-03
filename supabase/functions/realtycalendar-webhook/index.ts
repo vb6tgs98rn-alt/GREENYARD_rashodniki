@@ -81,6 +81,19 @@ async function sendManager(to: Recipient | null, html: string, buttons?: Btn[][]
   return await sendMessage(to, html, { buttons, botProfile: "default" });
 }
 
+/** Уведомление об уборке всем получателям-менеджерам (дублируется во все каналы). */
+async function sendManagerAll(ms: any, html: string) {
+  for (const to of managerRecipientsAll(ms)) {
+    try { await sendManager(to, html); }
+    catch (e) { console.error("[rc-webhook] manager notify failed:", e); }
+  }
+}
+
+/** Сегодняшняя дата по Москве (YYYY-MM-DD). */
+function mskTodayIso(): string {
+  return new Date(Date.now() + 3 * 3600_000).toISOString().slice(0, 10);
+}
+
 // Формат даты дд.ММ.гггг
 function fmtDate(iso: string | null): string {
   if (!iso) return "?";
@@ -201,12 +214,13 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
   // Настройки менеджера
   const { data: ms } = await admin
     .from("manager_settings")
-    .select("cleaning_default_time, manager_tg_chat_id, manager_channel, manager_channel_chat_id")
+    .select("cleaning_default_time, manager_tg_chat_id, manager_channel, manager_channel_chat_id, manager_recipients")
     .eq("user_id", userId)
     .maybeSingle();
 
   const cleaningTime = (ms?.cleaning_default_time as string | undefined) || "12:00:00";
-  const managerTo = managerRcpt(ms);
+  // Уборка в прошлом (загрузка старых броней): запись создаём, но горничным и менеджеру не пишем.
+  const isPast = String(booking.end_date) < mskTodayIso();
 
   if (existing) {
     // Перенос даты (например, продление или ранний выезд). Завершённые и отменённые не трогаем.
@@ -266,6 +280,7 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
         { text: "✅ Принять", data: `maid_accept:${existing.id}` },
         { text: "❌ Отказаться", data: `maid_decline:${existing.id}` },
       ]];
+      if (isPast) return;
       const asked: string[] = [];
       for (const m of askMaids || []) {
         const to = maidRcpt(m);
@@ -277,8 +292,8 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
         }
       }
 
-      await sendManager(
-        managerTo,
+      await sendManagerAll(
+        ms,
         `📅 Уборка по брони <code>${bookingIdStr}</code> перенесена: ${fmtDate(oldDate)} → ${fmtDate(booking.end_date)} (${htmlEscape(booking.apartment_title || "")}).\n` +
         (asked.length
           ? `Запрос на подтверждение отправлен: ${htmlEscape(asked.join(", "))}.`
@@ -309,6 +324,7 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
   }
 
   const cleaningId = inserted.id;
+  if (isPast) return;
 
   // Ищем закреплённых горничных за квартирой
   const { data: maidLinks } = await admin
@@ -321,8 +337,8 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
 
   if (maidIds.length === 0) {
     // Нет закреплённой горничной — уведомляем менеджера
-    await sendManager(
-      managerTo,
+    await sendManagerAll(
+      ms,
       `⚠️ Новая бронь <code>${bookingIdStr}</code> — <b>${htmlEscape(booking.apartment_title || "")}</b>, выселение ${fmtDate(booking.end_date)}.\nЗа этой квартирой не закреплена ни одна горничная. Назначьте вручную в приложении.`
     );
     return;
@@ -384,10 +400,14 @@ async function createOrUpdateCleaning(userId: string, booking: any) {
 
   // Уведомление менеджеру
   {
-    const maidNames = (maids || []).map(m => m.name).join(", ");
-    await sendManager(
-      managerTo,
-      `🧹 Уборка по брони <code>${bookingIdStr}</code> — <b>${htmlEscape(booking.apartment_title || "")}</b>, ${fmtDate(booking.end_date)}. Отправлено горничным: ${htmlEscape(maidNames)}.`
+    // Перечисляем только тех, кому сообщение реально ушло.
+    const maidNames = (maids || []).filter(m => offered.includes(m.id)).map(m => m.name).join(", ");
+    await sendManagerAll(
+      ms,
+      `🧹 Уборка по брони <code>${bookingIdStr}</code> — <b>${htmlEscape(booking.apartment_title || "")}</b>, ${fmtDate(booking.end_date)}. ` +
+      (maidNames
+        ? `Отправлено горничным: ${htmlEscape(maidNames)}.`
+        : `⚠️ Горничным не отправлено — они не подключены к боту. Назначьте вручную.`)
     );
   }
 }
@@ -402,8 +422,10 @@ async function cancelCleaning(userId: string, bookingId: number) {
     .maybeSingle();
 
   if (!cleaning || cleaning.status === "completed" || cleaning.status === "cancelled") return;
+  // Уборка в прошлом — просто отменяем запись, никому не пишем.
+  const pastCleaning = !!cleaning.scheduled_date && String(cleaning.scheduled_date) < mskTodayIso();
   // Если все отказались — горничных уведомлять не нужно.
-  const notifyIds = cleaning.status === "declined" ? [] : cleaningMaidIds(cleaning);
+  const notifyIds = cleaning.status === "declined" || pastCleaning ? [] : cleaningMaidIds(cleaning);
 
   await admin
     .from("cleanings")
@@ -427,13 +449,14 @@ async function cancelCleaning(userId: string, bookingId: number) {
   }
 
   // Менеджеру
+  if (pastCleaning) return;
   const { data: ms } = await admin
     .from("manager_settings")
-    .select("manager_tg_chat_id, manager_channel, manager_channel_chat_id")
+    .select("manager_tg_chat_id, manager_channel, manager_channel_chat_id, manager_recipients")
     .eq("user_id", userId)
     .maybeSingle();
-  await sendManager(
-    managerRcpt(ms),
+  await sendManagerAll(
+    ms,
     `❌ Уборка по брони <code>${bookingIdStr}</code> отменена (${htmlEscape(cleaning.apartment_title || "")}, ${fmtDate(cleaning.scheduled_date)}).`
   );
 }
