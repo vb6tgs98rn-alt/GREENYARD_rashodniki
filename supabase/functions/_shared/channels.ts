@@ -81,6 +81,10 @@ export type InboundEvent = {
   from: { id: string | null; firstName: string | null; lastName: string | null; username: string | null };
   /** Прямая ссылка на приложенное фото, если канал её отдаёт. */
   photoUrl?: string | null;
+  /** Вложение-медиа (фото или видео): тип и ссылка для просмотра (может не быть). */
+  media?: { kind: "photo" | "video"; url: string | null } | null;
+  /** Это правка уже отправленного сообщения (Telegram edited_message). */
+  edited?: boolean;
   /** Текст сообщения, на которое ответили (Telegram «Ответить»), если есть. */
   replyToText?: string | null;
 };
@@ -264,21 +268,105 @@ async function tgAnswerCallback(callbackId: string, text: string, profile: BotPr
   }).catch(() => {});
 }
 
-/** Достаём прямую ссылку на самое крупное фото из апдейта Telegram. */
-async function tgPhotoUrl(msg: any, profile: BotProfile = "default"): Promise<string | null> {
-  const photos = msg?.photo;
-  if (!Array.isArray(photos) || photos.length === 0) return null;
-  const fileId = photos[photos.length - 1]?.file_id;
-  if (!fileId) return null;
+// ─── Ссылки на файлы Telegram без токена бота ─────────────────────────
+// Прямая ссылка Telegram на файл содержит токен бота — её нельзя хранить в базе
+// и отдавать клиенту. Вместо неё выдаём ссылку на нашу функцию (/tg_file),
+// подписанную HMAC: функция сама скачает файл у Telegram и отдаст его.
+
+const FILE_SIGN_KEY = env("SUPABASE_SERVICE_ROLE_KEY");
+const FUNCTIONS_BASE = `${env("SUPABASE_URL")}/functions/v1`;
+
+async function fileSig(profile: BotProfile, fileId: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(FILE_SIGN_KEY),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`tgfile:${profile}:${fileId}`));
+  return Array.from(new Uint8Array(mac)).slice(0, 16).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Ссылка на файл Telegram через нашу функцию (без токена бота). */
+export async function tgFileProxyUrl(fileId: string, profile: BotProfile = "default"): Promise<string | null> {
+  if (!fileId || !FILE_SIGN_KEY || !FUNCTIONS_BASE.startsWith("http")) return null;
+  const fn = profile === "maid" ? "maid-bot" : "telegram-bot";
+  const s = await fileSig(profile, fileId);
+  return `${FUNCTIONS_BASE}/${fn}/tg_file?b=${profile}&f=${encodeURIComponent(fileId)}&s=${s}`;
+}
+
+const FILE_MIME: Record<string, string> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif",
+  mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm",
+};
+
+/** Обработчик GET /tg_file: проверяет подпись, скачивает файл у Telegram и отдаёт его. */
+export async function handleTgFileProxy(url: URL): Promise<Response> {
+  const profile: BotProfile = url.searchParams.get("b") === "maid" ? "maid" : "default";
+  const fileId = url.searchParams.get("f") || "";
+  const sig = url.searchParams.get("s") || "";
+  if (!fileId || !sig || sig !== await fileSig(profile, fileId)) {
+    return new Response("forbidden", { status: 403 });
+  }
   const token = tgTokenFor(profile);
   try {
     const r = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`);
     const j = await r.json();
-    const path = j?.result?.file_path;
-    return path ? `https://api.telegram.org/file/bot${token}/${path}` : null;
+    const path: string | undefined = j?.result?.file_path;
+    if (!path) return new Response("not_found", { status: 404 });
+    const f = await fetch(`https://api.telegram.org/file/bot${token}/${path}`);
+    if (!f.ok || !f.body) return new Response("not_found", { status: 404 });
+    const ext = (path.split(".").pop() || "").toLowerCase();
+    return new Response(f.body, {
+      status: 200,
+      headers: {
+        "Content-Type": FILE_MIME[ext] || f.headers.get("content-type") || "application/octet-stream",
+        "Cache-Control": "private, max-age=86400",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
   } catch {
-    return null;
+    return new Response("error", { status: 502 });
   }
+}
+
+/**
+ * Telegram: скопировать сообщение (фото, видео — что угодно) из одного чата в другой
+ * тем же ботом. Так менеджер видит само фото/видео, а не ссылку.
+ */
+export async function tgCopyMessage(
+  toChatId: string, fromChatId: string, messageId: string, profile: BotProfile = "default",
+): Promise<boolean> {
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${tgTokenFor(profile)}/copyMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: toChatId, from_chat_id: fromChatId, message_id: Number(messageId) }),
+    });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok) console.error("[channels] copyMessage:", j?.description);
+    return !!j?.ok;
+  } catch (e) {
+    console.error("[channels] copyMessage:", e);
+    return false;
+  }
+}
+
+/** Ссылка на самое крупное фото из апдейта Telegram (через нашу функцию, без токена). */
+async function tgPhotoUrl(msg: any, profile: BotProfile = "default"): Promise<string | null> {
+  const photos = msg?.photo;
+  let fileId: string | undefined;
+  if (Array.isArray(photos) && photos.length) fileId = photos[photos.length - 1]?.file_id;
+  // Фото, отправленное «файлом» (без сжатия).
+  else if (String(msg?.document?.mime_type || "").startsWith("image/")) fileId = msg.document.file_id;
+  if (!fileId) return null;
+  return await tgFileProxyUrl(fileId, profile);
+}
+
+/** Видео из апдейта Telegram: обычное, «кружок», GIF или видео файлом. */
+async function tgVideoUrl(msg: any, profile: BotProfile = "default"): Promise<string | null | undefined> {
+  const v = msg?.video || msg?.video_note || msg?.animation
+    || (String(msg?.document?.mime_type || "").startsWith("video/") ? msg.document : null);
+  if (!v?.file_id) return undefined; // видео нет
+  return await tgFileProxyUrl(v.file_id, profile);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -523,6 +611,12 @@ export async function parseTelegramUpdate(update: any, profile: BotProfile = "de
     };
   }
 
+  const photoUrl = await tgPhotoUrl(msg, profile);
+  const videoUrl = photoUrl ? undefined : await tgVideoUrl(msg, profile);
+  const media = photoUrl
+    ? { kind: "photo" as const, url: photoUrl }
+    : videoUrl !== undefined ? { kind: "video" as const, url: videoUrl } : null;
+
   return {
     channel: "telegram",
     kind: "message",
@@ -530,7 +624,9 @@ export async function parseTelegramUpdate(update: any, profile: BotProfile = "de
     text: rawText,
     messageId: msg.message_id != null ? String(msg.message_id) : null,
     from,
-    photoUrl: await tgPhotoUrl(msg, profile),
+    photoUrl,
+    media,
+    edited: !update?.message && !!update?.edited_message,
     replyToText: msg?.reply_to_message ? String(msg.reply_to_message.text || msg.reply_to_message.caption || "") : null,
   };
 }
@@ -596,10 +692,21 @@ export function parseMaxUpdate(update: any): InboundEvent | null {
       messageId: msg?.body?.mid ?? null,
       from,
       photoUrl: maxPhotoUrl(msg),
+      media: maxMedia(msg),
     };
   }
 
   return null;
+}
+
+/** MAX: фото или видео во вложениях сообщения. */
+function maxMedia(msg: any): InboundEvent["media"] {
+  const photo = maxPhotoUrl(msg);
+  if (photo) return { kind: "photo", url: photo };
+  const atts = msg?.body?.attachments;
+  if (!Array.isArray(atts)) return null;
+  const v = atts.find((a: any) => a?.type === "video");
+  return v ? { kind: "video", url: v?.payload?.url ?? null } : null;
 }
 
 function maxUser(u: any): InboundEvent["from"] {

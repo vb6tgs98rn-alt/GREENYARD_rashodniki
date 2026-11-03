@@ -24,6 +24,7 @@ import {
   CHANNEL_TITLE,
   channelEnabled,
   enabledChannels,
+  handleTgFileProxy,
   htmlEscape,
   type InboundEvent,
   inviteLink,
@@ -299,29 +300,62 @@ async function logMaidMessage(
 }
 
 /**
- * Уведомить гостя, что квартира готова. Канал берём из guest_sessions:
- * если гость писал — шлём в его канал (channel + channel_chat_id).
- * Никаких кнопок. Шлём через общий гостиный бот (профиль "default").
+ * Уведомить СЛЕДУЮЩЕГО гостя, что квартира готова.
+ * Уборка привязана к брони выезжающего гостя, поэтому ищем бронь той же квартиры
+ * с заездом в день уборки (или уже наступившим, если уборку закрыли позже).
+ * Если следующий гость заезжает в другой день или уже отметил «Я приехал» — ничего не шлём.
+ * Шлём через общий гостиный бот (профиль "default"), без кнопок.
  */
-async function notifyGuestCleaningDone(userId: string, bookingId: string | null) {
-  if (!bookingId) return;
+async function notifyGuestCleaningDone(userId: string, cleaning: { booking_id: string | null; realty_id: number | null; scheduled_date: string | null }) {
+  if (!cleaning?.realty_id || !cleaning?.scheduled_date) return;
   const sb = svc();
-  const { data: gs } = await sb
-    .from("guest_sessions")
-    .select("channel, channel_chat_id, tg_chat_id")
+  const day = String(cleaning.scheduled_date).slice(0, 10);
+  const today = mskToday();
+  const upTo = day > today ? day : today;
+
+  const { data: next } = await sb
+    .from("rc_bookings")
+    .select("booking_id, begin_date")
     .eq("user_id", userId)
-    .eq("booking_id", bookingId)
-    .order("last_message_at", { ascending: false, nullsFirst: false })
+    .eq("realty_id", cleaning.realty_id)
+    .eq("status", "booked")
+    .gte("begin_date", day)
+    .lte("begin_date", upTo)
+    .neq("booking_id", Number(cleaning.booking_id) || 0)
+    .order("begin_date", { ascending: true })
     .limit(1)
     .maybeSingle();
-  if (!gs) return;
+  if (!next) return;
+
+  const { data: gs } = await sb
+    .from("guest_sessions")
+    .select("id, booking_id, channel, channel_chat_id, tg_chat_id, arrived_at")
+    .eq("user_id", userId)
+    .eq("booking_id", next.booking_id)
+    .not("started_at", "is", null)
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!gs || gs.arrived_at) return;
   const channel = (isChannel(gs.channel) ? gs.channel : "telegram") as ChannelId;
   const chatId = gs.channel_chat_id
     ?? (channel === "telegram" && gs.tg_chat_id != null ? String(gs.tg_chat_id) : null);
   if (!chatId) return;
 
-  const html = "🏠 Ваша квартира готова к заселению. Приятного проживания!\n\nПожалуйста, сообщите, всё ли хорошо, когда заселитесь.";
-  await sendMessage({ channel, chatId }, html, { botProfile: "default" });
+  const html = "🏠 Квартира готова к вашему заезду — уборка завершена. Ждём вас!";
+  const r = await sendMessage({ channel, chatId }, html, { botProfile: "default" });
+  if (r?.ok) {
+    // Чтобы менеджер видел это сообщение в переписке с гостем.
+    await sb.from("guest_messages").insert({
+      user_id: userId,
+      session_id: gs.id,
+      booking_id: gs.booking_id,
+      direction: "bot",
+      body: html,
+      payload: { kind: "cleaning_done" },
+      is_read_by_manager: true,
+    });
+  }
 }
 
 // ─── Бельё: поиск apartment_id и сводка ─────────────────────────────────
@@ -574,7 +608,7 @@ async function handleMaidCallback(maid: Maid, to: Recipient, data: string, messa
     await notifyManager(maid.user_id, `✅ Горничная <b>${htmlEscape(maid.name)}</b> завершила уборку: ${htmlEscape(cleaning.apartment_title || "")} (${fmtDateShort(cleaning.scheduled_date)}).`, "notify_on_cleaning_response");
 
     // Уведомление гостю: квартира готова. Не ломаем уборку, если не вышло.
-    try { await notifyGuestCleaningDone(cleaning.user_id, cleaning.booking_id); }
+    try { await notifyGuestCleaningDone(cleaning.user_id, cleaning); }
     catch (e) { console.error("[maid-bot] notifyGuestCleaningDone:", e); }
     return true;
   }
@@ -1075,6 +1109,8 @@ Deno.serve(async (req) => {
   try {
     if (req.method === "POST" && (path === "/" || path === ""))    return await endpointTelegramWebhook(req);
     if (req.method === "POST" && path === "/max")                  return await endpointMaxWebhook(req, url);
+    // Просмотр фото/видео из Telegram без токена бота в ссылке.
+    if (req.method === "GET"  && path === "/tg_file")              return await handleTgFileProxy(url);
 
     if (req.method === "POST" && path === "/send_maid")            return await endpointSendMaid(req);
     if (req.method === "POST" && path === "/maid_invite")          return await endpointMaidInvite(req);

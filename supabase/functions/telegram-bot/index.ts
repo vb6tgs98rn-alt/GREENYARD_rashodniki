@@ -24,6 +24,7 @@ import {
   CHANNEL_TITLE,
   type ChannelId,
   enabledChannels,
+  handleTgFileProxy,
   htmlEscape,
   type InboundEvent,
   inviteLink,
@@ -33,6 +34,7 @@ import {
   parseWhatsappUpdate,
   type Recipient,
   sendMessage,
+  tgCopyMessage,
 } from "../_shared/channels.ts";
 import { ensureBookingPayment, paymentMessage } from "../_shared/tochka_booking.ts";
 import {
@@ -2127,6 +2129,13 @@ async function handleEvent(ev: InboundEvent) {
     return;
   }
 
+  // Фото или видео от гостя — благодарим и пересылаем менеджеру.
+  // Правку уже отправленного медиа повторно не пересылаем.
+  if (ev.media) {
+    if (!ev.edited) await handleGuestMedia(ev, to);
+    return;
+  }
+
   // Ответ менеджера на запрос причины отмены («Ответить» на сообщение бота).
   const cancelBk = bookingIdFromNotice(ev.replyToText);
   if (cancelBk && text.trim() && !text.startsWith("/")) {
@@ -2152,6 +2161,75 @@ async function handleEvent(ev: InboundEvent) {
     return;
   }
   if (text.trim()) await handleFreeText(to, ev.from, text, ev.messageId ?? null);
+}
+
+/** Окно, в котором несколько фото подряд (альбом) считаются одной отправкой. */
+const MEDIA_BURST_MS = 60_000;
+
+/**
+ * Гость прислал фото или видео (с подписью или без).
+ * 1) Сохраняем в переписку; 2) пересылаем менеджеру во все каналы:
+ *    в Telegram — само фото/видео, в остальные — ссылкой; 3) благодарим гостя.
+ * Альбом из нескольких фото — одна благодарность и один заголовок менеджеру.
+ */
+async function handleGuestMedia(ev: InboundEvent, to: Recipient) {
+  const media = ev.media!;
+  const label = media.kind === "video" ? "видео" : "фото";
+  const caption = (ev.text || "").trim();
+
+  const active = await findActiveSessions(to);
+  const session = active.length ? active[0] : await findSessionByRcpt(to);
+  if (!session) {
+    await send(to, "Спасибо! Чтобы я передал это менеджеру, откройте бота по персональной ссылке из сообщения о бронировании.");
+    return;
+  }
+
+  // Было ли медиа от гостя в последнюю минуту (альбом или серия фото).
+  const sb = svc();
+  const { data: recent } = await sb
+    .from("guest_messages")
+    .select("id")
+    .eq("session_id", session.id)
+    .eq("direction", "inbound")
+    .eq("payload->>kind", "media")
+    .gte("created_at", new Date(Date.now() - MEDIA_BURST_MS).toISOString())
+    .limit(1);
+  const first = !recent?.length;
+
+  await logMessage(session, "inbound", caption ? `[${label}] ${caption}` : `[${label}]`, {
+    kind: "media", media_kind: media.kind, url: media.url, message_id: ev.messageId ?? null, channel: to.channel, from: ev.from,
+  });
+
+  // Менеджеру — во все каналы.
+  const settings = await loadManagerSettings(session.user_id);
+  if ((settings as any)?.notify_on_inbound !== false) {
+    const fromName = [ev.from?.firstName, ev.from?.lastName].filter(Boolean).join(" ") || ev.from?.username || "Гость";
+    const link = media.url ? `\n<a href="${media.url}">Открыть ${label}</a>` : "";
+    const header = `📷 <b>${htmlEscape(fromName)}</b> (бронь <code>${session.booking_id}</code>) прислал(а) ${label}` +
+      (caption ? `:\n\n${htmlEscape(caption)}` : ".");
+    await Promise.all(managerRecipients(settings).map(async (m) => {
+      try {
+        // Telegram → Telegram: пересылаем само сообщение, ссылка не нужна.
+        const canCopy = m.channel === "telegram" && to.channel === "telegram" && !!ev.messageId;
+        if (first || caption) await send(m, header + (canCopy ? "" : link));
+        else if (!canCopy) await send(m, `📷 Ещё ${label} от <b>${htmlEscape(fromName)}</b>.${link}`);
+        if (canCopy) {
+          const ok = await tgCopyMessage(m.chatId, to.chatId, ev.messageId!);
+          if (!ok && !first && !caption) await send(m, `📷 Ещё ${label} от <b>${htmlEscape(fromName)}</b>.${link}`);
+          else if (!ok && link) await send(m, link.trim());
+        }
+      } catch (e) {
+        console.error(`[bot] media → менеджер ошибка (${m.channel}:${m.chatId}):`, e);
+      }
+    }));
+  }
+
+  // Гостю — одна благодарность на серию.
+  if (first) {
+    const reply = `Спасибо! 🙏 Я отправил ${label} менеджеру — он посмотрит и ответит здесь.`;
+    await send(to, reply);
+    await logMessage(session, "bot", reply, { kind: "media_ack" });
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2565,6 +2643,8 @@ Deno.serve(async (req) => {
     if (req.method === "POST" && path === "/max")                  return await endpointMaxWebhook(req, url);
     if (req.method === "GET"  && path === "/whatsapp")             return endpointWhatsappVerify(url);
     if (req.method === "POST" && path === "/whatsapp")             return await endpointWhatsappWebhook(req);
+    // Просмотр фото/видео из Telegram без токена бота в ссылке.
+    if (req.method === "GET"  && path === "/tg_file")              return await handleTgFileProxy(url);
 
     // Эндпоинты приложения
     if (req.method === "POST" && path === "/send")                 return await endpointSend(req);
