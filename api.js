@@ -260,7 +260,7 @@ export function buildFinanceWebhookExample() {
       data: {
         booking: {
           id: 113386019,
-          agency_id: 65408,
+          agency_id: 12345,
           realty_id: 208656,
           begin_date: '2026-07-01',
           end_date: '2026-07-03',

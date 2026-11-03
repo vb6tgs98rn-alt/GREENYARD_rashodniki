@@ -1000,7 +1000,7 @@ function ensureInstructionsModal() {
         </label>
 
         <h3 class="instr-h">📍 Адрес</h3>
-        <label><span class="small">Полный адрес</span><input data-instr-field id="instr_full_address" type="text" placeholder="Москва, ул. Маршала Тимошенко 9, кв 12, подъезд 2, этаж 5" /></label>
+        <label><span class="small">Полный адрес</span><input data-instr-field id="instr_full_address" type="text" placeholder="Москва, ул. Примерная 1, кв 10, подъезд 1, этаж 3" /></label>
 
         <h3 class="instr-h">⏰ Время заезда / выезда</h3>
         <div class="instr-grid-2">
@@ -1010,7 +1010,7 @@ function ensureInstructionsModal() {
 
         <h3 class="instr-h">📶 Wi-Fi</h3>
         <div class="instr-grid-2">
-          <label><span class="small">Имя сети</span><input data-instr-field id="instr_wifi_ssid" type="text" placeholder="GreenYard_5G" /></label>
+          <label><span class="small">Имя сети</span><input data-instr-field id="instr_wifi_ssid" type="text" placeholder="Home_5G" /></label>
           <label><span class="small">Пароль</span><input data-instr-field id="instr_wifi_password" type="text" placeholder="welcome2024" /></label>
         </div>
 
@@ -1468,7 +1468,7 @@ function addRecipientRow(channelId, chatId) {
       <select class="ns-rcpt-channel">${channelOptionsHtml(channelId)}</select>
     </label>
     <label style="flex:1 1 150px;"><span class="small">chat_id / номер</span>
-      <input class="ns-rcpt-chat" type="text" placeholder="561644215" value="${idVal}" />
+      <input class="ns-rcpt-chat" type="text" placeholder="123456789" value="${idVal}" />
     </label>
     <button class="btn btn-secondary ns-rcpt-del" type="button" title="Удалить" style="flex:0 0 auto;">✕</button>`;
   box.appendChild(row);
@@ -1491,6 +1491,21 @@ function collectRecipients() {
   return out;
 }
 
+/**
+ * Приводит ссылку на канал к виду https://t.me/имя.
+ * Понимает «@имя», «t.me/имя», «имя». Telegram не примет кнопку с кривой ссылкой,
+ * поэтому всё непонятное сохраняем как пустое значение (кнопки канала не будет).
+ */
+function normalizeChannelUrl(raw) {
+  let v = String(raw || '').trim();
+  if (!v) return null;
+  if (/^https?:\/\//i.test(v)) {
+    try { const u = new URL(v); return u.protocol === 'https:' || u.protocol === 'http:' ? u.href.replace(/^http:/i, 'https:') : null; } catch { return null; }
+  }
+  v = v.replace(/^@/, '').replace(/^(www\.)?(t\.me|telegram\.me)\//i, '');
+  return /^[A-Za-z0-9_+\-/]{3,}$/.test(v) ? `https://t.me/${v}` : null;
+}
+
 /** Собрать патч настроек из модалки. Легаси-поля синхроним с первым получателем. */
 function buildManagerSettingsPatch() {
   const recipients = collectRecipients();
@@ -1503,7 +1518,7 @@ function buildManagerSettingsPatch() {
     manager_channel_chat_id: first?.chat_id || null,
     manager_tg_chat_id: tgId,
     guest_default_channel: document.getElementById('ns_guest_channel')?.value || 'telegram',
-    guest_channel_url: document.getElementById('ns_channel_url')?.value.trim() || null,
+    guest_channel_url: normalizeChannelUrl(document.getElementById('ns_channel_url')?.value),
     guest_invite_template: document.getElementById('ns_template')?.value || null,
     notify_on_inbound: document.getElementById('ns_notify_inbound')?.checked,
     notify_on_checkin: document.getElementById('ns_notify_checkin')?.checked,
@@ -1541,7 +1556,7 @@ export async function openNotifySettingsModal() {
       ? `Настроены: ${chList.map(c => c.title).join(', ')}.`
       : 'Пока работает только Telegram. Остальные мессенджеры включатся, когда на сервер добавят их токены.';
   }
-  setFieldVal('ns_channel_url', s.guest_channel_url ?? 'https://t.me/Green_yard_apart');
+  setFieldVal('ns_channel_url', s.guest_channel_url || '');
   setFieldVal('ns_template', s.guest_invite_template || DEFAULT_INVITE_TEMPLATE);
   document.getElementById('ns_notify_inbound').checked   = s.notify_on_inbound   !== false;
   document.getElementById('ns_notify_checkin').checked   = s.notify_on_checkin   !== false;
@@ -1582,7 +1597,7 @@ function ensureNotifySettingsModal() {
 
         <h3 class="instr-h">📢 Канал для гостей</h3>
         <label><span class="small">Ссылка на Telegram-канал</span>
-          <input id="ns_channel_url" type="text" placeholder="https://t.me/Green_yard_apart" />
+          <input id="ns_channel_url" type="text" placeholder="https://t.me/your_channel" />
         </label>
 
         <h3 class="instr-h">✉️ Шаблон приглашения гостю</h3>
