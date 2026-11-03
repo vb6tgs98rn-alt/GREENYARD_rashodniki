@@ -58,7 +58,12 @@ const WA_VERIFY    = Deno.env.get("WHATSAPP_VERIFY_TOKEN")     ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")              ?? "";
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const OR_API_KEY   = Deno.env.get("OPENROUTER_API_KEY")        ?? "";
-const OR_MODEL     = Deno.env.get("OPENROUTER_MODEL")          ?? "openai/gpt-oss-120b:free";
+const OR_MODEL     = Deno.env.get("OPENROUTER_MODEL")          ?? "google/gemma-4-31b-it:free";
+// Платный резерв: Perplexity Agent API. Вызывается, только если бесплатные модели OpenRouter не ответили.
+const PPLX_API_KEY = Deno.env.get("PERPLEXITY_API_KEY")        ?? "";
+const PPLX_MODELS  = ["anthropic/claude-haiku-5-5", "openai/gpt-6-luna"];
+// Бесплатные модели OpenRouter, которые перестали быть бесплатными (отвечают 404) — не тратим на них время.
+const OR_DEAD_MODELS = new Set(["openai/gpt-oss-120b:free", "nvidia/nemotron-3-super-120b-a12b:free"]);
 const OR_REFERER   = Deno.env.get("OPENROUTER_REFERER")        ?? "https://green-yard.app";
 const OR_TITLE     = Deno.env.get("OPENROUTER_TITLE")          ?? "Green Yard Guest Bot";
 
@@ -1367,6 +1372,51 @@ async function handleEmailAnswer(to: Recipient, session: Session, text: string):
   return true;
 }
 
+// Один запрос к Perplexity Agent API (POST /v1/agent, формат OpenAI Responses).
+// Веб-поиск не включаем: бот отвечает только по инструкциям квартиры.
+// Возвращает текст ответа или описание ошибки; стоимость — для логов.
+async function callPerplexityAgent(
+  model: string,
+  systemPrompt: string,
+  userText: string,
+): Promise<{ text: string | null; error: string; costUsd: number | null }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 25000);
+  try {
+    const r = await fetch("https://api.perplexity.ai/v1/agent", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${PPLX_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        instructions: systemPrompt,
+        input: userText,
+        max_output_tokens: 700,
+      }),
+      signal: ctrl.signal,
+    });
+    const bodyText = await r.text();
+    if (!r.ok) return { text: null, error: `http_${r.status}: ${bodyText.slice(0, 200)}`, costUsd: null };
+    let data: any;
+    try { data = JSON.parse(bodyText); } catch (e) { return { text: null, error: `parse_error: ${String(e)}`, costUsd: null }; }
+    const out = (Array.isArray(data?.output) ? data.output : [])
+      .filter((o: any) => o?.type === "message")
+      .flatMap((o: any) => (Array.isArray(o?.content) ? o.content : []))
+      .filter((c: any) => c?.type === "output_text" && typeof c?.text === "string")
+      .map((c: any) => c.text)
+      .join("")
+      .trim();
+    const costUsd = Number(data?.usage?.cost?.total_cost);
+    // Ответ, обрезанный по лимиту токенов, гостю не отправляем — пробуем следующую модель.
+    if (data?.status === "incomplete") return { text: null, error: `incomplete: ${JSON.stringify(data?.incomplete_details ?? null)}`, costUsd: Number.isFinite(costUsd) ? costUsd : null };
+    if (!out) return { text: null, error: "empty_response", costUsd: Number.isFinite(costUsd) ? costUsd : null };
+    return { text: out, error: "", costUsd: Number.isFinite(costUsd) ? costUsd : null };
+  } catch (e) {
+    return { text: null, error: `fetch_exception: ${String(e)}`, costUsd: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: string, messageId: string | null) {
   const sb = svc();
   // Сначала ищем сессию с awaiting_email=true — ответ на наш вопрос о email.
@@ -1405,10 +1455,11 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
 
   const aiInstrLen = (instr?.ai_instructions ?? "").toString().trim().length;
   const sessionAiEnabled = session.ai_enabled !== false;
-  const aiEnabled = !!OR_API_KEY && aiInstrLen > 0 && sessionAiEnabled;
+  const aiEnabled = (!!OR_API_KEY || !!PPLX_API_KEY) && aiInstrLen > 0 && sessionAiEnabled;
   const diag: Record<string, any> = {
     has_key: !!OR_API_KEY,
     key_len: OR_API_KEY.length,
+    has_pplx_key: !!PPLX_API_KEY,
     apartment_id: apartmentId,
     resolve: resolveDiag,
     instr_found: !!instr,
@@ -1428,13 +1479,12 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
     let aiText: string | null = null;
     let usedModel: string | null = null;
     const modelErrors: Array<{ model: string; error: string }> = [];
-    const modelsToTry = [
+    const modelsToTry = !OR_API_KEY ? [] : [
       OR_MODEL,
       "google/gemma-4-31b-it:free",
-      "nvidia/nemotron-3-super-120b-a12b:free",
       "google/gemma-4-26b-a4b-it:free",
       "openrouter/free",
-    ].filter((m, i, arr) => m && arr.indexOf(m) === i);
+    ].filter((m, i, arr) => m && !OR_DEAD_MODELS.has(m) && arr.indexOf(m) === i);
 
     for (const modelId of modelsToTry) {
       let modelErr = "";
@@ -1470,6 +1520,21 @@ async function handleFreeText(to: Recipient, from: InboundEvent["from"], text: s
       } catch (e) { modelErr = `fetch_exception: ${String(e)}`; }
       modelErrors.push({ model: modelId, error: modelErr });
       console.error(`[bot] openrouter model failed ${modelId}: ${modelErr}`);
+    }
+
+    // Платный резерв Perplexity — только если ни одна бесплатная модель не ответила.
+    if (!aiText && PPLX_API_KEY) {
+      for (const modelId of PPLX_MODELS) {
+        const r = await callPerplexityAgent(modelId, systemPrompt, text);
+        if (r.text) {
+          aiText = r.text;
+          usedModel = `perplexity:${modelId}`;
+          console.log(`[bot] perplexity reserve ok ${modelId} cost_usd=${r.costUsd ?? "?"}`);
+          break;
+        }
+        modelErrors.push({ model: `perplexity:${modelId}`, error: r.error });
+        console.error(`[bot] perplexity model failed ${modelId}: ${r.error}`);
+      }
     }
 
     try {
