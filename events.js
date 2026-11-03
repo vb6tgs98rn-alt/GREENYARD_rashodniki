@@ -2205,7 +2205,7 @@ function bindApartmentRealtyId() {
     // Перегенерировать автосписания аренды/выплаты собственнику.
     try {
       const { regenerateAutoRentEntries } = await import('./finance.js');
-      regenerateAutoRentEntries(apt.id, { removeManualDuplicates: true });
+      regenerateAutoRentEntries(apt.id);
     } catch (e) { console.warn('[auto-rent] regen:', e?.message || e); }
     await rerender('Настройки сохранены');
   };

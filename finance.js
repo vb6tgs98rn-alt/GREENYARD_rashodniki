@@ -622,18 +622,10 @@ export function regenerateAutoRentEntries(apartmentId, options = {}) {
     return !_isAutoUpdatable(e, today);
   });
 
-  // 1б) Опционально: удаляем ручные записи-аренды/выплаты собу (только при сохранении настроек).
-  if (removeManualDuplicates) {
-    state.finance.entries = state.finance.entries.filter((e) => {
-      if (e.apartmentId !== apartmentId) return true;
-      if (e.type !== FINANCE_TYPES.expense) return true;
-      if (e.source === 'realtycalendar') return true;
-      const hay = `${e.category || ''} ${e.title || ''}`.toLowerCase();
-      const isRent = hay.includes('аренд');
-      const isOwnerPayout = hay.includes('выплат') && hay.includes('соб');
-      return !(isRent || isOwnerPayout);
-    });
-  }
+  // 1б) Раньше при сохранении настроек здесь удалялись все записи аренды/выплаты собу,
+  //     включая прошедшие и исправленные вручную. Убрано: ручная правка и прошлые циклы
+  //     главнее, настройки применяются только к предстоящим неправленым автозаписям.
+  void removeManualDuplicates;
 
   // 2) Если день оплаты не задан — выходим (автосписаний нет).
   if (!(paymentDay >= 1 && paymentDay <= 31)) return;
