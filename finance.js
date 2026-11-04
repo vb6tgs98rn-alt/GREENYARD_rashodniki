@@ -32,6 +32,12 @@ export function ensureFinanceGeneratedForCurrentMonth() {
   const state = getState();
   const month = state.ui?.finance?.month || monthKey(new Date());
   generateRecurringEntriesForMonth(month);
+  // Выбран период (в том числе на будущие месяцы) — регулярные платежи на все его месяцы.
+  const { dateFrom, dateTo } = state.ui?.finance || {};
+  if (dateFrom && dateTo) generateRecurringEntriesForRange(dateFrom, dateTo);
+  // То же для периода юнит-экономики квартиры.
+  const { unitDateFrom, unitDateTo, unitApartmentId } = state.ui?.finance || {};
+  if (unitDateFrom && unitDateTo && unitApartmentId) generateRecurringEntriesForRange(unitDateFrom, unitDateTo, unitApartmentId);
 }
 
 export function createFinanceEntryDraft(data = {}) {
@@ -304,7 +310,47 @@ export function updateRecurringRules({ ruleIds = [], apartments = [], payload = 
 export function generateRecurringEntriesForMonth(month) {
   if (!month) return [];
   const created = [];
+  updateState((state) => { _ensureRecurringEntriesForMonth(state, month, null, created); });
+  return created;
+}
+
+// Месяцы (ГГГГ-ММ), которые задевает период from..to (ГГГГ-ММ-ДД). Не больше 24 —
+// чтобы длинный период не создал лавину записей.
+// Прошлые месяцы не трогаем: там остаётся как есть (в том числе удалённые вручную записи).
+function _monthsInRange(from, to) {
+  const out = [];
+  if (!from || !to || from > to) return out;
+  const nowKey = monthKey(new Date());
+  if (from.slice(0, 7) < nowKey) from = `${nowKey}-01`;
+  if (from > to) return out;
+  let y = Number(from.slice(0, 4));
+  let m = Number(from.slice(5, 7));
+  const endKey = to.slice(0, 7);
+  while (out.length < 24) {
+    const key = `${y}-${String(m).padStart(2, '0')}`;
+    if (key > endKey) break;
+    out.push(key);
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+  }
+  return out;
+}
+
+// Регулярные платежи на все месяцы видимого периода (при перелистывании или выборе дат).
+// apartmentId — только правила этой квартиры; без него — все правила.
+export function generateRecurringEntriesForRange(from, to, apartmentId = null) {
+  const months = _monthsInRange(from, to);
+  if (!months.length) return [];
+  const created = [];
   updateState((state) => {
+    months.forEach((month) => _ensureRecurringEntriesForMonth(state, month, apartmentId, created));
+  });
+  return created;
+}
+
+// Создаёт недостающие записи регулярных платежей на месяц прямо в state.
+function _ensureRecurringEntriesForMonth(state, month, apartmentId, created) {
+  {
     // Одна запись на правило в месяц: ключ — правило + месяц (а не точная дата),
     // чтобы после смены дня оплаты в текущем месяце не появилась вторая запись.
     const existingKeys = new Set(
@@ -314,6 +360,7 @@ export function generateRecurringEntriesForMonth(month) {
     );
     state.finance.recurringRules.forEach((rule) => {
       if (!rule.active) return;
+      if (apartmentId && rule.apartmentId !== apartmentId) return;
       const dueDate = `${month}-${String(Math.min(Math.max(rule.dayOfMonth || 1, 1), 28)).padStart(2, '0')}`;
       if (rule.startDate && dueDate < rule.startDate) return;
       if (rule.endDate && dueDate > rule.endDate) return;
@@ -336,8 +383,7 @@ export function generateRecurringEntriesForMonth(month) {
       created.push(entry);
       existingKeys.add(key);
     });
-  });
-  return created;
+  }
 }
 
 // =============================================================================
@@ -1521,6 +1567,18 @@ export async function getFinanceCyclesSummaryAsync(offsetByApt = {}) {
     const startDate = new Date(sY, sM - 1 + offset, 1);
     _ensureAutoRentEntryForMonth(state, apt, startDate.getFullYear(), startDate.getMonth() + 1);
   });
+  // Регулярные платежи квартиры (интернет и т.п.) — на все месяцы видимого цикла,
+  // иначе при перелистывании вперёд их записей ещё нет.
+  try {
+    aptsWithCycle.forEach(({ apt, paymentDay }) => {
+      const { from, to } = _windowForApt(paymentDay, Number(offsetByApt?.[apt.id] || 0));
+      _monthsInRange(from, to).forEach((mk) => _ensureRecurringEntriesForMonth(state, mk, apt.id, []));
+    });
+    aptsNoDay.forEach((apt) => {
+      const { from, to } = _windowForNoDay(Number(offsetByApt?.[apt.id] || 0));
+      _monthsInRange(from, to).forEach((mk) => _ensureRecurringEntriesForMonth(state, mk, apt.id, []));
+    });
+  } catch (e) { console.warn('[recurring] cycles:', e?.message || e); }
   // Чистим возможные дубли от старых версий.
   try { dedupeFinanceEntriesByExternalId(); } catch (_) {}
   const cycleRows = aptsWithCycle.map(({ apt, paymentDay }) => {
